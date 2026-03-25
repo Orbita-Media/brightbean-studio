@@ -17,5 +17,7 @@ urlpatterns = [
     # Content Pipeline (Stream A)
     path("workspace/<uuid:workspace_id>/", include("apps.composer.urls")),
     path("workspace/<uuid:workspace_id>/calendar/", include("apps.calendar.urls")),
+    path("notifications/", include("apps.notifications.urls")),
+    path("organizations/media/", include("apps.media_library.urls_org")),
     path("", include("apps.accounts.urls_root")),
 ]

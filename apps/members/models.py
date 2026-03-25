@@ -170,6 +170,10 @@ PERMISSION_KEYS = [
     "use_inbox",
     "reply_from_inbox",
     "manage_workspace_settings",
+    "upload_media",
+    "edit_media",
+    "delete_media",
+    "manage_media",
 ]
 
 BUILTIN_ROLE_PERMISSIONS = {
@@ -185,18 +189,26 @@ BUILTIN_ROLE_PERMISSIONS = {
         "use_inbox": True,
         "reply_from_inbox": True,
         "manage_workspace_settings": False,
+        "upload_media": True,
+        "edit_media": True,
+        "delete_media": True,
+        "manage_media": True,
     },
     "editor": {
         "create_posts": True,
         "edit_own_posts": True,
         "edit_others_posts": True,
         "approve_posts": False,
-        "publish_directly": False,  # Configurable per workspace
+        "publish_directly": False,
         "manage_social_accounts": False,
         "view_analytics": True,
         "use_inbox": True,
         "reply_from_inbox": True,
         "manage_workspace_settings": False,
+        "upload_media": True,
+        "edit_media": True,
+        "delete_media": True,
+        "manage_media": False,
     },
     "contributor": {
         "create_posts": True,
@@ -205,10 +217,14 @@ BUILTIN_ROLE_PERMISSIONS = {
         "approve_posts": False,
         "publish_directly": False,
         "manage_social_accounts": False,
-        "view_analytics": False,  # Limited to own posts
+        "view_analytics": False,
         "use_inbox": False,
         "reply_from_inbox": False,
         "manage_workspace_settings": False,
+        "upload_media": True,
+        "edit_media": True,
+        "delete_media": False,
+        "manage_media": False,
     },
     "client": {
         "create_posts": False,
@@ -217,10 +233,14 @@ BUILTIN_ROLE_PERMISSIONS = {
         "approve_posts": True,
         "publish_directly": False,
         "manage_social_accounts": False,
-        "view_analytics": True,  # View only
+        "view_analytics": True,
         "use_inbox": False,
         "reply_from_inbox": False,
         "manage_workspace_settings": False,
+        "upload_media": False,
+        "edit_media": False,
+        "delete_media": False,
+        "manage_media": False,
     },
     "viewer": {
         "create_posts": False,
@@ -229,9 +249,13 @@ BUILTIN_ROLE_PERMISSIONS = {
         "approve_posts": False,
         "publish_directly": False,
         "manage_social_accounts": False,
-        "view_analytics": True,  # View only
+        "view_analytics": True,
         "use_inbox": False,
         "reply_from_inbox": False,
         "manage_workspace_settings": False,
+        "upload_media": False,
+        "edit_media": False,
+        "delete_media": False,
+        "manage_media": False,
     },
 }

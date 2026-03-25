@@ -1,0 +1,77 @@
+{% comment %}Nested folder tree for sidebar. Expects: folders, workspace, current_folder{% endcomment %}
+
+{% for folder in folders %}
+<div class="ml-folder-group">
+  <a href="{% url 'media_library:index' workspace_id=workspace.id %}?folder={{ folder.id }}"
+     class="ml-folder-item flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm cursor-pointer group {% if current_folder == folder.id|slugify %}active{% endif %}"
+     x-data="{ editing: false, expanded: true }">
+    <svg class="w-3.5 h-3.5 flex-shrink-0 transition-transform"
+         :class="expanded ? 'rotate-90' : ''"
+         @click.prevent="expanded = !expanded"
+         style="color: var(--text-ghost, #A8A29E);"
+         fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+    </svg>
+    <svg class="w-4 h-4 flex-shrink-0" style="color: var(--text-ghost, #A8A29E);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+    </svg>
+    <span class="truncate flex-1" x-text="'{{ folder.name }}'">{{ folder.name }}</span>
+
+    <!-- Folder actions (visible on hover) -->
+    <div class="hidden group-hover:flex items-center gap-0.5">
+      <button @click.prevent
+              class="w-5 h-5 rounded flex items-center justify-center"
+              style="color: var(--text-ghost);"
+              onmouseenter="this.style.color='var(--text-primary)'"
+              onmouseleave="this.style.color='var(--text-ghost)'"
+              hx-post="{% url 'media_library:folder_delete' workspace_id=workspace.id folder_id=folder.id %}"
+              hx-target="#folder-tree"
+              hx-confirm="Delete folder '{{ folder.name }}'? Assets will be moved to the parent folder.">
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </a>
+
+  <!-- Subfolders (level 2) -->
+  {% if folder.subfolders.all %}
+  <div x-show="expanded" class="pl-5 mt-0.5">
+    {% for subfolder in folder.subfolders.all %}
+    <a href="{% url 'media_library:index' workspace_id=workspace.id %}?folder={{ subfolder.id }}"
+       class="ml-folder-item flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm cursor-pointer group {% if current_folder == subfolder.id|slugify %}active{% endif %}">
+      <svg class="w-4 h-4 flex-shrink-0" style="color: var(--text-ghost);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+      </svg>
+      <span class="truncate flex-1">{{ subfolder.name }}</span>
+      <div class="hidden group-hover:flex items-center gap-0.5">
+        <button @click.prevent
+                class="w-5 h-5 rounded flex items-center justify-center"
+                style="color: var(--text-ghost);"
+                hx-post="{% url 'media_library:folder_delete' workspace_id=workspace.id folder_id=subfolder.id %}"
+                hx-target="#folder-tree"
+                hx-confirm="Delete folder '{{ subfolder.name }}'?">
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </a>
+
+    <!-- Subfolders (level 3) -->
+    {% if subfolder.subfolders.all %}
+    <div class="pl-5 mt-0.5">
+      {% for sub2 in subfolder.subfolders.all %}
+      <a href="{% url 'media_library:index' workspace_id=workspace.id %}?folder={{ sub2.id }}"
+         class="ml-folder-item flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm cursor-pointer group {% if current_folder == sub2.id|slugify %}active{% endif %}">
+        <svg class="w-4 h-4 flex-shrink-0" style="color: var(--text-ghost);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+        </svg>
+        <span class="truncate flex-1">{{ sub2.name }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% empty %}
+<p class="text-xs px-3 py-2" style="color: var(--text-ghost, #A8A29E);">No folders yet</p>
+{% endfor %}

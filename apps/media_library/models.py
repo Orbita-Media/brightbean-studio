@@ -3,15 +3,78 @@
 import uuid
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
-from apps.common.managers import WorkspaceScopedManager
+from .managers import MediaAssetManager
+
+
+class MediaFolder(models.Model):
+    """Folder for organizing media assets. Max 3 levels of nesting."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="media_folders",
+    )
+    workspace = models.ForeignKey(
+        "workspaces.Workspace",
+        on_delete=models.CASCADE,
+        related_name="media_folders",
+        null=True,
+        blank=True,
+    )
+    parent_folder = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="subfolders",
+    )
+    name = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "media_library_folder"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "parent_folder", "name"],
+                name="unique_folder_name_per_parent",
+            ),
+        ]
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        super().clean()
+        if self.parent_folder:
+            depth = 1
+            current = self.parent_folder
+            while current.parent_folder:
+                depth += 1
+                current = current.parent_folder
+                if depth >= 3:
+                    raise ValidationError("Folders cannot be nested more than 3 levels deep.")
+
+    @property
+    def depth(self):
+        d = 0
+        current = self.parent_folder
+        while current:
+            d += 1
+            current = current.parent_folder
+        return d
 
 
 class MediaAsset(models.Model):
     """A media file (image, video, GIF) uploaded to a workspace's media library.
 
     Stores the original file plus processed variants for different platforms.
+    When workspace is null, the asset belongs to the shared org-wide library.
     """
 
     class MediaType(models.TextChoices):
@@ -27,10 +90,26 @@ class MediaAsset(models.Model):
         FAILED = "failed", "Failed"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="media_assets",
+        null=True,
+        blank=True,
+    )
     workspace = models.ForeignKey(
         "workspaces.Workspace",
         on_delete=models.CASCADE,
         related_name="media_assets",
+        null=True,
+        blank=True,
+    )
+    folder = models.ForeignKey(
+        MediaFolder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assets",
     )
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -59,6 +138,7 @@ class MediaAsset(models.Model):
     alt_text = models.TextField(blank=True, default="")
     title = models.CharField(max_length=255, blank=True, default="")
     tags = models.JSONField(default=list, blank=True)
+    is_starred = models.BooleanField(default=False)
 
     # Attribution for stock media
     source = models.CharField(max_length=50, blank=True, default="", help_text="e.g., 'upload', 'unsplash', 'pexels'")
@@ -77,13 +157,27 @@ class MediaAsset(models.Model):
         help_text="Dict of platform-specific processed versions: {'instagram': {'file': 'path', 'width': 1080}}",
     )
 
+    # Version tracking
+    current_version = models.ForeignKey(
+        "MediaAssetVersion",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    objects = WorkspaceScopedManager()
+    objects = MediaAssetManager()
 
     class Meta:
         db_table = "media_library_media_asset"
+        indexes = [
+            models.Index(fields=["organization", "workspace", "media_type", "created_at"]),
+            models.Index(fields=["organization", "workspace", "is_starred"]),
+            models.Index(fields=["folder"]),
+        ]
         ordering = ["-created_at"]
 
     def __str__(self):
@@ -98,10 +192,20 @@ class MediaAsset(models.Model):
         return self.media_type == self.MediaType.VIDEO
 
     @property
+    def is_shared(self):
+        return self.workspace_id is None
+
+    @property
     def aspect_ratio(self):
         if self.width and self.height:
             return round(self.width / self.height, 2)
         return None
+
+    @property
+    def file_extension(self):
+        if "." in self.filename:
+            return self.filename.rsplit(".", 1)[-1].lower()
+        return ""
 
     @property
     def file_size_display(self):
@@ -112,3 +216,66 @@ class MediaAsset(models.Model):
                 return f"{size:.1f} {unit}"
             size /= 1024
         return f"{size:.1f} TB"
+
+    # Aliases for template compatibility
+    @property
+    def original_filename(self):
+        return self.filename
+
+    @property
+    def file_type(self):
+        return self.media_type
+
+    @property
+    def human_file_size(self):
+        return self.file_size_display
+
+    @property
+    def file_size_bytes(self):
+        return self.file_size
+
+    @property
+    def duration_seconds(self):
+        return self.duration if self.duration else None
+
+
+class MediaAssetVersion(models.Model):
+    """Version history for edited media assets. Each edit creates a new version."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    media_asset = models.ForeignKey(
+        MediaAsset,
+        on_delete=models.CASCADE,
+        related_name="versions",
+    )
+    version_number = models.PositiveIntegerField()
+    file = models.FileField(upload_to="media_library/versions/%Y/%m/")
+    thumbnail = models.ImageField(upload_to="media_library/thumbs/%Y/%m/", blank=True, default="")
+    change_description = models.CharField(max_length=500, blank=True, default="")
+    file_size = models.PositiveBigIntegerField(default=0)
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    duration = models.FloatField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="media_versions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "media_library_asset_version"
+        unique_together = [("media_asset", "version_number")]
+        ordering = ["-version_number"]
+
+    def __str__(self):
+        return f"{self.media_asset.filename} v{self.version_number}"
+
+    @property
+    def file_size_bytes(self):
+        return self.file_size
+
+    @property
+    def duration_seconds(self):
+        return self.duration

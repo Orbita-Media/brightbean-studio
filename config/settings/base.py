@@ -57,6 +57,7 @@ LOCAL_APPS = [
     "apps.composer",
     "apps.calendar",
     "apps.publisher",
+    "apps.notifications",
     "theme",
 ]
 
@@ -90,6 +91,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "apps.notifications.context_processors.unread_notification_count",
             ],
         },
     },
@@ -214,6 +216,14 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.CursorPagination",
     "PAGE_SIZE": 50,
 }
+
+# Media Library
+MEDIA_LIBRARY_MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20MB
+MEDIA_LIBRARY_MAX_VIDEO_SIZE = 1024 * 1024 * 1024  # 1GB
+MEDIA_LIBRARY_MAX_BULK_UPLOAD = 50
+MEDIA_LIBRARY_THUMBNAIL_SIZE = (400, 400)
+MEDIA_LIBRARY_FFMPEG_TIMEOUT = 300  # 5 minutes
+MEDIA_LIBRARY_MAX_CONCURRENT_TRANSCODES = 2
 
 # Encryption key derivation salt
 ENCRYPTION_KEY_SALT = b"postbean-field-encryption-v1"
