@@ -213,3 +213,4 @@ node_modules/
 theme/static/css/dist/
 *.sqlite3
 /.claude/worktrees
+.DS_Store
