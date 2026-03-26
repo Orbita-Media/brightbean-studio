@@ -206,7 +206,7 @@ class TestNotificationViews:
             "pref_post_approved_email": "on",
             "quiet_hours_timezone": "America/New_York",
         })
-        assert response.status_code == 200
+        assert response.status_code == 302
         pref = NotificationPreference.objects.get(
             user=user, event_type=EventType.POST_APPROVED, channel=Channel.IN_APP,
         )
