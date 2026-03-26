@@ -56,9 +56,7 @@ def sidebar_context(request):
         from apps.inbox.models import InboxMessage
 
         sidebar_unread_inbox_count = (
-            InboxMessage.objects.for_workspace(workspace.id)
-            .filter(status=InboxMessage.Status.UNREAD)
-            .count()
+            InboxMessage.objects.for_workspace(workspace.id).filter(status=InboxMessage.Status.UNREAD).count()
         )
 
     return {

@@ -62,18 +62,19 @@ def _facebook_receive(request):
 
 def _verify_facebook_signature(body: bytes, signature_header: str) -> bool:
     """Verify HMAC-SHA256 signature from Facebook."""
-    app_secret = settings.PLATFORM_CREDENTIALS_FROM_ENV.get("facebook", {}).get(
-        "app_secret", ""
-    )
+    app_secret = settings.PLATFORM_CREDENTIALS_FROM_ENV.get("facebook", {}).get("app_secret", "")
     if not app_secret:
         logger.error("Facebook app_secret not configured. Cannot verify webhook.")
         return False
 
-    expected = "sha256=" + hmac.new(
-        app_secret.encode(),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + hmac.new(
+            app_secret.encode(),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
     return hmac.compare_digest(expected, signature_header)
 
 
@@ -222,11 +223,14 @@ def youtube_webhook(request):
     webhook_secret = settings.YOUTUBE_WEBHOOK_SECRET
     if webhook_secret:
         signature = request.headers.get("X-Hub-Signature", "")
-        expected = "sha1=" + hmac.new(
-            webhook_secret.encode(),
-            request.body,
-            hashlib.sha1,
-        ).hexdigest()
+        expected = (
+            "sha1="
+            + hmac.new(
+                webhook_secret.encode(),
+                request.body,
+                hashlib.sha1,
+            ).hexdigest()
+        )
         if not hmac.compare_digest(expected, signature):
             logger.warning("Invalid YouTube webhook signature.")
             return HttpResponseForbidden("Invalid signature.")

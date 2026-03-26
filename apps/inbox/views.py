@@ -42,9 +42,7 @@ MESSAGES_PER_PAGE = 50
 
 def _detail_context(workspace, message):
     """Build the full context needed for the message detail panel."""
-    sla_config = InboxSLAConfig.objects.filter(
-        workspace=workspace, is_active=True
-    ).first()
+    sla_config = InboxSLAConfig.objects.filter(workspace=workspace, is_active=True).first()
     saved_replies = SavedReply.objects.for_workspace(workspace.id)
     team_members = WorkspaceMembership.objects.filter(
         workspace=workspace,
@@ -52,13 +50,10 @@ def _detail_context(workspace, message):
     replies = list(message.replies.select_related("author"))
     notes = list(message.internal_notes.select_related("author"))
     thread = sorted(
-        [("reply", r, r.sent_at) for r in replies]
-        + [("note", n, n.created_at) for n in notes],
+        [("reply", r, r.sent_at) for r in replies] + [("note", n, n.created_at) for n in notes],
         key=lambda x: x[2],
     )
-    child_messages = InboxMessage.objects.filter(
-        parent_message=message
-    ).select_related("social_account")
+    child_messages = InboxMessage.objects.filter(parent_message=message).select_related("social_account")
     return {
         "workspace": workspace,
         "message": message,
@@ -96,9 +91,7 @@ def inbox_feed(request, workspace_id):
     """Main inbox feed with filtering, pagination, and split-panel layout."""
     workspace = _get_workspace(request, workspace_id)
 
-    qs = InboxMessage.objects.for_workspace(workspace.id).select_related(
-        "social_account", "assigned_to"
-    )
+    qs = InboxMessage.objects.for_workspace(workspace.id).select_related("social_account", "assigned_to")
 
     # View shortcuts
     view = request.GET.get("view", "all")
@@ -142,18 +135,12 @@ def inbox_feed(request, workspace_id):
 
     q = request.GET.get("q", "").strip()
     if q:
-        qs = qs.filter(
-            Q(body__icontains=q)
-            | Q(sender_name__icontains=q)
-            | Q(sender_handle__icontains=q)
-        )
+        qs = qs.filter(Q(body__icontains=q) | Q(sender_name__icontains=q) | Q(sender_handle__icontains=q))
 
     messages = qs[:MESSAGES_PER_PAGE]
 
     # SLA config for countdown display
-    sla_config = InboxSLAConfig.objects.filter(
-        workspace=workspace, is_active=True
-    ).first()
+    sla_config = InboxSLAConfig.objects.filter(workspace=workspace, is_active=True).first()
 
     # Team members for assignment dropdown
     team_members = WorkspaceMembership.objects.filter(
@@ -246,9 +233,7 @@ def send_reply(request, workspace_id, message_id):
         )
         platform_reply_id = result.platform_message_id
     except NotImplementedError:
-        logger.info(
-            "Provider %s does not support reply_to_message.", account.platform
-        )
+        logger.info("Provider %s does not support reply_to_message.", account.platform)
     except Exception:
         logger.exception("Failed to send reply for message %s", message.id)
 
@@ -260,9 +245,7 @@ def send_reply(request, workspace_id, message_id):
     )
 
     # Auto-resolve on reply if configured
-    sla_config = InboxSLAConfig.objects.filter(
-        workspace=workspace, is_active=True
-    ).first()
+    sla_config = InboxSLAConfig.objects.filter(workspace=workspace, is_active=True).first()
     if sla_config and sla_config.auto_resolve_on_reply:
         message.status = InboxMessage.Status.RESOLVED
         message.save(update_fields=["status"])
@@ -317,9 +300,11 @@ def assign_message(request, workspace_id, message_id):
     assigned_to_id = form.cleaned_data.get("assigned_to")
     if assigned_to_id:
         # Verify the user is a workspace member
-        membership = WorkspaceMembership.objects.filter(
-            workspace=workspace, user_id=assigned_to_id
-        ).select_related("user").first()
+        membership = (
+            WorkspaceMembership.objects.filter(workspace=workspace, user_id=assigned_to_id)
+            .select_related("user")
+            .first()
+        )
         if not membership:
             return HttpResponse("User is not a workspace member.", status=400)
         message.assigned_to = membership.user
@@ -408,31 +393,23 @@ def bulk_action(request, workspace_id):
     action = form.cleaned_data["action"]
     value = form.cleaned_data.get("value", "")
 
-    qs = InboxMessage.objects.filter(
-        id__in=message_ids, workspace=workspace
-    )
+    qs = InboxMessage.objects.filter(id__in=message_ids, workspace=workspace)
 
     if action == "mark_read":
-        qs.filter(status=InboxMessage.Status.UNREAD).update(
-            status=InboxMessage.Status.OPEN
-        )
+        qs.filter(status=InboxMessage.Status.UNREAD).update(status=InboxMessage.Status.OPEN)
     elif action == "resolve":
-        qs.exclude(status=InboxMessage.Status.ARCHIVED).update(
-            status=InboxMessage.Status.RESOLVED
-        )
+        qs.exclude(status=InboxMessage.Status.ARCHIVED).update(status=InboxMessage.Status.RESOLVED)
     elif action == "archive":
         qs.update(status=InboxMessage.Status.ARCHIVED)
     elif action == "assign" and value:
-        membership = WorkspaceMembership.objects.filter(
-            workspace=workspace, user_id=value
-        ).first()
+        membership = WorkspaceMembership.objects.filter(workspace=workspace, user_id=value).first()
         if membership:
             qs.update(assigned_to=membership.user)
 
     # Re-fetch and return updated list
-    messages = InboxMessage.objects.for_workspace(workspace.id).select_related(
-        "social_account", "assigned_to"
-    )[:MESSAGES_PER_PAGE]
+    messages = InboxMessage.objects.for_workspace(workspace.id).select_related("social_account", "assigned_to")[
+        :MESSAGES_PER_PAGE
+    ]
 
     context = {"workspace": workspace, "messages": messages}
     return render(request, "inbox/partials/_message_list.html", context)

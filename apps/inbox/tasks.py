@@ -112,14 +112,10 @@ class InboxSyncEngine:
         """Check for SLA-overdue messages and send notifications."""
         from datetime import timedelta
 
-        configs = InboxSLAConfig.objects.filter(is_active=True).select_related(
-            "workspace"
-        )
+        configs = InboxSLAConfig.objects.filter(is_active=True).select_related("workspace")
 
         for config in configs:
-            threshold = timezone.now() - timedelta(
-                minutes=config.target_response_minutes
-            )
+            threshold = timezone.now() - timedelta(minutes=config.target_response_minutes)
             overdue_messages = InboxMessage.objects.filter(
                 workspace=config.workspace,
                 status__in=[InboxMessage.Status.UNREAD, InboxMessage.Status.OPEN],
