@@ -98,6 +98,7 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 "apps.notifications.context_processors.unread_notification_count",
                 "apps.common.context_processors.sidebar_context",
+                "apps.onboarding.context_processors.onboarding_checklist",
             ],
         },
     },
