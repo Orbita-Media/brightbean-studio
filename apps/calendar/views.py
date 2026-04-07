@@ -473,12 +473,16 @@ def _week_view_data(request, workspace, target_date, context):
             day_slots.append((day, posts_by_slot.get(key, [])))
         week_slots.append((hour, day_slots))
 
+    from django.utils import timezone as _tz
+
+    now = _tz.now()
     context.update(
         {
             "week_days": week_days,
             "hours": hours,
             "week_slots": week_slots,
             "today": date.today(),
+            "current_hour": now.hour,
             "prev_date": (monday - timedelta(weeks=1)).isoformat(),
             "next_date": (monday + timedelta(weeks=1)).isoformat(),
             "period_label": f"{week_days[0].strftime('%b %d')} – {week_days[6].strftime('%b %d, %Y')}",
@@ -522,6 +526,7 @@ def _day_view_data(request, workspace, target_date, context):
             "hours": hours,
             "target_date": target_date,
             "is_today": target_date == date.today(),
+            "is_past_day": target_date < date.today(),
             "current_hour": now.hour,
             "prev_date": (target_date - timedelta(days=1)).isoformat(),
             "next_date": (target_date + timedelta(days=1)).isoformat(),

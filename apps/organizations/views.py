@@ -338,11 +338,14 @@ def _build_week_context(base_pps, target_date, today):
             day_slots.append((day, posts_by_slot.get(key, [])))
         week_slots.append((hour, day_slots))
 
+    from django.utils import timezone as _tz
+
     return {
         "week_days": week_days,
         "hours": hours,
         "week_slots": week_slots,
         "today": today,
+        "current_hour": _tz.now().hour,
         "period_label": f"{week_days[0].strftime('%b %d')} – {week_days[6].strftime('%b %d, %Y')}",
         "prev_date": (monday - timedelta(weeks=1)).isoformat(),
         "next_date": (monday + timedelta(weeks=1)).isoformat(),
@@ -368,6 +371,7 @@ def _build_day_context(base_pps, target_date, today):
         "hours": hours,
         "today": today,
         "is_today": target_date == today,
+        "is_past_day": target_date < today,
         "current_hour": now.hour,
         "period_label": target_date.strftime("%A, %B %d, %Y"),
         "prev_date": (target_date - timedelta(days=1)).isoformat(),
