@@ -495,8 +495,6 @@ S3_CUSTOM_DOMAIN=
 S3_REGION_NAME=auto
 
 # EMAIL
-# Cloud version uses Resend (API-based, no SMTP config needed):
-RESEND_API_KEY=                      # Resend API key (cloud version)
 # Self-hosted uses SMTP (any provider: Resend SMTP, Mailgun, SES, own server):
 EMAIL_BACKEND=smtp                   # "resend" (API) or "smtp" (generic SMTP)
 EMAIL_HOST=                          # SMTP only
@@ -517,15 +515,6 @@ PLATFORM_GOOGLE_CLIENT_ID=
 PLATFORM_GOOGLE_CLIENT_SECRET=
 PLATFORM_PINTEREST_APP_ID=
 PLATFORM_PINTEREST_APP_SECRET=
-
-# AI (optional - also configurable via admin UI)
-AI_OPENAI_API_KEY=
-AI_OPENAI_DEFAULT_MODEL=gpt-4o
-AI_ANTHROPIC_API_KEY=
-AI_ANTHROPIC_DEFAULT_MODEL=claude-sonnet-4-20250514
-AI_OPENROUTER_API_KEY=
-AI_OPENROUTER_DEFAULT_MODEL=
-AI_DEFAULT_PROVIDER=
 
 # REDIS (optional)
 REDIS_URL=

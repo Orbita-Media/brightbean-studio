@@ -41,7 +41,6 @@ THIRD_PARTY_APPS = [
     "allauth.socialaccount.providers.google",
     "django_htmx",
     "tailwind",
-    "rest_framework",
     "csp",
     "background_task",
 ]
@@ -255,27 +254,6 @@ CSP_IMG_SRC = ("'self'", "data:", "https:")
 CSP_FONT_SRC = ("'self'",)
 CSP_CONNECT_SRC = ("'self'",)
 CSP_FORM_ACTION = ("'self'", "https://accounts.google.com")
-
-# DRF
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-    ],
-    "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
-    ],
-    "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.ScopedRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES": {
-        "login": "10/minute",
-        "oauth": "20/minute",
-        "api": "120/minute",
-        "uploads": "30/minute",
-    },
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.CursorPagination",
-    "PAGE_SIZE": 50,
-}
 
 # Media Library
 MEDIA_LIBRARY_MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20MB

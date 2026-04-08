@@ -96,20 +96,6 @@ def sidebar_context(request):
     }
 
 
-def _get_configured_platforms(org_id):
-    """Return set of platform names that have credentials configured."""
-    from apps.credentials.models import PlatformCredential
-
-    configured = set(
-        PlatformCredential.objects.for_org(org_id).filter(is_configured=True).values_list("platform", flat=True)
-    )
-    env_creds = getattr(settings, "PLATFORM_CREDENTIALS_FROM_ENV", {})
-    for platform, creds in env_creds.items():
-        if any(v for v in creds.values()):
-            configured.add(platform)
-    return configured
-
-
 def _platform_display_names():
     """Return list of (platform_key, display_name) tuples."""
     return [
