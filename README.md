@@ -1,6 +1,6 @@
 # Brightbean
 
-[![CI](https://github.com/brightbeanxyz/brightbean-social-management/actions/workflows/ci.yml/badge.svg)](https://github.com/brightbeanxyz/brightbean-social-management/actions/workflows/ci.yml)
+[![CI](https://github.com/brightbeanxyz/brightbean-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/brightbeanxyz/brightbean-studio/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Django 5.x](https://img.shields.io/badge/Django-5.x-green.svg)](https://www.djangoproject.com/)
@@ -11,13 +11,13 @@ Open-source, self-hostable social media management platform built for agencies a
 
 | Heroku | Render | Railway |
 |:------:|:------:|:-------:|
-| [![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/brightbeanxyz/brightbean-social-management) | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/brightbeanxyz/brightbean-social-management) | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template?referralCode=brightbean&code=https://github.com/brightbeanxyz/brightbean-social-management) |
+| [![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/brightbeanxyz/brightbean-studio) | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/brightbeanxyz/brightbean-studio) | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template?referralCode=brightbean&code=https://github.com/brightbeanxyz/brightbean-studio) |
 
 ## Quick Start (Docker)
 
 ```bash
-git clone https://github.com/brightbeanxyz/brightbean-social-management.git
-cd brightbean-social-management
+git clone https://github.com/brightbeanxyz/brightbean-studio.git
+cd brightbean-studio
 cp .env.example .env
 ```
 
@@ -52,8 +52,8 @@ Run everything natively - no Docker, no PostgreSQL install. Uses SQLite for the 
 **1. Clone and configure**
 
 ```bash
-git clone https://github.com/brightbeanxyz/brightbean-social-management.git
-cd brightbean-social-management
+git clone https://github.com/brightbeanxyz/brightbean-studio.git
+cd brightbean-studio
 cp .env.example .env
 ```
 
@@ -160,8 +160,8 @@ ruff format .
 
 ```bash
 # On your server:
-git clone https://github.com/brightbeanxyz/brightbean-social-management.git
-cd brightbean-social-management
+git clone https://github.com/brightbeanxyz/brightbean-studio.git
+cd brightbean-studio
 cp .env.example .env
 # Edit .env:
 #   SECRET_KEY=<generate a random 50+ char string>
@@ -200,7 +200,7 @@ See `architecture.md` for detailed per-platform instructions and cost breakdowns
 ## Project Structure
 
 ```
-brightbean-social-management/
+brightbean-studio/
 ├── config/
 │   ├── settings/
 │   │   ├── base.py            # Shared settings

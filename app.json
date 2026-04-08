@@ -1,7 +1,7 @@
 {
   "name": "Brightbean",
   "description": "Open-source social media management platform",
-  "repository": "https://github.com/brightbeanxyz/brightbean-social-management",
+  "repository": "https://github.com/brightbeanxyz/brightbean-studio",
   "keywords": ["django", "social-media", "management"],
   "formation": {
     "web": {
