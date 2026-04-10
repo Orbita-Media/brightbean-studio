@@ -614,11 +614,14 @@ def publish_tab_queue(request, workspace_id):
     workspace = _get_workspace(request, workspace_id)
     display_tz = request.GET.get("tz", workspace.effective_timezone or "UTC")
 
+    from django.db.models.functions import Coalesce
+
     platform_posts = (
         PlatformPost.objects.filter(post__workspace_id=workspace.id, post__status="scheduled")
         .select_related("post__author", "social_account")
         .prefetch_related("post__media_attachments__media_asset")
-        .order_by("post__scheduled_at", "-post__created_at")
+        .annotate(effective_at=Coalesce("scheduled_at", "post__scheduled_at"))
+        .order_by("effective_at", "-post__created_at")
     )
     platform_posts = _apply_pp_publish_filters(platform_posts, request)
 
