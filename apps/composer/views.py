@@ -462,7 +462,7 @@ def _transition_post_children(post, target, *, allow_via_draft=True, only=None):
         try:
             if pp.can_transition_to(target):
                 pp.transition_to(target)
-            elif allow_via_draft and pp.can_transition_to("draft") and "draft" != target:
+            elif allow_via_draft and pp.can_transition_to("draft") and target != "draft":
                 pp.transition_to("draft")
                 if pp.can_transition_to(target):
                     pp.transition_to(target)

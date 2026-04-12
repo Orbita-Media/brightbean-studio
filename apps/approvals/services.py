@@ -142,9 +142,8 @@ def approve_post(target, user, workspace, comment=""):
             if not _transition_or_skip(pp, "approved"):
                 continue
             moved.append(pp)
-            if two_stage and from_pending_review:
-                if _transition_or_skip(pp, "pending_client"):
-                    advanced_to_client = True
+            if two_stage and from_pending_review and _transition_or_skip(pp, "pending_client"):
+                advanced_to_client = True
 
         if not moved:
             return post

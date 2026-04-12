@@ -11,7 +11,6 @@ current status — zero behavioural change for in-flight posts on day one.
 
 from django.db import migrations, models
 
-
 _STATUS_CHOICES = [
     ("draft", "Draft"),
     ("pending_review", "Pending Review"),
