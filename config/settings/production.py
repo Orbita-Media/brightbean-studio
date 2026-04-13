@@ -2,7 +2,6 @@ from .base import *  # noqa: F401, F403
 
 DEBUG = False
 
-
 # Security
 SECURE_SSL_REDIRECT = True
 SECURE_HSTS_SECONDS = 31536000
