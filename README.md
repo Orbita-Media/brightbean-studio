@@ -268,19 +268,17 @@ cp .env.example .env
 #   APP_URL=https://yourdomain.com
 #   DATABASE_URL=postgres://postgres:<strong-password>@postgres:5432/brightbean
 
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-docker compose exec app python manage.py migrate
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 docker compose exec app python manage.py createsuperuser
 ```
 
-This starts 4 containers: app (Gunicorn), worker, PostgreSQL, and Caddy (auto-HTTPS). Edit the `Caddyfile` with your domain.
+This starts 5 containers: app (Gunicorn), worker, PostgreSQL, Caddy (auto-HTTPS), and a one-shot migrate container that runs database migrations automatically on startup. Edit the `Caddyfile` with your domain.
 
 To update:
 
 ```bash
 git pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-docker compose exec app python manage.py migrate
 ```
 
 ### Other Platforms
