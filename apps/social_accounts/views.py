@@ -6,6 +6,7 @@ Handles OAuth flows, account listing, connect/reconnect/disconnect actions.
 import logging
 import secrets
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from csp.decorators import csp_update
 from django.conf import settings
@@ -63,8 +64,11 @@ def _get_configured_platforms(org_id):
 
     # Session-auth platforms (e.g. Bluesky) don't need app-level credentials —
     # the user supplies their own handle + app password at connect time.
+    # Instance-OAuth platforms (e.g. Mastodon) don't need them either —
+    # we register a per-instance OAuth app on first connect and persist it in
+    # MastodonAppRegistration.
     for platform, provider_cls in PROVIDER_REGISTRY.items():
-        if provider_cls().auth_type == AuthType.SESSION:
+        if provider_cls().auth_type in (AuthType.SESSION, AuthType.INSTANCE_OAUTH):
             configured.add(platform)
 
     return configured
@@ -97,6 +101,58 @@ def _unsign_state(state_str):
         salt="social-oauth-state",
         max_age=OAUTH_STATE_MAX_AGE,
     )
+
+
+def _normalize_mastodon_instance_url(raw):
+    """Normalize user-supplied Mastodon instance input to `scheme://host[:port]`.
+
+    Accepts: bare hosts (`mastodon.social`), URLs with paths (`https://mastodon.social/@user`),
+    fediverse handles (`@user@mastodon.social`, `user@mastodon.social`), and values with
+    extra whitespace or trailing slashes. Defaults the scheme to https when missing.
+    Returns an empty string when the input has no host.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return ""
+
+    # Fediverse handle form: `@user@host` or `user@host`. If there's exactly one '@'
+    # and no scheme, treat it as a handle and extract the host. Two '@'s means a
+    # leading '@' plus user@host.
+    if "://" not in value and "@" in value:
+        parts = value.lstrip("@").split("@")
+        if len(parts) == 2 and parts[1]:
+            value = parts[1]
+
+    if "://" not in value:
+        value = f"https://{value}"
+
+    parts = urlsplit(value)
+    if not parts.netloc:
+        return ""
+    scheme = parts.scheme or "https"
+    return f"{scheme}://{parts.netloc}"
+
+
+def _resolve_mastodon_extra_creds(session_data):
+    """Resolve Mastodon instance-specific credentials from the OAuth session.
+
+    Returns a dict suitable for `_get_provider_for_platform(**extra_creds)`
+    containing `instance_url`, and `client_id`/`client_secret` when a matching
+    `MastodonAppRegistration` exists. Empty dict when no instance_url is set.
+    """
+    extra_creds: dict = {}
+    instance_url = (session_data or {}).get("instance_url", "")
+    if not instance_url:
+        return extra_creds
+
+    extra_creds["instance_url"] = instance_url
+    try:
+        reg = MastodonAppRegistration.objects.get(instance_url=instance_url)
+        extra_creds["client_id"] = reg.client_id
+        extra_creds["client_secret"] = reg.client_secret
+    except MastodonAppRegistration.DoesNotExist:
+        pass
+    return extra_creds
 
 
 # ------------------------------------------------------------------
@@ -255,15 +311,7 @@ def oauth_callback(request, platform):
         # For Mastodon, we need instance-specific credentials from session + registration
         extra_creds: dict = {}
         if platform == PlatformCredential.Platform.MASTODON:
-            instance_url = session_data.get("instance_url", "")
-            if instance_url:
-                extra_creds["instance_url"] = instance_url
-                try:
-                    reg = MastodonAppRegistration.objects.get(instance_url=instance_url)
-                    extra_creds["client_id"] = reg.client_id
-                    extra_creds["client_secret"] = reg.client_secret
-                except MastodonAppRegistration.DoesNotExist:
-                    pass
+            extra_creds = _resolve_mastodon_extra_creds(session_data)
 
         provider = _get_provider_for_platform(platform, request.org.id, **extra_creds)
         redirect_uri = _build_redirect_uri(request, platform)
@@ -308,6 +356,7 @@ def oauth_callback(request, platform):
             access_token=tokens.access_token,
             refresh_token=tokens.refresh_token,
             expires_in=tokens.expires_in,
+            instance_url=extra_creds.get("instance_url", ""),
         )
         messages.success(request, f"Connected {profile.name} successfully.")
 
@@ -472,7 +521,7 @@ def connect_mastodon(request, workspace_id):
             {"workspace_id": workspace_id},
         )
 
-    instance_url = request.POST.get("instance_url", "").strip().rstrip("/")
+    instance_url = _normalize_mastodon_instance_url(request.POST.get("instance_url", ""))
     if not instance_url:
         messages.error(request, "Instance URL is required.")
         return render(
@@ -480,10 +529,6 @@ def connect_mastodon(request, workspace_id):
             "social_accounts/mastodon_connect.html",
             {"workspace_id": workspace_id},
         )
-
-    # Normalize URL
-    if not instance_url.startswith(("http://", "https://")):
-        instance_url = f"https://{instance_url}"
 
     # Validate against SSRF - reject private/reserved IP ranges
     if not _is_safe_url(instance_url):
