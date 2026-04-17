@@ -218,6 +218,42 @@ img.sidebar-logo-mark {
   box-shadow: 0 0 0 3px var(--primary-ring);
 }
 
+/* Interactive element utilities — CSP-safe replacements for inline handlers */
+.btn-neutral {
+  transition: background var(--dur-fast) ease;
+}
+.btn-neutral:hover {
+  background: var(--neutral-200) !important;
+}
+
+.btn-neutral-surface:hover {
+  background: var(--neutral-50) !important;
+}
+
+.btn-danger-soft {
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.btn-danger-soft:hover {
+  background: var(--error-500, #EF4444) !important;
+  color: white !important;
+}
+
+.btn-opacity:hover {
+  opacity: 0.9;
+}
+
+.input-focus {
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+.input-focus:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px var(--primary-ring) !important;
+}
+.input-focus:not(:focus) {
+  border-color: var(--border);
+  box-shadow: none;
+}
+
 /* Form input base */
 .form-input-styled {
   font-family: var(--font-body);
