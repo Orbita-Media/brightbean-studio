@@ -18,6 +18,7 @@ def check_social_account_health(account_id: str):
     """
     from providers import get_provider
 
+    from .error_messages import friendly_health_check_error
     from .models import SocialAccount
 
     try:
@@ -76,7 +77,7 @@ def check_social_account_health(account_id: str):
         except Exception as e:
             logger.warning("Health check: token refresh failed for %s: %s", account, e)
             account.connection_status = SocialAccount.ConnectionStatus.TOKEN_EXPIRING
-            account.last_error = f"Token refresh failed: {e}"
+            account.last_error = friendly_health_check_error(e)
 
     # Validate token by fetching profile
     try:
@@ -88,7 +89,7 @@ def check_social_account_health(account_id: str):
     except Exception as e:
         logger.warning("Health check: profile fetch failed for %s: %s", account, e)
         account.connection_status = SocialAccount.ConnectionStatus.ERROR
-        account.last_error = f"Health check failed: {e}"
+        account.last_error = friendly_health_check_error(e)
 
     account.last_health_check_at = timezone.now()
     account.save(

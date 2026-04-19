@@ -63,7 +63,7 @@ class TestCheckSocialAccountHealth:
 
         account = SocialAccount.objects.get(pk=connected_account.pk)
         assert account.connection_status == SocialAccount.ConnectionStatus.ERROR
-        assert "Token expired" in account.last_error
+        assert account.last_error == "Connection check failed. Please try reconnecting."
 
     @patch("providers.get_provider")
     def test_token_refresh_on_expiring(self, mock_get_provider, connected_account):
