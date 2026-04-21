@@ -26,10 +26,10 @@ Single-Phase-Projekt zur Transformation der deployten BrightBean-Instanz zur fer
   5. Cloudflare WAF: direkter Aufruf von `/django-admin/` von nicht-Tailscale-IP ergibt 403/Block
   6. Alte Domain `brightbean.orbita-media.de` ist weg (oder leitet um)
 
-**Plans**: TBD (wird vom gsd-planner erstellt)
+**Plans**: 1 Plan mit 7 Tasks (coarse granularity, 3 Wellen, 5 parallel ausführbar)
 
 Plans:
-- [ ] 01-01: TBD
+- [ ] 01-01-PLAN.md — Orbita Social Launch: Rebranding + Domain-Migration + CF-Hardening + Dashboard-Kachel + Admin + Invite-Flow (7 Tasks, Welle 1/2/3)
 
 ## Progress
 
@@ -38,4 +38,4 @@ Phase 1 (single-phase milestone)
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Orbita Social Launch | 0/TBD | Not started | - |
+| 1. Orbita Social Launch | 0/1 | Not started | - |
