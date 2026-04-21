@@ -13,17 +13,17 @@
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
-  /* Brand Tokens - BrightBean Orange */
-  --brand-50:  #FFF7ED;
-  --brand-100: #FFEDD5;
-  --brand-200: #FED7AA;
-  --brand-300: #FDBA74;
-  --brand-400: #FB923C;
-  --brand-500: #F97316;
-  --brand-600: #EA580C;
-  --brand-700: #C2410C;
-  --brand-800: #9A3412;
-  --brand-900: #7C2D12;
+  /* Brand Tokens - Orbita Social Purple (#635BFF) */
+  --brand-50:  #F2F1FF;
+  --brand-100: #E5E3FF;
+  --brand-200: #CFCCFF;
+  --brand-300: #B0ABFF;
+  --brand-400: #8D86FF;
+  --brand-500: #635BFF;
+  --brand-600: #4C44E5;
+  --brand-700: #3E38B8;
+  --brand-800: #2E2A8A;
+  --brand-900: #1F1C5C;
 
   --brand-font-display: Georgia, 'Times New Roman', serif;
   --brand-font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
