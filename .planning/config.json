@@ -1,0 +1,57 @@
+{
+  "mode": "yolo",
+  "granularity": "coarse",
+  "workflow": {
+    "research": false,
+    "plan_check": false,
+    "verifier": true,
+    "auto_advance": true,
+    "nyquist_validation": false,
+    "security_enforcement": false,
+    "security_asvs_level": 1,
+    "security_block_on": "high",
+    "discuss_mode": "skip",
+    "research_before_questions": false,
+    "code_review_command": null,
+    "plan_bounce": false,
+    "plan_bounce_script": null,
+    "plan_bounce_passes": 2,
+    "cross_ai_execution": false,
+    "cross_ai_command": "",
+    "cross_ai_timeout": 300,
+    "_auto_chain_active": true
+  },
+  "planning": {
+    "commit_docs": true,
+    "search_gitignored": false,
+    "sub_repos": []
+  },
+  "parallelization": {
+    "enabled": true,
+    "plan_level": true,
+    "task_level": false,
+    "skip_checkpoints": true,
+    "max_concurrent_agents": 3,
+    "min_plans_for_parallel": 2
+  },
+  "gates": {
+    "confirm_project": false,
+    "confirm_phases": false,
+    "confirm_roadmap": false,
+    "confirm_breakdown": false,
+    "confirm_plan": false,
+    "execute_next_plan": false,
+    "issues_review": false,
+    "confirm_transition": false
+  },
+  "safety": {
+    "always_confirm_destructive": true,
+    "always_confirm_external_services": false
+  },
+  "hooks": {
+    "context_warnings": true
+  },
+  "project_code": "OSOC",
+  "agent_skills": {},
+  "claude_md_path": "./CLAUDE.md"
+}
