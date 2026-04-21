@@ -1,6 +1,15 @@
 from .base import *  # noqa: F401, F403
+from .base import MIDDLEWARE as _BASE_MIDDLEWARE
 
 DEBUG = False
+
+# CLEAN-01: Legacy-Domain-Redirect brightbean.orbita-media.de -> social.orbita-media.de
+# Wird ganz früh in der Middleware-Kette aktiv, vor Security-Redirect, damit der
+# Redirect auch bei HTTP-Requests korrekt auf HTTPS+neue Domain geht.
+MIDDLEWARE = [
+    "apps.common.middleware.LegacyDomainRedirectMiddleware",
+    *_BASE_MIDDLEWARE,
+]
 
 # Security
 SECURE_SSL_REDIRECT = True
