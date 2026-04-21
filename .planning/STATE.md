@@ -5,29 +5,29 @@
 See: .planning/PROJECT.md (updated 2026-04-21)
 
 **Core value:** Ein Ort für Social-Media-Management über 10 Plattformen, ohne SaaS-Gebühren, team-fähig
-**Current focus:** Phase 1 — Orbita Social Launch
+**Current focus:** Phase 1 — Orbita Social Launch (complete)
 
 ## Current Position
 
 Phase: 1 of 1 (Orbita Social Launch)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-04-21 — GSD-Projekt initialisiert, Phase 1 bereit für gsd-plan-phase
+Plan: 1 of 1 complete
+Status: Phase 1 abgeschlossen — Orbita Social ist live
+Last activity: 2026-04-21 — Plan 01-01 ausgeführt und deployed
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: —
-- Total execution time: —
+- Total plans completed: 1
+- Average duration: ~78 min
+- Total execution time: ~78 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1 | 0 | — | — |
+| 1 | 1 | 78 min | 78 min |
 
 ## Accumulated Context
 
@@ -40,24 +40,34 @@ Recent decisions affecting current work:
 - Name "Orbita Social", Domain `social.orbita-media.de`
 - Keine CF Access-Wall — BrightBean-Invite reicht für Team
 - Subdomain-Deployment (wie DittoFeed), nicht Dashboard-Iframe
+- **django-ses statt SMTP**: Existierender Dashboard-AWS-IAM-Key (AKIA2ADFOQAHLIYPXJNC) wird wiederverwendet, kein neuer SES-SMTP-User nötig
+- **App-Level Redirect-Middleware**: Statt CF Page Rule (Free-Plan 3-Rules-Limit), robuster + dauerhaft
+- **Beide Domains parallel**: social.* + brightbean.* in ALLOWED_HOSTS + docker_compose_domains für sanften Übergang (301-Redirect auf brightbean.* aktiv)
+- **Brand-Tokens auf Orbita-Purple**: #635BFF Purple statt #F97316 Orange — vollständiger Rebrand-Scope (nicht nur Templates)
 
 ### Pending Todos
 
-None yet.
+- Bot Fight Mode in CF-UI aktivieren (Noah, manueller Klick, API-Zugriff verweigert)
+- Noah: Temp-Passwort `lma6HvK_EPDtqhOhrN8-2LDiGT_rd3nz` nach erstem Login ändern
+- SES Sandbox-Status in eu-north-1 prüfen (für externe Empfänger)
+- brightbean.orbita-media.de DNS-Record nach 7 Tagen Beobachtungszeit entfernen
+- Coolify-App umbenennen "BrightBean Studio" → "Orbita Social" (kosmetisch)
+- OAuth-Apps für Social-Platforms in /django-admin/ (Meta, TikTok, LinkedIn, Pinterest, X)
 
 ### Blockers/Concerns
 
-- SES SMTP-Credentials fehlen noch — MAIL-01 hängt daran, deshalb auch INVITE-01
-- Name "Orbita Social" ist vorgeschlagen, vom User noch nicht explizit bestätigt (aber im Prompt so benannt)
+- Keine aktiven Blocker — Phase 1 ist live und funktional.
 
 ## Deferred Items
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| Security | Cloudflare Bot Fight Mode via UI aktivieren | Pending (Noah) | 2026-04-21 |
+| Cleanup | DNS-Record brightbean.* löschen | Pending (+7 Tage) | 2026-04-21 |
+| Cosmetic | Coolify-App umbenennen | Pending (Noah) | 2026-04-21 |
 
 ## Session Continuity
 
 Last session: 2026-04-21
-Stopped at: GSD-Struktur angelegt, bereit für /gsd-plan-phase 1
-Resume file: None
+Stopped at: Phase 1 Plan 01 fertig. Orbita Social live unter https://social.orbita-media.de
+Resume file: .planning/phases/01-orbita-social-launch/01-01-SUMMARY.md
