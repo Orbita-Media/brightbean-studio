@@ -46,3 +46,6 @@ factory-boy>=3.3,<4.0
 
 # Monitoring
 sentry-sdk[django]>=2.13,<3.0
+
+# Mail: Amazon SES via IAM-Key (statt SMTP-Credentials)
+django-ses>=4.7,<5.0

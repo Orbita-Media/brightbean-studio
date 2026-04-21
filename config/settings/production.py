@@ -51,3 +51,12 @@ LOGGING = {
         },
     },
 }
+
+# Mail: Amazon SES via django-ses (IAM-Key statt SMTP-Credentials)
+# django-ses liest AWS_ACCESS_KEY_ID und AWS_SECRET_ACCESS_KEY automatisch aus ENV.
+# Fallback auf SMTP wenn AWS_ACCESS_KEY_ID nicht gesetzt ist (Dev-Schutz).
+import os as _os
+if _os.environ.get("AWS_ACCESS_KEY_ID"):
+    EMAIL_BACKEND = "django_ses.SESBackend"
+    AWS_SES_REGION_NAME = _os.environ.get("AWS_DEFAULT_REGION", "eu-north-1")
+    AWS_SES_REGION_ENDPOINT = "email.eu-north-1.amazonaws.com"
