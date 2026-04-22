@@ -19,6 +19,7 @@ from .mastodon import MastodonProvider
 from .pinterest import PinterestProvider
 from .threads import ThreadsProvider
 from .tiktok import TikTokProvider
+from .x import XProvider
 from .youtube import YouTubeProvider
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ PROVIDER_REGISTRY: dict[str, type[SocialProvider]] = {
     "bluesky": BlueskyProvider,
     "google_business": GoogleBusinessProvider,
     "mastodon": MastodonProvider,
+    "x": XProvider,
 }
 
 

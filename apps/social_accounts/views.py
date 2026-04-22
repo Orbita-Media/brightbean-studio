@@ -190,7 +190,7 @@ def account_list(request, workspace_id):
 
 
 @csp_update(
-    FORM_ACTION="'self' https://accounts.google.com https://www.facebook.com https://api.instagram.com https://threads.net https://www.linkedin.com https://www.pinterest.com https://www.tiktok.com"
+    FORM_ACTION="'self' https://accounts.google.com https://www.facebook.com https://api.instagram.com https://threads.net https://www.linkedin.com https://www.pinterest.com https://www.tiktok.com https://twitter.com https://x.com"
 )
 @login_required
 @require_permission("manage_social_accounts")
@@ -315,7 +315,11 @@ def oauth_callback(request, platform):
 
         provider = _get_provider_for_platform(platform, request.org.id, **extra_creds)
         redirect_uri = _build_redirect_uri(request, platform)
-        tokens = provider.exchange_code(code, redirect_uri)
+        # X uses PKCE with state-derived code_verifier; pass state through
+        if platform == PlatformCredential.Platform.X:
+            tokens = provider.exchange_code(code, redirect_uri, state=state_str)
+        else:
+            tokens = provider.exchange_code(code, redirect_uri)
         profile = provider.get_profile(tokens.access_token)
 
         # Facebook/Instagram: only connect Pages, not personal profiles
@@ -608,7 +612,7 @@ def connect_mastodon(request, workspace_id):
 
 
 @csp_update(
-    FORM_ACTION="'self' https://accounts.google.com https://www.facebook.com https://api.instagram.com https://threads.net https://www.linkedin.com https://www.pinterest.com https://www.tiktok.com"
+    FORM_ACTION="'self' https://accounts.google.com https://www.facebook.com https://api.instagram.com https://threads.net https://www.linkedin.com https://www.pinterest.com https://www.tiktok.com https://twitter.com https://x.com"
 )
 @login_required
 @require_permission("manage_social_accounts")

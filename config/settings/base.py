@@ -330,6 +330,11 @@ PLATFORM_CREDENTIALS_FROM_ENV = {
         "app_id": env("PLATFORM_PINTEREST_APP_ID", default=""),
         "app_secret": env("PLATFORM_PINTEREST_APP_SECRET", default=""),
     },
+    # X (Twitter) - OAuth 2.0 with PKCE, Free-Tier-compatible
+    "x": {
+        "client_id": env("PLATFORM_X_CLIENT_ID", default=""),
+        "client_secret": env("PLATFORM_X_CLIENT_SECRET", default=""),
+    },
     # Bluesky - session-based auth (app passwords), no app-level credentials needed
     "bluesky": {},
     # Mastodon - instance-specific OAuth; credentials are registered per-instance

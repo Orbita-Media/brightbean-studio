@@ -20,6 +20,7 @@ class PlatformCredential(models.Model):
         BLUESKY = "bluesky", "Bluesky"
         GOOGLE_BUSINESS = "google_business", "Google Business Profile"
         MASTODON = "mastodon", "Mastodon"
+        X = "x", "X (Twitter)"
 
     class TestResult(models.TextChoices):
         SUCCESS = "success", "Success"
