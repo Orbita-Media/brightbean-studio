@@ -43,6 +43,7 @@ THIRD_PARTY_APPS = [
     "django_htmx",
     "tailwind",
     "csp",
+    "rest_framework",
     "apps.background_task_config.BackgroundTaskConfig",
 ]
 
@@ -63,6 +64,7 @@ LOCAL_APPS = [
     "apps.approvals",
     "apps.client_portal",
     "apps.onboarding",
+    "apps.api",
     "theme",
 ]
 
@@ -179,6 +181,12 @@ if STORAGE_BACKEND.lower() == "s3":
         "CacheControl": "max-age=86400",
     }
 else:
+    # Wichtig: STORAGES ersetzt Djangos Default komplett. Ohne expliziten
+    # "default"-Eintrag wirft jeder FileField-Save InvalidStorageError
+    # ("Could not find config for 'default' in settings.STORAGES").
+    STORAGES["default"] = {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    }
     MEDIA_ROOT = env("MEDIA_ROOT", default=str(BASE_DIR / "media"))
     MEDIA_URL = "/media/"
 
@@ -350,3 +358,23 @@ YOUTUBE_WEBHOOK_SECRET = env("YOUTUBE_WEBHOOK_SECRET", default="")
 # Rate limiting
 RATELIMIT_ENABLE = not DEBUG
 RATELIMIT_USE_CACHE = "default"
+
+# Django REST Framework - externe Content-API (apps.api)
+# Auth ausschließlich über Workspace-API-Keys (Bearer-Token), kein Session-Auth.
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.api.authentication.WorkspaceAPIKeyAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "apps.api.throttling.APIKeyRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "api_key": "120/min",
+    },
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+    ],
+}

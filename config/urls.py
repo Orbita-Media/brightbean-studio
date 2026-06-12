@@ -22,6 +22,8 @@ urlpatterns = [
     path("workspace/<uuid:workspace_id>/calendar/", include("apps.calendar.urls")),
     path("workspace/<uuid:workspace_id>/inbox/", include("apps.inbox.urls")),
     path("webhooks/", include("apps.inbox.webhook_urls")),
+    # Externe Content-API (Token-Auth über Workspace-API-Keys)
+    path("api/v1/", include("apps.api.urls")),
     # Approval Workflow (Stream F)
     path("workspace/<uuid:workspace_id>/", include("apps.approvals.urls")),
     # Client Portal Admin (workspace settings)
