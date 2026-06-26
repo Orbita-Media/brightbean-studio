@@ -422,7 +422,7 @@
 
                         <!-- Inline media dropzone -->
                         <input type="file" x-ref="fileInput" class="hidden" multiple
-                               accept="image/*,video/*"
+                               accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.webm"
                                @change="handleFileSelect($event)">
                         <div class="media-dropzone-inline"
                              @dragover.prevent="$el.classList.add('dragover')"
@@ -572,7 +572,7 @@
                                             </button>
                                             <input type="file"
                                                    :data-thumb-upload-for="accId"
-                                                   accept="image/jpeg,image/png"
+                                                   accept=".jpg,.jpeg,.png"
                                                    class="hidden thumb-upload-input"
                                                    @change="uploadThumbnail(accId, $event)">
                                             <button type="button"
@@ -631,7 +631,7 @@
                                 </button>
                                 <input type="file"
                                        :data-thumb-upload-for="accId"
-                                       accept="image/jpeg,image/png"
+                                       accept=".jpg,.jpeg,.png"
                                        class="hidden thumb-upload-input"
                                        @change="uploadThumbnail(accId, $event)">
                                 <button type="button"
