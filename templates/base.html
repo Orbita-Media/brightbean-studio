@@ -477,7 +477,7 @@
                                 <div class="idea-modal-body" @click="createGroupDropdownOpen = false; createTagDropdownOpen = false">
                                     <input type="text" name="title" required class="idea-title-input" placeholder="Give your idea a title">
                                     <textarea name="description" class="idea-desc-input" placeholder="Let it flow... or"></textarea>
-                                    <input type="file" name="media" x-ref="sidebarIdeaFileInput" accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.webm" style="display:none" multiple
+                                    <input type="file" name="media" x-ref="sidebarIdeaFileInput" data-img-accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.webm" style="display:none" multiple
                                            @change="_handleFileSelect($event)">
 
                                     <div class="idea-media-strip-layout">
@@ -913,6 +913,34 @@
                 fp.altInput.placeholder = el.getAttribute('data-placeholder') || 'Select time…';
             });
         });
+    </script>
+    <script nonce="{{ request.csp_nonce }}">
+        /*
+         * Mobile-Fix fuer Bild-/Media-Uploads: Auf Android oeffnet ein
+         * accept-Attribut mit Bild-/Video-Endungen nur die Foto-Galerie statt
+         * des Datei-Browsers (Drive, Downloads). Deshalb wird der Filter NUR
+         * auf Nicht-Mobilgeraeten gesetzt. Die Endungen stehen in
+         * data-img-accept; der Server validiert den Dateityp ohnehin.
+         * Laeuft initial und nach jedem HTMX-Swap (dynamisch geladene
+         * Partials wie das Kommentar-Formular).
+         */
+        (function() {
+            var isMobile = /Android|iPhone|iPad|iPod|Mobile|Tablet/i.test(navigator.userAgent);
+            function applyDesktopAccept() {
+                if (isMobile) return; // Mobil: kein accept -> voller Datei-Browser
+                document.querySelectorAll('input[type="file"][data-img-accept]').forEach(function(input) {
+                    if (input.getAttribute('accept')) return; // schon gesetzt
+                    var val = input.getAttribute('data-img-accept');
+                    if (val) input.setAttribute('accept', val);
+                });
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', applyDesktopAccept);
+            } else {
+                applyDesktopAccept();
+            }
+            document.body.addEventListener('htmx:afterSettle', applyDesktopAccept);
+        })();
     </script>
     {% if request.workspace %}
     <script nonce="{{ request.csp_nonce }}">

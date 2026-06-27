@@ -45,7 +45,7 @@
                    style="border: 1px solid var(--border); color: var(--text-primary); background: var(--surface-0);">
                 <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                 Upload Photo
-                <input type="file" name="avatar" accept=".jpg,.jpeg,.png,.webp,.gif" class="hidden" x-ref="avatarInput"
+                <input type="file" name="avatar" data-img-accept=".jpg,.jpeg,.png,.webp,.gif" class="hidden" x-ref="avatarInput"
                        @change="if ($el.files[0]) { preview = URL.createObjectURL($el.files[0]); fileName = $el.files[0].name; hasExisting = true; $el.closest('form').requestSubmit(); }">
             </label>
         </div>

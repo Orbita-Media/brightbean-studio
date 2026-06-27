@@ -235,7 +235,7 @@
         Upload
       </button>
       <input type="file" x-ref="fileInput" @change="handleFiles($event.target.files)" multiple
-             accept="{{ accepted_file_types }}" class="hidden">
+             data-img-accept="{{ accepted_file_types }}" class="hidden">
     </div>
 
     <!-- ── Upload Dropzone / Progress ── -->
