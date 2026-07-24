@@ -25,6 +25,9 @@ class TestProviderRegistry:
             "google_business",
             "mastodon",
             "devto",
+            # Orbita-eigener Provider (providers/x.py), im Upstream nicht
+            # vorhanden. Beim naechsten Upstream-Merge stehen bleiben lassen.
+            "x",
         }
         assert set(PROVIDER_REGISTRY.keys()) == expected
 
