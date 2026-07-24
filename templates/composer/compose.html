@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% load static %}
+{% load common_extras %}
 
 {% block title %}{% if is_edit %}Edit Post{% else %}New Post{% endif %} - {{ workspace.name }} - Orbita Social{% endblock %}
 
@@ -148,15 +149,18 @@
         box-shadow: 0 0 0 3px rgba(249,115,22,0.1);
     }
 
-    /* Media dropzone - compact inline version */
+    /* Media dropzone - square tile, first in the media row */
     .media-dropzone-inline {
+        width: 96px; height: 96px;
         border: 1.5px dashed #D6D3D1;
         border-radius: 8px;
-        padding: 8px 12px;
-        display: flex; align-items: center; gap: 8px;
+        padding: 8px;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        gap: 4px; text-align: center;
         transition: all 200ms ease;
         cursor: pointer;
-        margin: 0 16px 12px;
+        flex-shrink: 0;
     }
     .media-dropzone-inline:hover,
     .media-dropzone-inline.dragover {
@@ -164,9 +168,22 @@
         background: #FFF7ED;
     }
 
+    /* Unsplash icon button next to the dropzone - bare logo mark, no tile */
+    .media-unsplash-btn {
+        height: 96px;
+        padding: 0 6px;
+        display: flex; align-items: center; justify-content: center;
+        background: transparent; border: none;
+        color: #44403C;
+        cursor: pointer;
+        transition: color 150ms ease;
+        flex-shrink: 0;
+    }
+    .media-unsplash-btn:hover { color: #1C1917; }
+
     /* Media thumbnail grid */
     .media-thumb {
-        width: 56px; height: 56px;
+        width: 96px; height: 96px;
         border-radius: 8px;
         overflow: hidden;
         position: relative;
@@ -174,8 +191,8 @@
     }
     .media-thumb img { width: 100%; height: 100%; object-fit: cover; }
     .media-thumb .remove-btn {
-        position: absolute; top: 3px; right: 3px;
-        width: 18px; height: 18px; border-radius: 50%;
+        position: absolute; top: 4px; right: 4px;
+        width: 20px; height: 20px; border-radius: 50%;
         background: rgba(0,0,0,0.55); color: white;
         display: flex; align-items: center; justify-content: center;
         font-size: 10px; cursor: pointer;
@@ -268,7 +285,7 @@
 
     <!-- Page header -->
     <div class="flex items-center gap-3 px-4 sm:px-6 py-3 border-b border-stone-100 flex-shrink-0">
-        <button onclick="if (document.referrer && document.referrer.startsWith(location.origin)) { history.back(); } else { location.href='{% url 'composer:create_landing' workspace_id=workspace.id %}'; }"
+        <button @click="if (document.referrer && document.referrer.startsWith(location.origin)) { history.back(); } else { location.href='{% url 'composer:create_landing' workspace_id=workspace.id %}'; }"
                 class="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-stone-200 text-stone-400 hover:text-stone-700 hover:border-stone-300 hover:bg-stone-50 transition-all duration-150 cursor-pointer">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
         </button>
@@ -299,6 +316,11 @@
               @htmx:after-request="onFormSaved($event)"
               class="flex flex-col flex-1 min-h-0">
             <input type="hidden" name="selected_accounts" :value="selectedAccounts.join(',')">
+            {% if account_scope %}
+            <!-- Composer opened scoped to one account (?account=) — save endpoints
+                 must not delete/transition platform posts outside this scope. -->
+            <input type="hidden" name="account_scope" value="{{ account_scope }}">
+            {% endif %}
 
             <div class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-5 panel-scroll relative" style="z-index: 0;">
 
@@ -329,6 +351,54 @@
                     <span class="text-xs text-stone-400">No accounts connected</span>
                     {% endfor %}
                 </div>
+
+                {% if failed_platform_posts %}
+                <!-- Publish failures: show the stored error so the user knows what to fix before retrying -->
+                <div class="border border-red-200 bg-red-50 rounded-xl p-3 space-y-1.5">
+                    <div class="flex items-center gap-1.5 text-xs font-semibold text-red-700">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+                        Publishing failed
+                    </div>
+                    {% for pp in failed_platform_posts %}
+                    <p class="text-xs text-red-600 pl-5.5">
+                        <span class="font-semibold">{{ pp.social_account.account_name|default:pp.social_account.account_handle }}:</span>
+                        {{ pp.publish_error }}
+                    </p>
+                    {% endfor %}
+                    {% if post %}
+                    <div class="pt-1 pl-5.5">
+                        <button type="button"
+                                class="text-xs font-semibold text-red-700 hover:text-red-900 underline underline-offset-2"
+                                hx-post="{% url 'composer:clone_post' workspace_id=workspace.id post_id=post.id %}"
+                                title="Open an editable draft copy to fix and re-queue">
+                            Clone to retry →
+                        </button>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if post and post.status == 'scheduled' %}
+                <!-- Scheduled: editable, but warn that edits affect a live schedule -->
+                <div class="border border-amber-200 bg-amber-50 rounded-xl p-3 flex items-start gap-2">
+                    <svg class="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+                    <p class="text-xs text-amber-700">This post is <span class="font-semibold">scheduled</span>. Saving changes will affect the scheduled post.</p>
+                </div>
+                {% elif post and post.status == 'published' or post and post.status == 'partially_published' or post and post.status == 'publishing' %}
+                <!-- Published / publishing: read-only; Clone to repost an editable copy -->
+                <div class="border border-stone-200 bg-stone-50 rounded-xl p-3 flex items-start justify-between gap-3">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-4 h-4 text-stone-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+                        <p class="text-xs text-stone-600">This post is <span class="font-semibold">{{ post.get_status_display|default:post.status }}</span> and read-only. Use <span class="font-semibold">Clone</span> to repost an editable copy.</p>
+                    </div>
+                    <button type="button"
+                            class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-stone-800 text-white hover:bg-stone-900 flex-shrink-0 cursor-pointer"
+                            hx-post="{% url 'composer:clone_post' workspace_id=workspace.id post_id=post.id %}"
+                            title="Create an editable draft copy">
+                        Clone
+                    </button>
+                </div>
+                {% endif %}
 
                 <!-- Title (conditional - only when YouTube/Pinterest selected) -->
                 <div x-show="anyPlatformNeedsTitle" x-transition x-cloak>
@@ -387,18 +457,22 @@
                                 </div>
                             </div>
                             {% endif %}
-                            <button type="button" @click="showTemplatePicker = !showTemplatePicker"
+                            <button type="button"
+                                    @click="showTemplatePicker = !showTemplatePicker; if (showTemplatePicker) $nextTick(() => htmx.trigger($refs.templatePicker, 'load-picker'))"
                                     class="text-xs font-semibold py-1.5 px-3 rounded-full border border-stone-200 text-stone-500 hover:border-stone-300 hover:text-stone-700 transition-colors flex items-center gap-1">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                                 Use Template
                             </button>
                             <!-- Template picker modal -->
-                            <div x-show="showTemplatePicker" x-cloak x-transition
+                            <!-- hx-swap="innerHTML" is explicit because composer-form ancestor sets hx-swap="none" -->
+                            <div x-ref="templatePicker"
+                                 x-show="showTemplatePicker" x-cloak x-transition
                                  @click.outside="showTemplatePicker = false"
                                  class="absolute z-50 top-full mt-1 right-0 bg-white rounded-xl shadow-lg ring-1 ring-stone-200 w-80 max-w-[calc(100vw-2rem)] max-h-80 overflow-y-auto"
                                  hx-get="{% url 'composer:template_picker' workspace_id=workspace.id %}"
-                                 hx-trigger="intersect once"
-                                 hx-target="this">
+                                 hx-trigger="load-picker, templateSaved from:body, templateChanged from:body"
+                                 hx-target="this"
+                                 hx-swap="innerHTML">
                                 <div class="p-4 text-center text-xs text-stone-400">Loading templates…</div>
                             </div>
                         </div>
@@ -411,26 +485,33 @@
                                   @input="debouncedPreviewUpdate()"
                                   rows="7">{{ form.caption.value|default:"" }}</textarea>
 
-                        <!-- Attached media thumbnails (inside caption area) -->
-                        <div id="media-list" class="flex flex-wrap gap-2 px-4 pb-2">
-                            {% if post %}
-                                {% include "composer/partials/media_list.html" %}
-                            {% elif pending_assets %}
-                                {% include "composer/partials/media_list_pending.html" %}
+                        <!-- Media row: dropzone tile + Unsplash tile + attached thumbnails -->
+                        <div class="flex flex-wrap items-start gap-2 px-4 pb-3">
+                            <input type="file" x-ref="fileInput" class="hidden" multiple
+                                   data-img-accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.webm"
+                                   @change="handleFileSelect($event)">
+                            <div class="media-dropzone-inline"
+                                 @dragover.prevent="$el.classList.add('dragover')"
+                                 @dragleave="$el.classList.remove('dragover')"
+                                 @drop.prevent="handleFileDrop($event); $el.classList.remove('dragover')"
+                                 @click="$refs.fileInput.click()">
+                                <svg class="w-6 h-6 text-stone-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                <span class="text-[11px] text-stone-400 leading-tight">Drag & drop or <span class="text-orange-500 font-medium">select files</span></span>
+                            </div>
+                            {% if unsplash_enabled %}
+                            <button type="button" class="media-unsplash-btn" title="Search Unsplash"
+                                    @click="openUnsplashModal()">
+                                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.5 6.75V0h9v6.75h-9zm9 3.75H24V24H0V10.5h7.5v6.75h9V10.5z"/></svg>
+                            </button>
                             {% endif %}
-                        </div>
-
-                        <!-- Inline media dropzone -->
-                        <input type="file" x-ref="fileInput" class="hidden" multiple
-                               data-img-accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.webm"
-                               @change="handleFileSelect($event)">
-                        <div class="media-dropzone-inline"
-                             @dragover.prevent="$el.classList.add('dragover')"
-                             @dragleave="$el.classList.remove('dragover')"
-                             @drop.prevent="handleFileDrop($event); $el.classList.remove('dragover')"
-                             @click="$refs.fileInput.click()">
-                            <svg class="w-5 h-5 text-stone-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                            <span class="text-xs text-stone-400">Drag & drop or <span class="text-orange-500 font-medium">select files</span></span>
+                            <!-- display:contents keeps appended thumbs flowing in this row -->
+                            <div id="media-list" class="contents">
+                                {% if post %}
+                                    {% include "composer/partials/media_list.html" %}
+                                {% elif pending_assets %}
+                                    {% include "composer/partials/media_list_pending.html" %}
+                                {% endif %}
+                            </div>
                         </div>
 
                         <!-- Bottom bar: media library + char counter -->
@@ -604,47 +685,46 @@
                             <input type="hidden"
                                    :name="'yt_thumbnail_asset_id_' + accId"
                                    :value="platformExtras[accId]?.thumbnail_asset_id || ''">
-                            <template x-if="platformExtras[accId]?.thumbnail_url">
-                                <div class="mb-2">
-                                    <img :src="platformExtras[accId].thumbnail_url"
-                                         class="w-full max-w-[240px] aspect-video object-cover rounded-lg border border-stone-200">
-                                </div>
-                            </template>
-                            <template x-if="!platformExtras[accId]?.thumbnail_url">
-                                <div class="mb-2 w-full max-w-[240px] aspect-video rounded-lg border-2 border-dashed border-stone-200 bg-stone-50 flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-orange-300 hover:bg-orange-50 transition-colors"
-                                     @click="triggerThumbnailUpload(accId)">
-                                    <svg class="w-6 h-6 text-stone-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    <span class="text-[11px] text-stone-400">Click to upload thumbnail</span>
-                                </div>
-                            </template>
-                            <div class="flex items-center gap-2">
-                                <button type="button"
-                                        @click="openThumbnailPicker(accId)"
-                                        class="text-xs font-medium px-3 py-1.5 rounded-lg border border-stone-200 text-stone-700 hover:border-orange-400 hover:text-orange-600 transition-all cursor-pointer">
-                                    <span x-text="platformExtras[accId]?.thumbnail_asset_id ? 'Change' : 'Pick from Library'"></span>
-                                </button>
-                                <button type="button"
-                                        @click="triggerThumbnailUpload(accId)"
-                                        :disabled="thumbnailUploading[accId]"
-                                        class="text-xs font-medium px-3 py-1.5 rounded-lg border border-stone-200 text-stone-700 hover:border-orange-400 hover:text-orange-600 transition-all disabled:opacity-50 cursor-pointer">
-                                    <span x-text="thumbnailUploading[accId] ? 'Uploading…' : 'Upload'"></span>
-                                </button>
-                                <input type="file"
-                                       :data-thumb-upload-for="accId"
-                                       data-img-accept=".jpg,.jpeg,.png"
-                                       class="hidden thumb-upload-input"
-                                       @change="uploadThumbnail(accId, $event)">
-                                <button type="button"
-                                        x-show="platformExtras[accId]?.thumbnail_asset_id"
-                                        @click="clearThumbnail(accId)"
-                                        class="text-xs text-stone-400 hover:text-red-500 cursor-pointer">Remove</button>
+                            <div class="flex items-stretch gap-3">
+                                {% include "composer/partials/choose_from_video_card.html" with mode="upload" %}
+                                <template x-if="!platformExtras[accId]?.thumbnail_url">
+                                    <div class="flex-1 max-w-[480px] rounded-lg border-2 border-dashed border-stone-200 bg-stone-50 flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-orange-300 hover:bg-orange-50 transition-colors min-h-[104px]"
+                                         @dragover.prevent="$el.classList.add('border-orange-400', 'bg-orange-50')"
+                                         @dragleave="$el.classList.remove('border-orange-400', 'bg-orange-50')"
+                                         @drop.prevent="handleThumbnailDrop(accId, $event); $el.classList.remove('border-orange-400', 'bg-orange-50')"
+                                         @click="triggerThumbnailUpload(accId)">
+                                        <svg class="w-6 h-6 text-stone-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        <span class="text-[11px] text-stone-400" x-text="thumbnailUploading[accId] ? 'Uploading…' : 'Drag & drop a thumbnail'"></span>
+                                    </div>
+                                </template>
+                                <template x-if="platformExtras[accId]?.thumbnail_url">
+                                    <div class="relative flex-shrink-0">
+                                        <img :src="platformExtras[accId].thumbnail_url"
+                                             class="h-[104px] w-auto max-w-[480px] object-cover rounded-lg border border-stone-200">
+                                        <button type="button" @click="clearThumbnail(accId)"
+                                                title="Remove thumbnail"
+                                                class="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/55 hover:bg-red-500 text-white flex items-center justify-center transition-colors cursor-pointer">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"/></svg>
+                                        </button>
+                                    </div>
+                                </template>
                             </div>
+                            <input type="file"
+                                   :data-thumb-upload-for="accId"
+                                   data-img-accept=".jpg,.jpeg,.png"
+                                   class="hidden thumb-upload-input"
+                                   @change="uploadThumbnail(accId, $event)">
+                            <button type="button" @click="openThumbnailPicker(accId)"
+                                    class="mt-2 text-xs font-medium text-stone-400 hover:text-orange-600 transition-colors flex items-center gap-1.5 cursor-pointer">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                                Media Library
+                            </button>
                         </div>
                         <!-- Visibility -->
                         <div>
                             <label class="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1">Visibility</label>
                             <select :name="'yt_privacy_status_' + accId"
-                                    class="w-full text-sm px-3 py-2 rounded-lg border border-stone-200 bg-white outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 transition-all">
+                                    class="bb-select w-full text-sm px-3 py-2 rounded-lg border border-stone-200 bg-white outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 transition-all">
                                 <option value="public" :selected="(platformExtras[accId]?.privacy_status || 'public') === 'public'">Public</option>
                                 <option value="unlisted" :selected="platformExtras[accId]?.privacy_status === 'unlisted'">Unlisted</option>
                                 <option value="private" :selected="platformExtras[accId]?.privacy_status === 'private'">Private</option>
@@ -687,6 +767,309 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+                </template>
+
+                <!-- TikTok settings (auto-visible when any TikTok account is selected) -->
+                <template x-for="accId in selectedAccounts" :key="'tt-settings-' + accId">
+                    <div x-show="charLimits[accId]?.platform === 'tiktok'"
+                         x-data="{
+                             tt: null,
+                             ttLoading: false,
+                             ttLoaded: false,
+                             ttPrivacy: platformExtras[accId]?.privacy_level || '',
+                             ttAllowComment: platformExtras[accId]?.disable_comment === false,
+                             ttAllowDuet: platformExtras[accId]?.disable_duet === false,
+                             ttAllowStitch: platformExtras[accId]?.disable_stitch === false,
+                             ttDisclose: !!(platformExtras[accId]?.brand_organic_toggle || platformExtras[accId]?.brand_content_toggle),
+                             ttBrandOrganic: !!platformExtras[accId]?.brand_organic_toggle,
+                             ttBrandContent: !!platformExtras[accId]?.brand_content_toggle,
+                             ttAigc: !!platformExtras[accId]?.is_aigc,
+                             get ttOptions() {
+                                 const fromApi = this.tt?.privacy_level_options || [];
+                                 return fromApi.length ? fromApi : ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'SELF_ONLY'];
+                             },
+                             get ttSelfOnlyLocked() {
+                                 const opts = this.tt?.privacy_level_options || [];
+                                 return this.ttLoaded && opts.length === 1 && opts[0] === 'SELF_ONLY';
+                             },
+                             ttLabel(level) {
+                                 return ({
+                                     PUBLIC_TO_EVERYONE: 'Everyone',
+                                     MUTUAL_FOLLOW_FRIENDS: 'Friends',
+                                     FOLLOWER_OF_CREATOR: 'Followers',
+                                     SELF_ONLY: 'Only you',
+                                 })[level] || level;
+                             },
+                             get ttLabelPrompt() {
+                                 if (this.ttBrandContent) return `Your photo/video will be labeled as 'Paid partnership'`;
+                                 if (this.ttBrandOrganic) return `Your photo/video will be labeled as 'Promotional content'`;
+                                 return '';
+                             },
+                             get ttBrandingBlocked() {
+                                 return this.ttSelfOnlyLocked || this.ttPrivacy === 'SELF_ONLY';
+                             },
+                             enforceBrandingLock() {
+                                 if (this.ttBrandingBlocked && this.ttBrandContent) {
+                                     this.ttBrandContent = false;
+                                     if (!this.ttBrandOrganic) this.ttDisclose = false;
+                                 }
+                             },
+                         }"
+                         x-init="enforceBrandingLock();
+                                 $watch('ttBrandingBlocked', () => enforceBrandingLock())"
+                         x-effect="if (charLimits[accId]?.platform === 'tiktok' && !ttLoaded && !ttLoading) {
+                             ttLoading = true;
+                             fetch(`/workspace/{{ workspace.id }}/compose/tiktok-creator-info/${accId}/`)
+                                 .then(r => r.ok ? r.json() : null)
+                                 .then(data => {
+                                     if (data) {
+                                         tt = data;
+                                         if (data.comment_disabled) ttAllowComment = false;
+                                         if (data.duet_disabled) ttAllowDuet = false;
+                                         if (data.stitch_disabled) ttAllowStitch = false;
+                                         const opts = data.privacy_level_options || [];
+                                         if (!ttPrivacy && opts.length === 1 && opts[0] === 'SELF_ONLY') ttPrivacy = 'SELF_ONLY';
+                                         if (ttPrivacy && opts.length && !opts.includes(ttPrivacy)) ttPrivacy = '';
+                                     }
+                                     ttLoaded = true;
+                                 })
+                                 .catch(() => { ttLoaded = true; })
+                                 .finally(() => { ttLoading = false; });
+                         }"
+                         class="border border-stone-200 rounded-xl bg-white p-4 space-y-3">
+                        <div class="flex items-center gap-2">
+                            <span class="platform-icon w-5 h-5 rounded-[5px] flex items-center justify-center"
+                                  :class="'pi-' + (charLimits[accId]?.platform || '')"
+                                  x-html="platformIconSvg(charLimits[accId]?.platform || '')"></span>
+                            <span class="text-xs font-semibold text-stone-600" x-text="charLimits[accId]?.name + ' - Post Settings'"></span>
+                            <span class="ml-auto text-[11px] text-stone-400" x-show="tt?.creator_nickname" x-text="'Posting to @' + (tt?.creator_nickname || '')"></span>
+                        </div>
+                        <!-- Privacy: TikTok requires an explicit choice from the creator's allowed options -->
+                        <div>
+                            <label class="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1">
+                                Who can see this post <span class="text-red-400">*</span>
+                            </label>
+                            <!-- Custom dropdown (not a native <select>): native <option>s never
+                                 render a hover tooltip, so the disabled "Only you" option couldn't
+                                 show TikTok's required prompt. A button + listbox lets each option
+                                 carry a real disabled state and hover tooltip. -->
+                            <div class="relative"
+                                 @focusout="if (! $el.contains($event.relatedTarget)) open = false"
+                                 x-data="{
+                                     open: false,
+                                     openMenu() {
+                                         this.open = true;
+                                         this.$nextTick(() => {
+                                             const list = this.$refs.list;
+                                             (list?.querySelector('button[role=option][aria-selected=true]:not([disabled])')
+                                               || list?.querySelector('button[role=option]:not([disabled])'))?.focus();
+                                         });
+                                     },
+                                     moveFocus(dir) {
+                                         const opts = [...(this.$refs.list?.querySelectorAll('button[role=option]:not([disabled])') || [])];
+                                         if (! opts.length) return;
+                                         const i = opts.indexOf(document.activeElement);
+                                         (opts[(i + dir + opts.length) % opts.length] || opts[0]).focus();
+                                     }
+                                 }">
+                                <button type="button"
+                                        x-ref="trigger"
+                                        @click="open ? (open = false) : openMenu()"
+                                        @keydown.arrow-down.prevent="openMenu()"
+                                        @keydown.arrow-up.prevent="openMenu()"
+                                        :aria-expanded="open"
+                                        aria-haspopup="listbox"
+                                        class="w-full text-sm px-3 py-2 rounded-lg border border-stone-200 bg-white outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 transition-all flex items-center justify-between gap-2 text-left cursor-pointer">
+                                    <span :class="ttPrivacy ? 'text-stone-800' : 'text-stone-400'"
+                                          x-text="ttPrivacy ? ttLabel(ttPrivacy) : 'Select who can view this post'"></span>
+                                    <svg class="w-4 h-4 text-stone-400 flex-shrink-0 transition-transform" :class="open && 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                                </button>
+                                <ul x-show="open" x-cloak x-transition
+                                    x-ref="list"
+                                    @click.outside="open = false"
+                                    @keydown.escape.window="if (open) { open = false; $refs.trigger.focus(); }"
+                                    @keydown.arrow-down.prevent="moveFocus(1)"
+                                    @keydown.arrow-up.prevent="moveFocus(-1)"
+                                    @keydown.home.prevent="$refs.list.querySelector('button[role=option]:not([disabled])')?.focus()"
+                                    @keydown.end.prevent="[...$refs.list.querySelectorAll('button[role=option]:not([disabled])')].pop()?.focus()"
+                                    role="listbox"
+                                    class="absolute z-50 top-full mt-1 left-0 w-full bg-white rounded-lg shadow-lg ring-1 ring-stone-200 py-1">
+                                    <template x-for="lvl in ttOptions" :key="lvl">
+                                        <li class="relative group">
+                                            <button type="button"
+                                                    role="option"
+                                                    tabindex="-1"
+                                                    :aria-selected="ttPrivacy === lvl"
+                                                    :aria-disabled="ttBrandContent && lvl === 'SELF_ONLY'"
+                                                    :disabled="ttBrandContent && lvl === 'SELF_ONLY'"
+                                                    @click="ttPrivacy = lvl; open = false; $refs.trigger.focus()"
+                                                    class="w-full text-left text-sm px-3 py-2 flex items-center justify-between gap-2 transition-colors"
+                                                    :class="(ttBrandContent && lvl === 'SELF_ONLY') ? 'opacity-40 cursor-not-allowed' : 'hover:bg-stone-50 cursor-pointer'">
+                                                <span x-text="ttLabel(lvl)"></span>
+                                                <svg x-show="ttPrivacy === lvl" class="w-4 h-4 text-orange-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                                            </button>
+                                            <!-- Required hover prompt for the disabled private option (mouse); the
+                                                 always-visible note below the dropdown covers keyboard/SR users. -->
+                                            <span x-show="ttBrandContent && lvl === 'SELF_ONLY'"
+                                                  class="pointer-events-none absolute left-3 -top-6 opacity-0 group-hover:opacity-100 transition-opacity bg-stone-800 text-white text-[11px] rounded px-2 py-1 whitespace-nowrap z-50 shadow">
+                                                Branded content visibility cannot be set to private.
+                                            </span>
+                                        </li>
+                                    </template>
+                                </ul>
+                                <!-- Mirror input carries the value to the form and enforces the
+                                     required gate now that the native <select> is gone (same
+                                     sr-only pattern as the disclosure gate further below). -->
+                                <input type="text" :name="'tiktok_privacy_level_' + accId" :value="ttPrivacy"
+                                       :required="charLimits[accId]?.platform === 'tiktok' && selectedAccounts.includes(accId)"
+                                       tabindex="-1" aria-hidden="true" class="sr-only">
+                            </div>
+                            <p x-show="ttLoading" class="text-[11px] text-stone-400 mt-1">Loading account settings…</p>
+                            <p x-show="ttSelfOnlyLocked" class="text-[11px] text-amber-600 mt-1">
+                                This TikTok app hasn't passed TikTok's content audit yet — only private posting ("Only you") is available until the audit is approved.
+                            </p>
+                            <p x-show="ttBrandContent" class="text-[11px] text-stone-400 mt-1">Branded content visibility cannot be set to private.</p>
+                        </div>
+                        <!-- Cover: TikTok takes a frame timestamp, not an uploaded image -->
+                        <div>
+                            <label class="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1.5">Cover</label>
+                            <input type="hidden"
+                                   :name="'tiktok_video_cover_timestamp_ms_' + accId"
+                                   :value="platformExtras[accId]?.video_cover_timestamp_ms ?? ''">
+                            <div class="flex items-stretch gap-3">
+                                {% include "composer/partials/choose_from_video_card.html" with mode="timestamp" %}
+                                <template x-if="tiktokCoverPreview[accId]">
+                                    <div class="relative flex-shrink-0">
+                                        <img :src="tiktokCoverPreview[accId]"
+                                             class="h-[104px] w-auto max-w-[480px] object-cover rounded-lg border border-stone-200">
+                                        <button type="button" @click="clearTiktokCover(accId)"
+                                                title="Reset to default cover"
+                                                class="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/55 hover:bg-red-500 text-white flex items-center justify-center transition-colors cursor-pointer">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"/></svg>
+                                        </button>
+                                    </div>
+                                </template>
+                                <template x-if="!tiktokCoverPreview[accId] && (platformExtras[accId]?.video_cover_timestamp_ms ?? null) !== null">
+                                    <div class="relative flex-1 max-w-[480px] rounded-lg border border-stone-200 bg-stone-50 flex items-center justify-center min-h-[104px]">
+                                        <span class="text-xs text-stone-500 font-medium tabular-nums"
+                                              x-text="'Cover at ' + formatTimecode((platformExtras[accId]?.video_cover_timestamp_ms || 0) / 1000)"></span>
+                                        <button type="button" @click="clearTiktokCover(accId)"
+                                                title="Reset to default cover"
+                                                class="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/55 hover:bg-red-500 text-white flex items-center justify-center transition-colors cursor-pointer">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"/></svg>
+                                        </button>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        <!-- Interaction abilities — separate per-interaction toggles.
+                             TikTok requires an independent checkbox per interaction,
+                             greyed out individually when disabled in creator settings. -->
+                        <div>
+                            <label class="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1.5">Allow users to:</label>
+                            <div class="space-y-2">
+                                <label class="flex items-center gap-2" :class="tt?.comment_disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'">
+                                    <input type="checkbox" :name="'tiktok_allow_comment_' + accId" value="true"
+                                           x-model="ttAllowComment" :disabled="!!tt?.comment_disabled"
+                                           class="bb-checkbox w-4 h-4 rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">Comment</span>
+                                </label>
+                                <label class="flex items-center gap-2" :class="tt?.duet_disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'">
+                                    <input type="checkbox" :name="'tiktok_allow_duet_' + accId" value="true"
+                                           x-model="ttAllowDuet" :disabled="!!tt?.duet_disabled"
+                                           class="bb-checkbox w-4 h-4 rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">Duet</span>
+                                </label>
+                                <label class="flex items-center gap-2" :class="tt?.stitch_disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'">
+                                    <input type="checkbox" :name="'tiktok_allow_stitch_' + accId" value="true"
+                                           x-model="ttAllowStitch" :disabled="!!tt?.stitch_disabled"
+                                           class="bb-checkbox w-4 h-4 rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">Stitch</span>
+                                </label>
+                            </div>
+                        </div>
+                        <!-- Commercial content disclosure -->
+                        <div class="border-t border-stone-100 pt-3">
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-sm text-stone-700">
+                                    Disclose post content
+                                    <span class="block text-[11px] text-stone-400 font-normal">Let others know this post promotes a brand, product or service.</span>
+                                </span>
+                                <label class="bb-toggle mt-0.5">
+                                    <input type="checkbox" x-model="ttDisclose"
+                                           @change="if (!ttDisclose) { ttBrandOrganic = false; ttBrandContent = false; }">
+                                    <span class="bb-toggle-track"></span>
+                                </label>
+                            </div>
+                            <div x-show="ttDisclose" x-transition class="mt-2 space-y-2">
+                                <label class="flex items-start gap-2 cursor-pointer">
+                                    <input type="checkbox" :name="'tiktok_brand_organic_' + accId" value="true"
+                                           x-model="ttBrandOrganic"
+                                           class="bb-checkbox w-4 h-4 mt-0.5 rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">
+                                        Your brand
+                                        <span class="block text-[11px] text-stone-400 font-normal">You are promoting yourself or your own business.</span>
+                                    </span>
+                                </label>
+                                <label class="flex items-start gap-2"
+                                       :class="ttBrandingBlocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'">
+                                    <input type="checkbox" :name="'tiktok_brand_content_' + accId" value="true"
+                                           x-model="ttBrandContent"
+                                           :disabled="ttBrandingBlocked"
+                                           class="bb-checkbox w-4 h-4 mt-0.5 rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">
+                                        Branded content
+                                        <span class="block text-[11px] text-stone-400 font-normal">You are promoting another brand or a third party.</span>
+                                    </span>
+                                </label>
+                                <!-- Branded content can't be posted privately, so the option is
+                                     locked while visibility is "Only you"; explain why. -->
+                                <p x-show="ttSelfOnlyLocked" class="text-[11px] text-amber-600 -mt-1">
+                                    Branded content isn't available until your TikTok app passes TikTok's content audit, because branded content can't be posted privately.
+                                </p>
+                                <p x-show="ttPrivacy === 'SELF_ONLY' && !ttSelfOnlyLocked" class="text-[11px] text-stone-500 -mt-1">
+                                    Set visibility to public, friends, or followers to enable branded content.
+                                </p>
+                                <!-- Exact TikTok content label prompt, shown once a disclosure option is selected -->
+                                <template x-if="ttLabelPrompt">
+                                    <p class="text-[11px] text-stone-600 bg-stone-50 border border-stone-200 rounded-md px-2 py-1.5" x-text="ttLabelPrompt"></p>
+                                </template>
+                                <!-- Disclosure requires at least one sub-option; gate submit via native validity -->
+                                <template x-if="!ttBrandOrganic && !ttBrandContent">
+                                    <p class="text-[11px] text-red-500">You need to indicate if your content promotes yourself, a third party, or both.</p>
+                                </template>
+                                <input type="text" tabindex="-1" aria-hidden="true" class="sr-only"
+                                       :required="ttDisclose"
+                                       :value="(ttBrandOrganic || ttBrandContent) ? '1' : ''">
+                            </div>
+                        </div>
+                        <!-- AI-generated content -->
+                        <div class="border-t border-stone-100 pt-3">
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-sm text-stone-700">
+                                    AI-generated content
+                                    <span class="block text-[11px] text-stone-400 font-normal">Add TikTok's AI-generated label if the post contains AI-generated content.</span>
+                                </span>
+                                <label class="bb-toggle mt-0.5">
+                                    <input type="checkbox" :name="'tiktok_is_aigc_' + accId" value="true"
+                                           x-model="ttAigc">
+                                    <span class="bb-toggle-track"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <!-- Compliance declaration (required by TikTok's integration guidelines) -->
+                        <p class="text-[11px] text-stone-400 border-t border-stone-100 pt-3">
+                            By posting, you agree to TikTok's
+                            <template x-if="ttBrandContent">
+                                <span><a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" rel="noopener" class="underline hover:text-stone-600">Branded Content Policy</a> and </span>
+                            </template>
+                            <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" rel="noopener" class="underline hover:text-stone-600">Music Usage Confirmation</a>.
+                        </p>
+                        <!-- Processing-time notice (TikTok requires informing users of the publish delay) -->
+                        <p class="text-[11px] text-stone-400">
+                            After you publish, it may take a few minutes for your video to process and appear on your TikTok profile.
+                        </p>
                     </div>
                 </template>
 
@@ -769,7 +1152,7 @@
 
                 <!-- Tags (dropdown with search & create) -->
                 <div class="relative" x-data="{
-                    tags: {{ post.tags|default:'[]'|safe }},
+                    tags: {{ post.tags|json_attr }},
                     tagDropdownOpen: false,
                     tagSearch: '',
                     allTags: [{% for tag in all_tags %}'{{ tag.name|escapejs }}'{% if not forloop.last %},{% endif %}{% endfor %}],
@@ -1072,6 +1455,12 @@
 
                                 <div id="schedule-error" class="hidden text-xs text-red-500 mt-1"></div>
 
+                                {% if not post_is_scheduled %}
+                                <p class="mt-3 text-xs text-stone-400 leading-relaxed">
+                                    Saving as a draft keeps this as a <span class="font-medium text-stone-500">proposed</span> time. Use <span class="font-medium text-stone-500">Set Schedule</span> to publish at this time.
+                                </p>
+                                {% endif %}
+
                                 <button type="button" id="publish-schedule-confirm" class="mt-4 w-full py-2 text-sm font-semibold text-white bg-orange-500 rounded-lg hover:bg-orange-600 transition-colors cursor-pointer">
                                     Set Schedule
                                 </button>
@@ -1109,22 +1498,45 @@
                 <svg class="w-4 h-4 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
                 <span class="text-sm font-medium text-red-700">Rejected - edit and resubmit or delete</span>
             </div>
+            {% elif post.status == 'approved' %}
+            <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-teal-50 border border-teal-100 mb-3">
+                <svg class="w-4 h-4 text-teal-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="text-sm font-medium text-teal-700">Approved - saving changes sends it back for re-approval</span>
+            </div>
+            {% elif post.status == 'on_hold' %}
+            <div class="flex items-center gap-2 px-3 py-2 rounded-lg mb-3" style="background:#F5F3FF;border:1px solid #DDD6FE;">
+                <svg class="w-4 h-4 flex-shrink-0" style="color:#7C3AED;" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                <span class="text-sm font-medium" style="color:#6D28D9;">On hold - a client paused this; resume it from the approvals queue</span>
+            </div>
+            {% endif %}
+
+            <!-- Reviewer feedback to address (latest changes-requested / rejected comment) -->
+            {% if show_resubmit_button and latest_feedback %}
+            <div class="flex gap-3 p-4 rounded-xl mb-3" style="background:#FFF7ED;border:1px solid #FED7AA;">
+                <span class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold text-white flex-shrink-0" style="background: var(--primary);">{{ latest_feedback.user.display_name|default:"?"|make_list|first|upper }}</span>
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="text-[0.8125rem] font-semibold text-stone-800">{{ latest_feedback.user.display_name|default:"Reviewer" }}</span>
+                        <span class="text-[0.6875rem] font-semibold px-2 py-0.5 rounded-full" style="background:#FFEDD5;color:#C2410C;">{% if latest_feedback.action == 'rejected' %}rejected{% else %}requested changes{% endif %}</span>
+                        <span class="text-[0.6875rem] text-stone-400">{{ latest_feedback.created_at|timesince }} ago</span>
+                    </div>
+                    <p class="text-[0.875rem] text-stone-700 mt-1 leading-relaxed">{{ latest_feedback.comment }}</p>
+                </div>
+            </div>
             {% endif %}
 
             <!-- Inline approval actions for reviewers -->
-            {% if can_approve and post.status in 'pending_review,pending_client' %}
-            <div class="flex gap-2 mb-3" x-data="{ showReviewComment: false }">
-                <form method="post" action="{% url 'approvals:approve' workspace_id=workspace.id post_id=post.id %}" class="inline">
-                    {% csrf_token %}
-                    <button type="submit" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-emerald-500 hover:bg-emerald-600 text-white transition-colors">Approve</button>
-                </form>
+            {% if can_approve and post.status == 'pending_review' or can_approve and post.status == 'pending_client' %}
+            <div class="flex gap-2 mb-3 relative" x-data="{ showReviewComment: false, reviewComment: '' }">
+                <button hx-post="{% url 'approvals:approve' workspace_id=workspace.id post_id=post.id %}" hx-swap="none"
+                        class="px-3 py-1.5 text-xs font-semibold rounded-full bg-emerald-500 hover:bg-emerald-600 text-white transition-colors">Approve</button>
                 <button @click="showReviewComment = !showReviewComment" class="px-3 py-1.5 text-xs font-semibold rounded-full border border-stone-200 text-stone-600 hover:bg-stone-50 transition-colors">Request Changes</button>
                 <div x-show="showReviewComment" x-cloak class="absolute mt-9 z-10 bg-white rounded-lg shadow-lg border border-stone-200 p-3 w-80">
-                    <form method="post" action="{% url 'approvals:request_changes' workspace_id=workspace.id post_id=post.id %}">
-                        {% csrf_token %}
-                        <textarea name="comment" rows="2" required class="w-full px-2 py-1.5 text-sm border border-stone-200 rounded-lg resize-none" placeholder="What needs to change?"></textarea>
-                        <button type="submit" class="mt-2 px-3 py-1 text-xs font-semibold rounded-full bg-amber-500 text-white">Submit</button>
-                    </form>
+                    <textarea id="composer-review-comment" name="comment" rows="2" x-model="reviewComment" class="w-full px-2 py-1.5 text-sm border border-stone-200 rounded-lg resize-none" placeholder="What needs to change?"></textarea>
+                    <button hx-post="{% url 'approvals:request_changes' workspace_id=workspace.id post_id=post.id %}"
+                            hx-include="#composer-review-comment" hx-swap="none"
+                            :disabled="!reviewComment.trim()" :class="!reviewComment.trim() && 'opacity-50 cursor-not-allowed'"
+                            class="mt-2 px-3 py-1 text-xs font-semibold rounded-full bg-amber-500 text-white">Submit</button>
                 </div>
             </div>
             {% endif %}
@@ -1199,7 +1611,7 @@
         </div>
 
         <div id="preview-panel" class="flex-1 overflow-y-auto p-4 space-y-4 panel-scroll"
-             hx-get="{% url 'composer:preview' workspace_id=workspace.id %}"
+             hx-post="{% url 'composer:preview' workspace_id=workspace.id %}"
              hx-trigger="previewUpdate from:body"
              hx-include="#composer-form"
              hx-vals='js:{"title": document.querySelector("input[name=title]")?.value || "", "caption": document.querySelector("[name=caption]")?.value || "", "selected_accounts": document.querySelector("[name=selected_accounts]")?.value || "", "_autosave_post_id": document.querySelector("[name=_autosave_post_id]")?.value || ""}'>
@@ -1267,6 +1679,175 @@
                  x-init="$watch('showThumbnailPicker', v => { if (v) htmx.ajax('GET', '{% url "composer:thumbnail_picker" workspace_id=workspace.id %}', { target: $el, swap: 'innerHTML' }) })">
                 <div class="flex items-center justify-center py-12 text-stone-400">
                     <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════
+         UNSPLASH SEARCH MODAL (only rendered when an API key is configured)
+         ════════════════════════════════════════════════════════════ -->
+    {% if unsplash_enabled %}
+    <div x-show="showUnsplashModal" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center"
+         @keydown.escape.window="showUnsplashModal && closeUnsplashModal()"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0">
+        <div class="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" @click="closeUnsplashModal()"></div>
+        <div class="relative bg-white rounded-2xl shadow-xl border border-stone-200 w-[calc(100vw-1rem)] sm:w-[760px] mx-2 sm:mx-0 h-[640px] max-h-[85vh] flex flex-col overflow-hidden"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 scale-95"
+             x-transition:enter-end="opacity-100 scale-100">
+            <div class="px-4 sm:px-6 py-4 border-b border-stone-100 flex items-center gap-3">
+                <span class="w-9 h-9 rounded-lg bg-stone-900 text-white flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4.5 h-4.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.5 6.75V0h9v6.75h-9zm9 3.75H24V24H0V10.5h7.5v6.75h9V10.5z"/></svg>
+                </span>
+                <div class="min-w-0">
+                    <h2 class="text-base font-semibold text-stone-900">Search Unsplash</h2>
+                    <p class="text-xs text-stone-400 truncate">Free high-resolution photos &middot; add one or many</p>
+                </div>
+                <button @click="closeUnsplashModal()"
+                        class="ml-auto w-8 h-8 rounded-lg border border-stone-200 text-stone-400 hover:text-stone-600 hover:border-stone-300 flex items-center justify-center transition-all duration-150 cursor-pointer flex-shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="px-4 sm:px-6 pt-4 space-y-3 flex-shrink-0">
+                <div class="flex items-center gap-2 rounded-xl border-2 border-orange-400/70 focus-within:border-orange-500 transition-colors pl-4 pr-1.5 py-1.5">
+                    <svg class="w-4 h-4 text-stone-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    <input type="text" x-model="unsplashQuery"
+                           @keydown.enter.prevent="unsplashActiveChip = ''; searchUnsplash()"
+                           placeholder="Search free high-resolution photos…"
+                           class="flex-1 text-sm bg-transparent outline-none border-none placeholder-stone-400 text-stone-900">
+                    <button type="button" @click="unsplashActiveChip = ''; searchUnsplash()"
+                            class="px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold transition-colors cursor-pointer flex-shrink-0">Search</button>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                    <template x-for="chip in unsplashChips" :key="chip">
+                        <button type="button" @click="selectUnsplashChip(chip)"
+                                class="px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer"
+                                :class="unsplashActiveChip === chip ? 'bg-stone-900 text-white' : 'border border-stone-200 text-stone-600 hover:border-stone-300 hover:bg-stone-50'"
+                                x-text="chip"></button>
+                    </template>
+                </div>
+            </div>
+            <div class="flex-1 overflow-y-auto px-4 sm:px-6 pb-4 mt-3 min-h-0">
+                <div x-show="unsplashLoading" class="flex items-center justify-center py-12 text-stone-400">
+                    <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                </div>
+                <div x-show="!unsplashLoading && unsplashError" class="py-12 text-center text-sm text-stone-500" x-text="unsplashError"></div>
+                <div x-show="!unsplashLoading && !unsplashError && !unsplashResults.length" class="py-12 text-center text-sm text-stone-400">
+                    No results. Try another search.
+                </div>
+                <div x-show="!unsplashLoading && !unsplashError" class="columns-2 sm:columns-3 gap-3">
+                    <template x-for="photo in unsplashResults" :key="photo.id">
+                        <div class="mb-3 break-inside-avoid relative rounded-lg overflow-hidden cursor-pointer group"
+                             :class="unsplashSelected[photo.id] ? 'ring-2 ring-inset ring-orange-500' : ''"
+                             @click="toggleUnsplashSelect(photo)">
+                            <img :src="photo.thumb" :alt="photo.alt" loading="lazy"
+                                 class="w-full block" :style="photo.color ? `background:${photo.color}` : ''">
+                            <span class="absolute top-2 right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
+                                  :class="unsplashSelected[photo.id] ? 'bg-orange-500 border-orange-500' : 'bg-black/25 border-white/90'">
+                                <svg x-show="unsplashSelected[photo.id]" class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+                            </span>
+                            <span class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-2 pt-4 pb-1.5 text-[10px] text-white truncate opacity-0 group-hover:opacity-100 transition-opacity"
+                                  x-text="photo.photographer + ' / Unsplash'"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <div class="px-4 sm:px-6 py-4 border-t border-stone-100 flex items-center gap-3 flex-shrink-0">
+                <span class="text-sm text-stone-400"
+                      x-text="unsplashSelectedCount ? unsplashSelectedCount + (unsplashSelectedCount === 1 ? ' photo selected' : ' photos selected') : 'Select photos to add'"></span>
+                <div class="ml-auto flex items-center gap-2">
+                    <button type="button" @click="closeUnsplashModal()"
+                            class="px-4 py-2 rounded-lg text-sm font-semibold text-stone-600 hover:text-stone-900 transition-colors cursor-pointer">Cancel</button>
+                    <button type="button"
+                            :disabled="!unsplashSelectedCount || unsplashImporting"
+                            @click="importUnsplashPhotos()"
+                            class="px-5 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            x-text="unsplashImporting ? 'Adding…' : (unsplashSelectedCount > 1 ? 'Add ' + unsplashSelectedCount + ' images' : 'Add images')"></button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ════════════════════════════════════════════════════════════
+         FRAME PICKER MODAL (YouTube thumbnail / TikTok cover)
+         ════════════════════════════════════════════════════════════ -->
+    <div x-show="showFramePicker" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center"
+         @keydown.escape.window="showFramePicker && closeFramePicker()"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0">
+        <div class="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" @click="closeFramePicker()"></div>
+        <div class="relative bg-white rounded-2xl shadow-xl border border-stone-200 w-[calc(100vw-1rem)] sm:w-[720px] mx-2 sm:mx-0 max-h-[90vh] flex flex-col overflow-hidden"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 scale-95"
+             x-transition:enter-end="opacity-100 scale-100">
+            <div class="px-4 sm:px-6 py-4 border-b border-stone-100 flex items-center justify-between">
+                <div>
+                    <h2 class="text-base font-semibold text-stone-900">Choose thumbnail from video</h2>
+                    <p class="text-xs text-stone-400">Scrub to the frame you want, then grab it</p>
+                </div>
+                <button @click="closeFramePicker()"
+                        class="w-8 h-8 rounded-lg border border-stone-200 text-stone-400 hover:text-stone-600 hover:border-stone-300 flex items-center justify-center transition-all duration-150 cursor-pointer flex-shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3">
+                <div class="relative bg-black rounded-xl overflow-hidden aspect-video">
+                    <video x-ref="frameVideo"
+                           :src="frameVideoUrl"
+                           class="w-full h-full object-contain"
+                           muted playsinline preload="metadata"
+                           @loadedmetadata="frameDuration = $el.duration"
+                           @timeupdate="frameCurrentTime = $el.currentTime"></video>
+                    <span class="absolute top-3 right-3 px-2 py-1 rounded bg-black/70 text-white text-xs font-mono tabular-nums"
+                          x-text="formatTimecode(frameCurrentTime) + ' / ' + formatTimecode(frameDuration)"></span>
+                </div>
+                <input type="range" min="0" :max="frameDuration || 0" step="0.04"
+                       :value="frameCurrentTime"
+                       @input="frameCurrentTime = parseFloat($event.target.value); if ($refs.frameVideo) $refs.frameVideo.currentTime = frameCurrentTime"
+                       class="w-full accent-orange-500 cursor-pointer">
+                <div x-show="filmstripLoading" class="flex items-center justify-center py-3 text-stone-400">
+                    <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                </div>
+                <p x-show="!filmstripLoading && filmstripError" class="text-[11px] text-stone-400 text-center" x-text="filmstripError"></p>
+                <div x-show="filmstrip.length" class="flex gap-1.5 overflow-x-auto pb-1">
+                    <template x-for="(frame, idx) in filmstrip" :key="idx">
+                        <button type="button"
+                                class="flex-shrink-0 rounded-md overflow-hidden border-2 transition-colors cursor-pointer"
+                                :class="Math.abs(frameCurrentTime - frame.time) < (frameDuration / 16) ? 'border-orange-500' : 'border-transparent hover:border-orange-300'"
+                                @click="frameCurrentTime = frame.time; if ($refs.frameVideo) $refs.frameVideo.currentTime = frame.time">
+                            <img :src="frame.dataUrl" class="w-[76px] aspect-video object-cover block" :alt="'Frame at ' + formatTimecode(frame.time)">
+                        </button>
+                    </template>
+                </div>
+            </div>
+            <div class="px-4 sm:px-6 py-4 border-t border-stone-100 flex items-center gap-3 flex-shrink-0">
+                <p x-show="frameError" class="text-xs text-red-500 flex-1" x-text="frameError"></p>
+                <span x-show="!frameError" class="text-sm text-stone-400">
+                    Frame at <span class="font-mono font-semibold text-stone-700 tabular-nums" x-text="formatTimecode(frameCurrentTime)"></span>
+                </span>
+                <div class="ml-auto flex items-center gap-2">
+                    <button type="button" @click="closeFramePicker()"
+                            class="px-4 py-2 rounded-lg text-sm font-semibold text-stone-600 hover:text-stone-900 transition-colors cursor-pointer">Cancel</button>
+                    <button type="button"
+                            :disabled="frameCapturing"
+                            @click="captureFrame()"
+                            class="px-5 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5">
+                        <svg x-show="!frameCapturing" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+                        <span x-text="frameCapturing ? 'Saving…' : 'Use this frame'"></span>
+                    </button>
                 </div>
             </div>
         </div>
@@ -1361,20 +1942,33 @@
     </div>
     {% endif %}
 </div>
+{# Toast host for approval-action feedback (outside htmx-swapped regions) #}
+{% include "approvals/partials/_toasts.html" %}
 {% endblock %}
 
 {% block extra_js %}
+<script nonce="{{ request.csp_nonce }}">
+  // Reviewer approve / request-changes return 204 + toast + approvalAction. Let the
+  // toast show, then reload so the status banner and history reflect the new state.
+  document.body.addEventListener('approvalAction', function () {
+    setTimeout(function () { window.location.reload(); }, 1100);
+  });
+</script>
+{{ selected_account_ids|json_script:"composer-selected-accounts" }}
+{{ char_limits|json_script:"composer-char-limits" }}
+{{ platform_extras|json_script:"composer-platform-extras" }}
+{{ media_items|json_script:"composer-media-items" }}
 <script nonce="{{ request.csp_nonce }}">
 function composerApp() {
     return {
         // State
         title: '{{ form.title.value|default:""|escapejs }}',
         caption: '{{ form.caption.value|default:""|escapejs }}',
-        selectedAccounts: {{ selected_account_ids|safe }},
-        charLimits: {{ char_limits_json|safe }},
+        selectedAccounts: JSON.parse(document.getElementById('composer-selected-accounts').textContent),
+        charLimits: JSON.parse(document.getElementById('composer-char-limits').textContent),
         overrides: {},
         advancedOpen: {},
-        platformExtras: {{ platform_extras_json|default:"{}"|safe }},
+        platformExtras: JSON.parse(document.getElementById('composer-platform-extras').textContent) || {},
         showMediaPicker: false,
         showThumbnailPicker: false,
         thumbnailPickerAccId: null,
@@ -1385,7 +1979,39 @@ function composerApp() {
         lastSaved: null,
         previewTimer: null,
         autosavedPostId: '{{ post.id|default:"" }}',
-        mediaItems: {{ media_items_json|safe }},
+        mediaItems: JSON.parse(document.getElementById('composer-media-items').textContent),
+
+        // Unsplash search modal
+        showUnsplashModal: false,
+        unsplashChips: ['Coffee', 'Nature', 'Food', 'City', 'People', 'Minimal', 'Workspace', 'Travel', 'Texture', 'Flowers'],
+        unsplashQuery: '',
+        unsplashActiveChip: '',
+        unsplashResults: [],
+        unsplashSelected: {},
+        unsplashLoading: false,
+        unsplashError: '',
+        unsplashImporting: false,
+        get unsplashSelectedCount() { return Object.keys(this.unsplashSelected).length; },
+
+        // Frame picker (YouTube thumbnail upload / TikTok cover timestamp)
+        hasVideoAttached: false,
+        showFramePicker: false,
+        framePickerAccId: null,
+        framePickerMode: 'upload',
+        tiktokCoverPreview: {},
+        frameAssetId: null,
+        frameVideoUrl: '',
+        frameVideoCors: false,
+        frameDuration: 0,
+        frameCurrentTime: 0,
+        filmstrip: [],
+        filmstripLoading: false,
+        filmstripError: '',
+        frameCapturing: false,
+        frameError: '',
+        // Declared here so scoped writes (inside x-for panels) hit this
+        // component instead of the iteration scope.
+        _filmstripRun: 0,
 
         // Computed-like getters for title field visibility
         get anyPlatformNeedsTitle() {
@@ -1431,10 +2057,11 @@ function composerApp() {
                 tiktok: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z"/></svg>`,
                 youtube: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>`,
                 pinterest: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M12.017 0C5.396 0 .029 5.367.029 11.987c0 5.079 3.158 9.417 7.618 11.162-.105-.949-.199-2.403.041-3.439.219-.937 1.406-5.957 1.406-5.957s-.359-.72-.359-1.781c0-1.663.967-2.911 2.168-2.911 1.024 0 1.518.769 1.518 1.688 0 1.029-.653 2.567-.992 3.992-.285 1.193.6 2.165 1.775 2.165 2.128 0 3.768-2.245 3.768-5.487 0-2.861-2.063-4.869-5.008-4.869-3.41 0-5.409 2.562-5.409 5.199 0 1.033.394 2.143.889 2.741.099.12.112.225.085.345-.09.375-.293 1.199-.334 1.363-.053.225-.174.271-.401.165-1.495-.69-2.433-2.878-2.433-4.646 0-3.776 2.748-7.252 7.92-7.252 4.158 0 7.392 2.967 7.392 6.923 0 4.135-2.607 7.462-6.233 7.462-1.214 0-2.354-.629-2.758-1.379l-.749 2.848c-.269 1.045-1.004 2.352-1.498 3.146 1.123.345 2.306.535 3.55.535 6.607 0 11.985-5.365 11.985-11.987C23.97 5.39 18.592.026 11.985.026L12.017 0z"/></svg>`,
-                threads: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M12.186 24h-.007c-3.581-.024-6.334-1.205-8.184-3.509C2.35 18.44 1.5 15.586 1.472 12.01v-.017c.03-3.579.879-6.43 2.525-8.482C5.845 1.205 8.6.024 12.18 0h.014c2.746.02 5.043.725 6.826 2.098 1.677 1.29 2.858 3.13 3.506 5.467l-2.73.734c-1.088-3.96-3.71-5.892-7.59-5.913h-.01c-2.837.018-4.97.89-6.34 2.594C4.563 6.612 3.86 8.97 3.84 12c.02 3.03.723 5.39 2.016 7.02 1.37 1.703 3.503 2.576 6.34 2.594h.01c2.435-.015 4.285-.717 5.5-2.084 1.005-1.13 1.597-2.655 1.76-4.53-1.07.55-2.266.86-3.54.92-1.713.08-3.32-.282-4.647-1.05-1.46-.846-2.478-2.143-2.863-3.652-.284-1.11-.237-2.254.134-3.307.527-1.494 1.627-2.628 3.1-3.2 1.263-.49 2.69-.55 4.013-.166 1.222.354 2.26 1.08 3.03 2.104.06-.553.06-1.1.004-1.636l2.63-.347c.145 1.262.08 2.554-.2 3.818-.34 1.53-.97 2.736-1.88 3.578-1.58 1.462-3.72 2.16-6.38 2.078-1.61-.05-3.05-.55-4.16-1.44-1.238-1-2.075-2.416-2.37-4.02l2.64-.505c.37 1.93 1.94 3.25 4.05 3.36 1.73.09 3.24-.36 4.25-1.276.56-.51.97-1.166 1.23-1.96-.5.09-1.02.13-1.55.14-3.91.18-6.93-2.14-7.18-5.62-.18-2.44 1.13-4.77 3.41-6.05 1.44-.81 3.1-1.1 4.73-.84 1.57.25 2.95 1.05 3.93 2.26.28-.47.53-.97.73-1.49l2.47 1.02c-.31.81-.73 1.57-1.24 2.26.18.96.24 1.95.17 2.92-.16 2.28-.93 4.2-2.29 5.72-1.65 1.85-4.03 2.82-7.07 2.84z"/></svg>`,
+                threads: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M12.186 24h-.007c-3.581-.024-6.334-1.205-8.184-3.509C2.35 18.44 1.5 15.586 1.472 12.01v-.017c.03-3.579.879-6.43 2.525-8.482C5.845 1.205 8.6.024 12.18 0h.014c2.746.02 5.043.725 6.826 2.098 1.677 1.29 2.858 3.13 3.509 5.467l-2.04.569c-1.104-3.96-3.898-5.984-8.304-6.015-2.91.022-5.11.936-6.54 2.717C4.307 6.504 3.616 8.914 3.589 12c.027 3.086.718 5.496 2.057 7.164 1.43 1.783 3.631 2.698 6.54 2.717 2.623-.02 4.358-.631 5.8-2.045 1.647-1.613 1.618-3.593 1.09-4.798-.31-.71-.873-1.3-1.634-1.75-.192 1.352-.622 2.446-1.284 3.272-.886 1.102-2.14 1.704-3.73 1.79-1.202.065-2.361-.218-3.259-.801-1.063-.689-1.685-1.74-1.752-2.964-.065-1.19.408-2.285 1.33-3.082.88-.76 2.119-1.207 3.583-1.291a13.853 13.853 0 0 1 3.02.142c-.126-.742-.375-1.332-.75-1.757-.513-.586-1.308-.883-2.359-.89h-.029c-.844 0-1.992.232-2.721 1.32L7.734 7.847c.98-1.454 2.568-2.256 4.478-2.256h.044c3.194.02 5.097 1.975 5.287 5.388.108.046.216.094.321.142 1.49.7 2.58 1.761 3.154 3.07.797 1.82.871 4.79-1.548 7.158-1.85 1.81-4.094 2.628-7.277 2.65Zm1.003-11.69c-.242 0-.487.007-.739.021-1.836.103-2.98.946-2.916 2.143.067 1.256 1.452 1.839 2.784 1.767 1.224-.065 2.818-.543 3.086-3.71a10.5 10.5 0 0 0-2.215-.221z"/></svg>`,
                 bluesky: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M12 10.8c-1.087-2.114-4.046-6.053-6.798-7.995C2.566.944 1.561 1.266.902 1.565.139 1.908 0 3.08 0 3.768c0 .69.378 5.65.624 6.479.785 2.627 3.601 3.476 6.153 3.228-4.475.663-8.391 2.69-4.66 9.523 4.47-5.503 6.962-2.527 9.883-8.192 2.921 5.665 4.127 2.383 9.883 8.192 3.731-6.833-.185-8.86-4.66-9.523 2.552.248 5.368-.601 6.153-3.228C23.622 9.418 24 4.458 24 3.768c0-.688-.139-1.86-.902-2.203-.659-.3-1.664-.621-4.3 1.24C16.046 4.747 13.087 8.686 12 10.8z"/></svg>`,
                 google_business: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>`,
                 mastodon: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M23.268 5.313c-.35-2.578-2.617-4.61-5.304-5.004C17.51.242 15.792 0 11.813 0h-.03c-3.98 0-4.835.242-5.288.309C3.882.692 1.496 2.518.917 5.127.64 6.412.61 7.837.661 9.143c.074 1.874.088 3.745.26 5.611.118 1.24.325 2.47.62 3.68.55 2.237 2.777 4.098 4.96 4.857 2.336.792 4.849.923 7.256.38.265-.061.527-.132.786-.213.585-.184 1.27-.39 1.774-.753a.057.057 0 00.023-.043v-1.809a.052.052 0 00-.02-.041.053.053 0 00-.046-.01 20.282 20.282 0 01-4.709.547c-2.73 0-3.463-1.284-3.674-1.818a5.593 5.593 0 01-.319-1.433.053.053 0 01.066-.054 19.648 19.648 0 004.607.536c.551 0 1.1-.008 1.652-.029 1.923-.065 3.942-.205 5.84-.652.046-.011.09-.024.135-.036 2.435-.581 4.754-2.398 4.999-6.693.009-.156.032-1.628.032-1.79 0-.547.157-3.89-.018-5.94z"/></svg>`,
+                devto: `<svg ${s} viewBox="0 0 24 24" fill="white" stroke="none"><path d="M7.826 10.083a.784.784 0 0 0-.468-.175h-.701l.007 2.198.006 2.196.72-.012c.508-.008.741-.108.928-.392.14-.211.155-.446.155-2.15 0-1.831-.005-1.837-.638-1.665zM0 4.4v15.2h24V4.4H0zm8.876 11.516c-.185.446-.404.657-.928.892-.348.16-.443.163-1.898.163H4.428v-8.94h1.673c1.598 0 1.71.006 2.045.163.541.253.735.454.926.958.106.278.11.44.11 2.407 0 2.02-.005 2.212-.32 3.157zm4.717-5.34l-.32-.317-.735.006-.735.008v.972l.735.008.735.005.006.687.007.687-.735.008-.736.007v1.104l.736.007.741.007v1.324h-1.464c-1.4 0-1.463-.006-1.688-.157l-.234-.157v-6.548l.234-.157c.225-.15.288-.157 1.688-.157h1.464v1.324zm5.309 4.976c-.256.85-.51 1.032-1.192 1.032-.682 0-.936-.183-1.192-1.032-.065-.196-.51-1.917-.99-3.826l-.859-3.472h.674c.373 0 .674.021.674.048 0 .05 1.315 5.052 1.34 5.196.02.114.336-.976.73-2.42l.716-2.744.69-.028c.375-.014.688-.001.688.03 0 .166-1.836 6.812-1.99 7.216z"/></svg>`,
             };
             return icons[platform] || `<svg ${s} viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>`;
         },
@@ -1486,6 +2113,19 @@ function composerApp() {
                     // Update upload URL to attach media to the post directly
                     this.uploadUrl = `/workspace/{{ workspace.id }}/compose/${detail.postId}/upload-media/`;
                 }
+            });
+
+            // Track whether a video is attached (enables "Choose from video").
+            // #media-list mutates outside Alpine, so poll it on the events that
+            // change it: previewUpdate fires after uploads/imports, and htmx
+            // swaps #media-list when media is removed.
+            const syncVideoAttached = () => {
+                this.hasVideoAttached = !!document.querySelector('#media-list video');
+            };
+            this.$nextTick(syncVideoAttached);
+            document.body.addEventListener('previewUpdate', syncVideoAttached);
+            document.body.addEventListener('htmx:afterSwap', (e) => {
+                if (e.target && e.target.id === 'media-list') syncVideoAttached();
             });
         },
 
@@ -1545,11 +2185,26 @@ function composerApp() {
                 setTimeout(() => { this.formError = ''; }, 4000);
                 return;
             }
+            this._uploadThumbnailBlob(accId, file);
+        },
+
+        handleThumbnailDrop(accId, event) {
+            const file = event.dataTransfer.files && event.dataTransfer.files[0];
+            if (!file) return;
+            if (!file.type.startsWith('image/')) {
+                this.formError = 'Thumbnail must be an image (JPG or PNG).';
+                setTimeout(() => { this.formError = ''; }, 4000);
+                return;
+            }
+            this._uploadThumbnailBlob(accId, file);
+        },
+
+        _uploadThumbnailBlob(accId, fileOrBlob, filename) {
             this.thumbnailUploading[accId] = true;
             const fd = new FormData();
-            fd.append('file', file);
+            fd.append('file', fileOrBlob, filename || fileOrBlob.name);
             const csrf = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
-            fetch('{% url "composer:thumbnail_upload" workspace_id=workspace.id %}', {
+            return fetch('{% url "composer:thumbnail_upload" workspace_id=workspace.id %}', {
                 method: 'POST',
                 headers: { 'X-CSRFToken': csrf },
                 body: fd,
@@ -1559,14 +2214,357 @@ function composerApp() {
                     if (!this.platformExtras[accId]) this.platformExtras[accId] = {};
                     this.platformExtras[accId].thumbnail_asset_id = data.asset_id;
                     this.platformExtras[accId].thumbnail_url = data.url;
+                    return data;
                 })
                 .catch(err => {
                     this.formError = (err && err.error) || 'Thumbnail upload failed.';
                     setTimeout(() => { this.formError = ''; }, 4000);
+                    return Promise.reject(err);
                 })
                 .finally(() => {
                     this.thumbnailUploading[accId] = false;
                 });
+        },
+
+        // Point every selected YouTube account's thumbnail at a freshly added
+        // image. Shared by the file-upload and Unsplash-import paths.
+        _applyYoutubeThumbnail(assetId, url) {
+            if (!assetId || !url) return;
+            this.selectedAccounts.forEach(accId => {
+                if (this.charLimits[accId]?.platform === 'youtube') {
+                    if (!this.platformExtras[accId]) this.platformExtras[accId] = {};
+                    this.platformExtras[accId].thumbnail_asset_id = assetId;
+                    this.platformExtras[accId].thumbnail_url = url;
+                }
+            });
+        },
+
+        // ── Unsplash ────────────────────────────────────────────────
+        openUnsplashModal() {
+            this.showUnsplashModal = true;
+            if (!this.unsplashResults.length && !this.unsplashLoading) {
+                this.selectUnsplashChip(this.unsplashChips[0]);
+            }
+        },
+
+        closeUnsplashModal() {
+            this.showUnsplashModal = false;
+            this.unsplashSelected = {};
+            this.unsplashError = '';
+            this.unsplashImporting = false;
+        },
+
+        selectUnsplashChip(chip) {
+            this.unsplashActiveChip = chip;
+            this.unsplashQuery = chip;
+            this.searchUnsplash();
+        },
+
+        searchUnsplash() {
+            const query = this.unsplashQuery.trim();
+            if (!query) return;
+            this.unsplashLoading = true;
+            this.unsplashError = '';
+            this.unsplashSelected = {};
+            fetch('{% url "composer:unsplash_search" workspace_id=workspace.id %}?q=' + encodeURIComponent(query))
+                .then(r => r.json().then(data => ({ ok: r.ok, data })))
+                .then(({ ok, data }) => {
+                    if (!ok) {
+                        this.unsplashResults = [];
+                        this.unsplashError = data.error || 'Unsplash search failed.';
+                        return;
+                    }
+                    this.unsplashResults = data.results || [];
+                })
+                .catch(() => {
+                    this.unsplashResults = [];
+                    this.unsplashError = 'Unsplash search failed. Try again.';
+                })
+                .finally(() => { this.unsplashLoading = false; });
+        },
+
+        toggleUnsplashSelect(photo) {
+            if (this.unsplashSelected[photo.id]) {
+                delete this.unsplashSelected[photo.id];
+            } else {
+                this.unsplashSelected[photo.id] = photo;
+            }
+        },
+
+        importUnsplashPhotos() {
+            if (!this.unsplashSelectedCount || this.unsplashImporting) return;
+            // Same rule as file uploads: a post holds one video OR images.
+            if (document.querySelector('#media-list video')) {
+                this.unsplashError = 'You cannot mix images and video in one post.';
+                return;
+            }
+            this.unsplashImporting = true;
+            this.unsplashError = '';
+            const url = this.autosavedPostId
+                ? `/workspace/{{ workspace.id }}/compose/${this.autosavedPostId}/unsplash-import/`
+                : '{% url "composer:unsplash_import" workspace_id=workspace.id %}';
+            const csrf = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+            fetch(url, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ photos: Object.values(this.unsplashSelected) }),
+            })
+                .then(r => r.json().then(data => ({ ok: r.ok, data })))
+                .then(({ ok, data }) => {
+                    if (!ok) {
+                        this.unsplashError = data.error || 'Import failed. Try again.';
+                        return;
+                    }
+                    const list = document.getElementById('media-list');
+                    list.insertAdjacentHTML('beforeend', data.html);
+                    if (window.htmx) window.htmx.process(list);
+                    // Mirror uploadFile: latest imported image becomes the
+                    // YouTube thumbnail for selected YouTube accounts.
+                    const assets = data.assets || [];
+                    const last = assets[assets.length - 1];
+                    if (last) this._applyYoutubeThumbnail(last.id, last.url);
+                    this.triggerPreviewUpdate();
+                    this.closeUnsplashModal();
+                })
+                .catch(() => { this.unsplashError = 'Import failed. Try again.'; })
+                .finally(() => { this.unsplashImporting = false; });
+        },
+
+        // ── Frame picker ────────────────────────────────────────────
+        formatTimecode(seconds) {
+            const s = Math.max(0, Math.floor(seconds || 0));
+            const h = String(Math.floor(s / 3600)).padStart(2, '0');
+            const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+            const sec = String(s % 60).padStart(2, '0');
+            return `${h}:${m}:${sec}`;
+        },
+
+        openFramePicker(accId, mode = 'upload') {
+            const attached = document.querySelector('#media-list video');
+            if (!attached) return;
+            // Prefer the same-origin stream: S3/R2 signed URLs are cross-origin
+            // and (without bucket CORS) would taint the capture canvas.
+            const assetId = attached.dataset.assetId;
+            this.frameAssetId = assetId || null;
+            const url = assetId
+                ? `/workspace/{{ workspace.id }}/compose/media-stream/${assetId}/`
+                : attached.getAttribute('src').split('#')[0];
+            this.frameVideoUrl = url;
+            // crossorigin only helps when the file is actually cross-origin
+            // (e.g. S3); on same-origin media it is unnecessary.
+            this.frameVideoCors = new URL(url, location.href).origin !== location.origin;
+            this.framePickerAccId = accId;
+            this.framePickerMode = mode;
+            this.frameDuration = 0;
+            this.frameCurrentTime = 0;
+            this.filmstrip = [];
+            this.filmstripError = '';
+            this.frameError = '';
+            this.showFramePicker = true;
+            this.$nextTick(() => {
+                const v = this.$refs.frameVideo;
+                if (v && this.frameVideoCors) v.setAttribute('crossorigin', 'anonymous');
+                // Reopening keeps the loaded video, so loadedmetadata won't
+                // re-fire - sync duration/position from the element directly.
+                if (v && v.readyState >= 1) {
+                    this.frameDuration = v.duration;
+                    this.frameCurrentTime = v.currentTime;
+                }
+                this._generateFilmstrip();
+            });
+        },
+
+        closeFramePicker() {
+            this.showFramePicker = false;
+            this.framePickerAccId = null;
+            this._filmstripRun = (this._filmstripRun || 0) + 1;
+            const v = this.$refs && this.$refs.frameVideo;
+            if (v) v.pause();
+        },
+
+        _generateFilmstrip() {
+            // Token cancels in-flight generation when the picker is closed or
+            // reopened, so a slow run can't append stale frames.
+            const run = (this._filmstripRun = (this._filmstripRun || 0) + 1);
+            this.filmstrip = [];
+            this.filmstripError = '';
+            this.filmstripLoading = true;
+
+            // Fast path: let the server extract frames with ffmpeg (it seeks
+            // each frame via byte ranges, so we only download ~8 small JPEGs).
+            // Fall back to client-side extraction if it's unavailable.
+            if (this.frameAssetId) {
+                fetch(`/workspace/{{ workspace.id }}/compose/media-filmstrip/${this.frameAssetId}/`)
+                    .then(r => r.ok ? r.json() : Promise.reject(r))
+                    .then(data => {
+                        if (run !== this._filmstripRun) return;
+                        if (data.frames && data.frames.length) {
+                            this.filmstrip = data.frames;
+                            this.filmstripLoading = false;
+                        } else {
+                            this._generateFilmstripClient(run);
+                        }
+                    })
+                    .catch(() => {
+                        if (run !== this._filmstripRun) return;
+                        this._generateFilmstripClient(run);
+                    });
+                return;
+            }
+            this._generateFilmstripClient(run);
+        },
+
+        _generateFilmstripClient(run) {
+            const url = this.frameVideoUrl;
+            const cors = this.frameVideoCors;
+            const COUNT = 8;
+            const CONCURRENCY = 4;
+            const cancelled = () => run !== this._filmstripRun;
+
+            // preload="metadata" (not "auto") so a worker only fetches the byte
+            // ranges its seeks actually need instead of buffering the whole file.
+            const newVideo = () => {
+                const v = document.createElement('video');
+                v.muted = true;
+                v.preload = 'metadata';
+                v.playsInline = true;
+                if (cors) v.crossOrigin = 'anonymous';
+                v.src = url;
+                return v;
+            };
+            const ready = (v) => new Promise((resolve, reject) => {
+                if (v.readyState >= 1) return resolve();
+                v.addEventListener('loadedmetadata', () => resolve(), { once: true });
+                v.addEventListener('error', () => reject(new Error('load failed')), { once: true });
+            });
+            const seekGrab = (v, t) => new Promise((resolve, reject) => {
+                v.addEventListener('seeked', () => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = 160;
+                        canvas.height = 90;
+                        canvas.getContext('2d').drawImage(v, 0, 0, 160, 90);
+                        // toDataURL throws SecurityError on a tainted canvas
+                        resolve(canvas.toDataURL('image/jpeg', 0.6));
+                    } catch (e) {
+                        reject(e);
+                    }
+                }, { once: true });
+                v.addEventListener('error', () => reject(new Error('seek failed')), { once: true });
+                v.currentTime = t;
+            });
+
+            // Prime one element to learn the duration, then fan out a pool of
+            // workers that each own a video element and pull timestamps from a
+            // shared cursor. Because seeks fetch via byte ranges, running a few
+            // in parallel overlaps their round-trips instead of doing all 8
+            // back-to-back.
+            const primer = newVideo();
+            ready(primer)
+                .then(async () => {
+                    if (cancelled()) return;
+                    const duration = primer.duration || this.frameDuration || 0;
+                    const times = Array.from({ length: COUNT }, (_, i) => duration * (i + 0.5) / COUNT);
+                    const results = new Array(COUNT);
+                    let cursor = 0;
+                    let fatal = false;
+
+                    const worker = async (v, alreadyReady) => {
+                        if (!alreadyReady) await ready(v);
+                        while (!cancelled() && cursor < times.length && !fatal) {
+                            const i = cursor++;
+                            try {
+                                results[i] = { time: times[i], dataUrl: await seekGrab(v, times[i]) };
+                            } catch (e) {
+                                fatal = true;
+                            }
+                        }
+                        v.removeAttribute('src');
+                        v.load();
+                    };
+
+                    const pool = [worker(primer, true)];
+                    for (let i = 1; i < Math.min(CONCURRENCY, COUNT); i++) {
+                        pool.push(worker(newVideo(), false));
+                    }
+                    await Promise.all(pool);
+                    if (cancelled()) return;
+
+                    const frames = results.filter(Boolean);
+                    if (!frames.length) {
+                        this.filmstripError = 'Frame previews unavailable for this video — use the scrubber instead.';
+                    } else {
+                        this.filmstrip = frames;
+                    }
+                    this.filmstripLoading = false;
+                })
+                .catch(() => {
+                    if (cancelled()) return;
+                    this.filmstripLoading = false;
+                    this.filmstripError = 'Could not load video frames.';
+                });
+        },
+
+        captureFrame() {
+            const v = this.$refs.frameVideo;
+            if (!v || !v.videoWidth) {
+                this.frameError = 'Video is still loading — try again in a moment.';
+                return;
+            }
+            v.pause();
+            this.frameCapturing = true;
+            this.frameError = '';
+            const accId = this.framePickerAccId;
+            const canvas = document.createElement('canvas');
+            canvas.width = v.videoWidth;
+            canvas.height = v.videoHeight;
+            try {
+                canvas.getContext('2d').drawImage(v, 0, 0);
+                if (this.framePickerMode === 'timestamp') {
+                    // TikTok: the API picks the cover by timestamp; the capture
+                    // is only a local preview. Downscale it before storing in
+                    // reactive state so a 4K frame isn't held as a multi-MB
+                    // data URL for the rest of the session.
+                    if (!this.platformExtras[accId]) this.platformExtras[accId] = {};
+                    this.platformExtras[accId].video_cover_timestamp_ms = Math.round(v.currentTime * 1000);
+                    try {
+                        const pw = 480;
+                        const ph = Math.round(pw * (v.videoHeight / v.videoWidth));
+                        const pc = document.createElement('canvas');
+                        pc.width = pw;
+                        pc.height = ph;
+                        pc.getContext('2d').drawImage(v, 0, 0, pw, ph);
+                        this.tiktokCoverPreview[accId] = pc.toDataURL('image/jpeg', 0.7);
+                    } catch (e) {
+                        delete this.tiktokCoverPreview[accId];
+                    }
+                    this.frameCapturing = false;
+                    this.closeFramePicker();
+                    return;
+                }
+                canvas.toBlob((blob) => {
+                    if (!blob) {
+                        this.frameCapturing = false;
+                        this.frameError = 'Could not capture this frame.';
+                        return;
+                    }
+                    const name = 'video-frame-' + this.formatTimecode(v.currentTime).replaceAll(':', '-') + '.jpg';
+                    this._uploadThumbnailBlob(accId, blob, name)
+                        .then(() => { this.closeFramePicker(); })
+                        .catch(() => {})
+                        .finally(() => { this.frameCapturing = false; });
+                }, 'image/jpeg', 0.9);
+            } catch (e) {
+                this.frameCapturing = false;
+                this.frameError = 'Cannot capture frames from this video (cross-origin storage). Upload a thumbnail instead.';
+            }
+        },
+
+        clearTiktokCover(accId) {
+            delete this.tiktokCoverPreview[accId];
+            if (this.platformExtras[accId]) {
+                delete this.platformExtras[accId].video_cover_timestamp_ms;
+            }
         },
 
         saveDraft() {
@@ -1581,6 +2579,9 @@ function composerApp() {
         },
 
         onFormSaved(event) {
+            // Only react to the form's own submit, not htmx requests bubbling from
+            // child elements (e.g. the pending-media remove button).
+            if (event.detail.elt !== event.currentTarget) return;
             const xhr = event.detail.xhr;
             if (event.detail.successful) {
                 const action = document.getElementById('publish-action-btn')?.value;
@@ -1719,23 +2720,20 @@ function composerApp() {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     // Replace the upload placeholder with the server-rendered thumb
                     thumb.insertAdjacentHTML('afterend', xhr.responseText);
+                    const inserted = thumb.nextElementSibling;
                     thumb.remove();
+                    if (inserted && window.htmx) {
+                        window.htmx.process(inserted.parentElement);
+                    }
                     if (self.autosavedPostId && !self.uploadUrl.includes(self.autosavedPostId)) {
                         self.uploadUrl = `/workspace/{{ workspace.id }}/compose/${self.autosavedPostId}/upload-media/`;
                     }
                     // Auto-set YouTube thumbnail to latest uploaded image
                     if (file.type.startsWith('image/')) {
-                        const assetId = xhr.getResponseHeader('X-Uploaded-Asset-Id');
-                        const imgUrl = xhr.getResponseHeader('X-Uploaded-Asset-Url');
-                        if (assetId && imgUrl) {
-                            self.selectedAccounts.forEach(function(accId) {
-                                if (self.charLimits[accId]?.platform === 'youtube') {
-                                    if (!self.platformExtras[accId]) self.platformExtras[accId] = {};
-                                    self.platformExtras[accId].thumbnail_asset_id = assetId;
-                                    self.platformExtras[accId].thumbnail_url = imgUrl;
-                                }
-                            });
-                        }
+                        self._applyYoutubeThumbnail(
+                            xhr.getResponseHeader('X-Uploaded-Asset-Id'),
+                            xhr.getResponseHeader('X-Uploaded-Asset-Url'),
+                        );
                     }
                     document.body.dispatchEvent(new CustomEvent('previewUpdate'));
                 } else {
@@ -1782,24 +2780,6 @@ function composerApp() {
             });
         }
     };
-}
-
-async function removePendingMedia(assetId, url, btn) {
-    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value
-        || document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '';
-    try {
-        const resp = await fetch(url, {
-            method: 'POST',
-            headers: { 'X-CSRFToken': csrfToken },
-        });
-        if (resp.ok) {
-            const html = await resp.text();
-            document.getElementById('media-list').innerHTML = html;
-            document.body.dispatchEvent(new CustomEvent('previewUpdate'));
-        }
-    } catch (err) {
-        console.error('Remove failed:', err);
-    }
 }
 
 /* ── Publish Split-Button (vanilla JS) ────────────────────────── */
@@ -1906,10 +2886,14 @@ async function removePendingMedia(assetId, url, btn) {
     });
 
     // If the composer was opened with a prefilled scheduled date/time
-    // (e.g. from the calendar "+" CTA), auto-switch to Schedule mode.
+    // (e.g. from the calendar "+" CTA, or editing a scheduled post),
+    // auto-switch to Schedule mode. A draft that only carries a *proposed*
+    // time must NOT arm real-schedule mode — its primary action stays Save
+    // Draft, which persists the panel value as proposed_publish_at.
+    var prefillIsProposed = {{ schedule_prefill_is_proposed|yesno:"true,false" }};
     var schedDateInput = document.querySelector('input[name="scheduled_date"]');
     var schedTimeInput = document.querySelector('input[name="scheduled_time"]');
-    if (schedDateInput && schedDateInput.value && schedTimeInput && schedTimeInput.value) {
+    if (schedDateInput && schedDateInput.value && schedTimeInput && schedTimeInput.value && !prefillIsProposed) {
         setMode('schedule', 'Set date and time', 'Schedule Post', 'calendar');
     }
 })();

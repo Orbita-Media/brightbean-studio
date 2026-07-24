@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRY_ATTEMPTS = 3
 RETRY_BACKOFF_MINUTES = [1, 5, 30]
+# Cap how many deliveries a single retry sweep processes, so a PENDING backlog
+# that accumulated before the periodic retry was scheduled drains gradually
+# across runs instead of bursting all at once.
+RETRY_BATCH_LIMIT = 200
 
 # Default channel enablement per event type.
 # Key: event_type, Value: dict of channel → default enabled.
@@ -56,6 +60,7 @@ DEFAULT_CHANNELS: dict[str, dict[str, bool]] = {
     EventType.COMMENT_MENTION: {Channel.IN_APP: True, Channel.EMAIL: True},
     EventType.APPROVAL_REMINDER: {Channel.IN_APP: True, Channel.EMAIL: True},
     EventType.APPROVAL_STALLED: {Channel.IN_APP: True, Channel.EMAIL: True},
+    EventType.APPROVAL_HOLD_REQUESTED: {Channel.IN_APP: True, Channel.EMAIL: True},
     EventType.CLIENT_CONNECTED_ACCOUNTS: {Channel.IN_APP: True, Channel.EMAIL: True},
 }
 
@@ -259,10 +264,31 @@ def _dispatch_email(delivery: NotificationDelivery) -> None:
 
 
 def _dispatch_webhook(delivery: NotificationDelivery) -> None:
-    """Send notification via webhook (HTTP POST with HMAC-SHA256 signature)."""
-    import urllib.request
+    """Send notification via webhook (HTTP POST with HMAC-SHA256 signature).
+
+    The webhook URL is re-validated with is_safe_url at dispatch time (not just
+    when stored), and redirects are not followed. This narrows the DNS-rebind
+    window between validation and connection. We still rely on the OS-level DNS
+    cache to resolve consistently within a single dispatch; deployments with
+    aggressive DNS-rebind threat models should additionally enforce egress
+    firewall rules.
+    """
+    import httpx
+
+    from apps.common.validators import is_safe_url
 
     notification = delivery.notification
+
+    webhook_url = notification.data.get("webhook_url")
+    if not webhook_url:
+        logger.info("No webhook_url in notification data, skipping webhook delivery")
+        return
+
+    # Re-validate immediately before the request. The single-pass DNS resolve
+    # used by is_safe_url is reused by httpx via the OS resolver cache; this
+    # is the simplest defence that doesn't add an httpx-transport dependency.
+    if not is_safe_url(webhook_url):
+        raise RuntimeError("Webhook URL rejected: must be a public http(s) endpoint")
 
     payload = json.dumps(
         {
@@ -276,11 +302,6 @@ def _dispatch_webhook(delivery: NotificationDelivery) -> None:
         default=str,
     ).encode("utf-8")
 
-    webhook_url = notification.data.get("webhook_url")
-    if not webhook_url:
-        logger.info("No webhook_url in notification data, skipping webhook delivery")
-        return
-
     webhook_secret = getattr(settings, "WEBHOOK_SECRET", settings.SECRET_KEY)
     signature = hmac.new(
         webhook_secret.encode("utf-8"),
@@ -288,20 +309,20 @@ def _dispatch_webhook(delivery: NotificationDelivery) -> None:
         hashlib.sha256,
     ).hexdigest()
 
-    req = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "X-Signature-256": f"sha256={signature}",
-            "X-Event-Type": notification.event_type,
-        },
-        method="POST",
-    )
+    headers = {
+        "Content-Type": "application/json",
+        "X-Signature-256": f"sha256={signature}",
+        "X-Event-Type": notification.event_type,
+    }
 
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        if resp.status >= 400:
-            raise RuntimeError(f"Webhook returned HTTP {resp.status}")
+    # follow_redirects=False prevents a 302→private-IP bait-and-switch from a
+    # legitimate-looking endpoint. Any redirect is surfaced as a delivery
+    # failure, not silently followed.
+    response = httpx.post(webhook_url, content=payload, headers=headers, timeout=10.0, follow_redirects=False)
+    if 300 <= response.status_code < 400:
+        raise RuntimeError(f"Webhook URL replied with redirect {response.status_code} — refusing to follow.")
+    if response.status_code >= 400:
+        raise RuntimeError(f"Webhook returned HTTP {response.status_code}")
 
 
 def retry_failed_deliveries() -> int:
@@ -311,12 +332,16 @@ def retry_failed_deliveries() -> int:
     Returns the count of retried deliveries.
     """
     now = timezone.now()
-    pending = NotificationDelivery.objects.filter(
-        status=DeliveryStatus.PENDING,
-        next_retry_at__isnull=False,
-        next_retry_at__lte=now,
-        attempts__lt=MAX_RETRY_ATTEMPTS,
-    ).select_related("notification", "notification__user")
+    pending = (
+        NotificationDelivery.objects.filter(
+            status=DeliveryStatus.PENDING,
+            next_retry_at__isnull=False,
+            next_retry_at__lte=now,
+            attempts__lt=MAX_RETRY_ATTEMPTS,
+        )
+        .select_related("notification", "notification__user")
+        .order_by("next_retry_at")[:RETRY_BATCH_LIMIT]
+    )
 
     count = 0
     for delivery in pending:

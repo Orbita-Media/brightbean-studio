@@ -19,6 +19,7 @@ from django.db import models
 from django.utils import timezone
 
 from apps.common.managers import WorkspaceScopedManager
+from apps.common.validators import validate_hex_color
 
 
 class ContentCategory(models.Model):
@@ -39,6 +40,7 @@ class ContentCategory(models.Model):
         max_length=7,
         default="#3B82F6",
         help_text="Hex color for calendar display, e.g. #FF5733",
+        validators=[validate_hex_color],
     )
     position = models.PositiveIntegerField(default=0)
 
@@ -256,6 +258,12 @@ class Post(models.Model):
     scheduled_at = models.DateTimeField(blank=True, null=True, db_index=True)
     published_at = models.DateTimeField(blank=True, null=True)
 
+    # Optional draft-stage suggestion of when to publish — distinct from the
+    # committed ``scheduled_at``. Lets a planner/agent record "this should go
+    # out Tue 9am" without queuing it for the publisher. Cleared once the post
+    # is actually scheduled.
+    proposed_publish_at = models.DateTimeField(blank=True, null=True)
+
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -339,6 +347,14 @@ class PlatformPost(models.Model):
         PUBLISHING = "publishing", "Publishing"
         PUBLISHED = "published", "Published"
         FAILED = "failed", "Failed"
+        ON_HOLD = "on_hold", "On Hold"
+
+    # Statuses that must never be removed by *accidental* deletion paths
+    # (composer account deselection, autosave sync): a published or
+    # mid-publish row is history, and deleting it cascades away its
+    # PublishLog records. Explicit deletion (the post delete action) is the
+    # user's call and intentionally bypasses this.
+    PROTECTED_STATUSES = (Status.PUBLISHED, Status.PUBLISHING)
 
     # Valid state transitions (from → set of allowed targets). Mirrors the old
     # Post-level state machine minus ``partially_published`` — that concept
@@ -347,13 +363,18 @@ class PlatformPost(models.Model):
     VALID_TRANSITIONS = {
         "draft": {"pending_review", "scheduled", "publishing"},
         "pending_review": {"approved", "changes_requested", "rejected"},
-        "approved": {"pending_client", "scheduled", "publishing", "draft"},
+        "approved": {"pending_client", "scheduled", "publishing", "draft", "on_hold", "pending_review"},
         "pending_client": {"approved", "changes_requested", "rejected"},
         "changes_requested": {"pending_review", "draft"},
         "rejected": {"draft", "pending_review"},
         "scheduled": {"publishing", "draft"},
         "publishing": {"published", "failed", "scheduled"},  # scheduled = retry
         "failed": {"publishing", "draft", "scheduled"},
+        # Client-requested hold: parked out of the publish path. The team resolves
+        # it back to approved (resume), draft (rework), or changes_requested. There
+        # is deliberately no on_hold → scheduled edge — un-hold to ``approved`` first
+        # so nothing publishes straight out of a hold.
+        "on_hold": {"approved", "draft", "changes_requested"},
         "published": set(),  # terminal
     }
 
@@ -369,6 +390,7 @@ class PlatformPost(models.Model):
         "published": "green",
         "partially_published": "yellow",  # only used by Post-level aggregate
         "failed": "red",
+        "on_hold": "violet",
     }
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

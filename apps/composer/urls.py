@@ -40,7 +40,13 @@ urlpatterns = [
     path("compose/media-picker/", views.media_picker, name="media_picker"),
     path("compose/thumbnail-picker/", views.thumbnail_picker, name="thumbnail_picker"),
     path("compose/thumbnail-upload/", views.thumbnail_upload, name="thumbnail_upload"),
+    path("compose/media-stream/<uuid:asset_id>/", views.media_stream, name="media_stream"),
+    path("compose/media-filmstrip/<uuid:asset_id>/", views.media_filmstrip, name="media_filmstrip"),
+    path("compose/unsplash-search/", views.unsplash_search, name="unsplash_search"),
+    path("compose/unsplash-import/", views.unsplash_import, name="unsplash_import"),
+    path("compose/<uuid:post_id>/unsplash-import/", views.unsplash_import, name="unsplash_import_post"),
     path("compose/pinterest-boards/<uuid:account_id>/", views.pinterest_boards, name="pinterest_boards"),
+    path("compose/tiktok-creator-info/<uuid:account_id>/", views.tiktok_creator_info, name="tiktok_creator_info"),
     path("compose/<uuid:post_id>/media-picker/", views.media_picker, name="media_picker_post"),
     path("compose/<uuid:post_id>/attach-media/", views.attach_media, name="attach_media"),
     path("compose/attach-pending-media/", views.attach_pending_media, name="attach_pending_media"),
@@ -52,6 +58,8 @@ urlpatterns = [
     path("drafts/", views.drafts_list, name="drafts_list"),
     # Post delete
     path("compose/<uuid:post_id>/delete/", views.post_delete, name="post_delete"),
+    # Clone / Repost
+    path("compose/<uuid:post_id>/clone/", views.clone_post_view, name="clone_post"),
     # Content Categories
     path("categories/", views.category_list, name="category_list"),
     path("categories/create/", views.category_create, name="category_create"),

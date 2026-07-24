@@ -167,3 +167,52 @@ def process_video_trim(version_id, start_seconds, end_seconds):
 
     except Exception:
         logger.exception("Failed to process video trim for version %s", version_id)
+
+
+# How often the recurring pending-upload sweep runs; registered on a repeating
+# schedule by apps.media_library.apps.MediaLibraryConfig.
+PENDING_UPLOAD_SWEEP_INTERVAL_SECONDS = 60 * 60  # hourly
+
+
+@background(schedule=0)
+def sweep_pending_uploads():
+    """Delete expired, never-finalized presigned uploads and their objects.
+
+    ``request_media_upload`` presigns a key and writes a ``PendingUpload`` row; if
+    the agent never finalizes, the row (and any partially-uploaded object) would
+    linger. This reaps anything past its expiry that was never finalized. Object
+    deletion is best-effort — the object may never have been uploaded at all.
+    """
+    import contextlib
+
+    from django.utils import timezone
+
+    from .models import PendingUpload
+    from .storage import delete_object
+
+    stale = PendingUpload.objects.filter(finalized_at__isnull=True, expires_at__lt=timezone.now())
+    for pending in stale.iterator():
+        with contextlib.suppress(Exception):
+            delete_object(pending.storage_key)
+        pending.delete()
+
+
+# How often the recurring orphaned-media sweep runs; registered on a repeating
+# schedule by apps.media_library.apps.MediaLibraryConfig. Replaces the daily
+# docker-compose ``maintenance`` loop so it runs on every deploy target.
+ORPHANED_MEDIA_SWEEP_INTERVAL_SECONDS = 24 * 60 * 60  # daily
+
+
+@background(schedule=0)
+def run_orphaned_media_sweep():
+    """Delete media assets no longer referenced by any post, idea, or template.
+
+    Wraps ``services.sweep_orphaned_media`` (the same code path as the
+    ``cleanup_orphaned_media`` command) so the cleanup runs on the shared
+    ``process_tasks`` worker everywhere, not just the VPS maintenance container.
+    """
+    from .services import sweep_orphaned_media
+
+    # min_age_days falls through to services.ORPHANED_MEDIA_MIN_AGE_DAYS (the
+    # single source), matching the management command's default.
+    sweep_orphaned_media(log=logger.info)

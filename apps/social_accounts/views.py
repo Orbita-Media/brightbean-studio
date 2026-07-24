@@ -20,10 +20,12 @@ from django.views.decorators.http import require_GET, require_POST
 from django_ratelimit.decorators import ratelimit
 
 from apps.common.validators import is_safe_url as _is_safe_url
-from apps.credentials.models import PlatformCredential
+from apps.credentials.models import PlatformCredential, resolve_platform_credentials
 from apps.members.decorators import require_permission
 
-from .models import MastodonAppRegistration, SocialAccount
+from .models import MastodonAppRegistration, PlatformVisibility, SocialAccount
+from .oauth_aliases import from_url_slug, redirect_uri_from_request, to_url_slug
+from .oauth_pkce import issue_pkce_verifier, pkce_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +37,38 @@ def _get_provider_for_platform(platform: str, org_id, **extra_credentials):
     """Resolve app credentials and instantiate the provider."""
     from providers import get_provider
 
-    # Try org-specific credentials first, then env fallback
-    try:
-        cred = PlatformCredential.objects.for_org(org_id).get(platform=platform, is_configured=True)
-        credentials = cred.credentials
-    except PlatformCredential.DoesNotExist:
-        env_creds = getattr(settings, "PLATFORM_CREDENTIALS_FROM_ENV", {})
-        credentials = env_creds.get(platform, {})
+    # .env is dominant; admin-entered org credentials are the fallback.
+    credentials = resolve_platform_credentials(platform, org_id)
 
     if extra_credentials:
         credentials = {**credentials, **extra_credentials}
 
     return get_provider(platform, credentials)
+
+
+def _get_visible_platform_choices():
+    """Return PlatformCredential.Platform.choices filtered to visible platforms.
+
+    Platforms without a PlatformVisibility row default to visible.
+    """
+    hidden = set(PlatformVisibility.objects.filter(is_visible=False).values_list("platform", flat=True))
+    return [(value, label) for value, label in PlatformCredential.Platform.choices if value not in hidden]
+
+
+def _apply_analytics_scope_flag(provider, platform):
+    """Set ``provider.include_analytics_scopes`` based on AnalyticsPlatformConfig.
+
+    Providers add their analytics-only scopes (e.g. ``read_insights``,
+    ``yt-analytics.readonly``) to the OAuth scope list only when this flag is
+    True. If the platform is disabled in ``AnalyticsPlatformConfig`` (analytics
+    not yet rolled out for it), we omit those scopes so a self-hoster whose
+    Meta / TikTok / Google app hasn't been approved for them can still connect
+    accounts for publishing.
+    """
+    from apps.social_accounts.models import AnalyticsPlatformConfig
+
+    enabled = AnalyticsPlatformConfig.enabled_platforms()
+    provider.include_analytics_scopes = platform in enabled
 
 
 def _get_configured_platforms(org_id):
@@ -75,10 +97,17 @@ def _get_configured_platforms(org_id):
 
 
 def _build_redirect_uri(request, platform):
-    """Build the OAuth callback URL."""
+    """Build the OAuth callback URL.
+
+    Platforms with an entry in ``PLATFORM_TO_URL_ALIAS`` (currently only
+    TikTok → ``social1``) use the opaque slug in the URL path so the
+    redirect URI doesn't contain the platform brand name. The signed
+    OAuth state still carries the real platform identifier.
+    """
     from django.urls import reverse
 
-    return request.build_absolute_uri(reverse("social_accounts:oauth_callback", kwargs={"platform": platform}))
+    url_slug = to_url_slug(platform)
+    return request.build_absolute_uri(reverse("social_accounts:oauth_callback", kwargs={"platform": url_slug}))
 
 
 def _sign_state(workspace_id, platform, user_id, nonce):
@@ -189,15 +218,13 @@ def account_list(request, workspace_id):
 # ------------------------------------------------------------------
 
 
-@csp_update(
-    FORM_ACTION="'self' https://accounts.google.com https://www.facebook.com https://api.instagram.com https://threads.net https://www.linkedin.com https://www.pinterest.com https://www.tiktok.com https://twitter.com https://x.com"
-)
 @login_required
 @require_permission("manage_social_accounts")
 @ratelimit(key="user", rate="20/m", method="POST", block=True)
 def connect_platform(request, workspace_id):
     """GET: show platform grid. POST: initiate OAuth flow."""
     configured_platforms = _get_configured_platforms(request.org.id)
+    visible_platform_choices = _get_visible_platform_choices()
 
     if request.method == "GET":
         return render(
@@ -205,15 +232,15 @@ def connect_platform(request, workspace_id):
             "social_accounts/connect.html",
             {
                 "workspace_id": workspace_id,
-                "platform_choices": PlatformCredential.Platform.choices,
+                "platform_choices": visible_platform_choices,
                 "configured_platforms": configured_platforms,
             },
         )
 
     # POST: initiate OAuth
     platform = request.POST.get("platform", "").strip()
-    if platform not in dict(PlatformCredential.Platform.choices):
-        messages.error(request, "Invalid platform selected.")
+    if platform not in dict(visible_platform_choices):
+        messages.error(request, "This platform is not available.")
         return redirect("social_accounts:connect", workspace_id=workspace_id)
 
     if platform not in configured_platforms:
@@ -228,21 +255,28 @@ def connect_platform(request, workspace_id):
         return redirect("social_accounts:connect_bluesky", workspace_id=workspace_id)
     if platform == PlatformCredential.Platform.MASTODON:
         return redirect("social_accounts:connect_mastodon", workspace_id=workspace_id)
+    if platform == PlatformCredential.Platform.DEVTO:
+        return redirect("social_accounts:connect_devto", workspace_id=workspace_id)
 
     # Standard OAuth flow
     provider = _get_provider_for_platform(platform, request.org.id)
+    _apply_analytics_scope_flag(provider, platform)
     nonce = secrets.token_urlsafe(32)
     state = _sign_state(workspace_id, platform, request.user.id, nonce)
+
+    # PKCE verifier (e.g. TikTok); round-trips via the session alongside the nonce.
+    code_verifier = issue_pkce_verifier(provider)
 
     # Store nonce in session to prevent replay
     request.session[OAUTH_SESSION_KEY] = {
         "nonce": nonce,
         "workspace_id": str(workspace_id),
         "platform": platform,
+        "code_verifier": code_verifier,
     }
 
     redirect_uri = _build_redirect_uri(request, platform)
-    auth_url = provider.get_auth_url(redirect_uri, state)
+    auth_url = provider.get_auth_url(redirect_uri, state, **pkce_kwargs(code_verifier))
     return redirect(auth_url)
 
 
@@ -255,7 +289,13 @@ def connect_platform(request, workspace_id):
 @ratelimit(key="user", rate="20/m", block=True)
 @require_GET
 def oauth_callback(request, platform):
-    """Handle OAuth callback from the platform."""
+    """Handle OAuth callback from the platform.
+
+    ``platform`` arrives as the URL slug, which may be an alias (e.g.
+    ``social1`` for TikTok). Normalise it before any platform-keyed lookup
+    or comparison against the signed state.
+    """
+    platform = from_url_slug(platform)
     error = request.GET.get("error")
     if error:
         error_desc = request.GET.get("error_description", error)
@@ -314,18 +354,14 @@ def oauth_callback(request, platform):
             extra_creds = _resolve_mastodon_extra_creds(session_data)
 
         provider = _get_provider_for_platform(platform, request.org.id, **extra_creds)
-        redirect_uri = _build_redirect_uri(request, platform)
-        # X uses PKCE with state-derived code_verifier; pass state through
-        if platform == PlatformCredential.Platform.X:
-            tokens = provider.exchange_code(code, redirect_uri, state=state_str)
-        else:
-            tokens = provider.exchange_code(code, redirect_uri)
-        profile = provider.get_profile(tokens.access_token)
+        redirect_uri = redirect_uri_from_request(request)
+        tokens = provider.exchange_code(code, redirect_uri, **pkce_kwargs(session_data.get("code_verifier")))
 
-        # Facebook/Instagram: only connect Pages, not personal profiles
+        # Facebook/Instagram/LinkedIn Company: connect Pages, not personal profiles
         if platform in (
             PlatformCredential.Platform.FACEBOOK,
             PlatformCredential.Platform.INSTAGRAM,
+            PlatformCredential.Platform.LINKEDIN_COMPANY,
         ) and hasattr(provider, "get_user_pages"):
             pages = provider.get_user_pages(tokens.access_token)
             if pages:
@@ -341,18 +377,37 @@ def oauth_callback(request, platform):
                 }
                 return redirect("social_accounts:select_account")
             else:
-                messages.warning(
-                    request,
-                    "No Facebook Pages were found for your account. "
-                    "Only Pages can be connected — personal profiles are not "
-                    "supported by the Facebook API. "
-                    "If you expected to see a Page, make sure you have admin "
-                    "access and try removing the app in Facebook Settings \u2192 "
-                    "Business Integrations, then reconnect.",
-                )
+                if platform == PlatformCredential.Platform.LINKEDIN_COMPANY:
+                    warning = (
+                        "No LinkedIn Company Pages were found for your account. "
+                        "Only Company Pages you administer can be connected — "
+                        "personal profiles connect via the LinkedIn (Personal) option. "
+                        "If you expected to see a Page, ask the page owner to grant "
+                        "you Admin access in LinkedIn \u2192 Admin tools \u2192 "
+                        "Manage admins, then reconnect."
+                    )
+                else:
+                    if platform == PlatformCredential.Platform.INSTAGRAM:
+                        warning = (
+                            "No Instagram Business accounts were found for your account. "
+                            "Only Instagram Business or Creator accounts linked to a Facebook Page "
+                            "can be connected through this Instagram option. If you expected to "
+                            "see an account, make sure it is linked to a Page you manage, then reconnect."
+                        )
+                    else:
+                        warning = (
+                            "No Facebook Pages were found for your account. "
+                            "Only Pages can be connected — personal profiles are not "
+                            "supported by the Facebook API. "
+                            "If you expected to see a Page, make sure you have admin "
+                            "access and try removing the app in Facebook Settings \u2192 "
+                            "Business Integrations, then reconnect."
+                        )
+                messages.warning(request, warning)
                 return redirect("social_accounts:list", workspace_id=workspace_id)
 
         # Standard single-account flow (non-Facebook/Instagram platforms)
+        profile = provider.get_profile(tokens.access_token)
         _create_or_update_account(
             workspace_id=workspace_id,
             platform=platform,
@@ -424,6 +479,16 @@ def select_account(request):
 
     for page in page_data["pages"]:
         if page["id"] in selected_ids:
+            access_token = page.get("access_token")
+            if not access_token and platform == "instagram":
+                access_token = user_tokens["access_token"]
+            if not access_token:
+                messages.error(
+                    request,
+                    f"Could not connect {page['name']}: the platform did not provide an account token.",
+                )
+                continue
+
             profile = AccountProfile(
                 platform_id=page["id"],
                 name=page["name"],
@@ -435,7 +500,7 @@ def select_account(request):
                 workspace_id=workspace_id,
                 platform=platform,
                 profile=profile,
-                access_token=page.get("access_token", user_tokens["access_token"]),
+                access_token=access_token,
                 refresh_token=user_tokens.get("refresh_token"),
                 expires_in=None,
             )
@@ -504,6 +569,49 @@ def connect_bluesky(request, workspace_id):
             "social_accounts/bluesky_connect.html",
             {"workspace_id": workspace_id},
         )
+
+    return redirect("calendar:calendar", workspace_id=workspace_id)
+
+
+# ------------------------------------------------------------------
+# DEV.to Connect (API-key based, no OAuth)
+# ------------------------------------------------------------------
+
+
+@login_required
+@require_permission("manage_social_accounts")
+def connect_devto(request, workspace_id):
+    """Connect a DEV.to account via a personal API key."""
+    if request.method == "GET":
+        return render(
+            request,
+            "social_accounts/devto_connect.html",
+            {"workspace_id": workspace_id},
+        )
+
+    api_key = request.POST.get("api_key", "").strip()
+    if not api_key:
+        messages.error(request, "A DEV.to API key is required.")
+        return render(
+            request,
+            "social_accounts/devto_connect.html",
+            {"workspace_id": workspace_id},
+        )
+
+    try:
+        provider = _get_provider_for_platform(PlatformCredential.Platform.DEVTO, request.org.id)
+        profile = provider.get_profile(api_key)
+        _create_or_update_account(
+            workspace_id=workspace_id,
+            platform=PlatformCredential.Platform.DEVTO,
+            profile=profile,
+            access_token=api_key,
+        )
+        messages.success(request, f"Connected {profile.name} on DEV.to.")
+    except Exception:
+        logger.exception("DEV.to connection failed")
+        messages.error(request, "Failed to connect DEV.to account. Check your API key.")
+        return render(request, "social_accounts/devto_connect.html", {"workspace_id": workspace_id})
 
     return redirect("calendar:calendar", workspace_id=workspace_id)
 
@@ -611,9 +719,6 @@ def connect_mastodon(request, workspace_id):
 # ------------------------------------------------------------------
 
 
-@csp_update(
-    FORM_ACTION="'self' https://accounts.google.com https://www.facebook.com https://api.instagram.com https://threads.net https://www.linkedin.com https://www.pinterest.com https://www.tiktok.com https://twitter.com https://x.com"
-)
 @login_required
 @require_permission("manage_social_accounts")
 @require_POST
@@ -626,20 +731,25 @@ def reconnect(request, workspace_id, account_id):
         return redirect("social_accounts:connect_bluesky", workspace_id=workspace_id)
     if platform == PlatformCredential.Platform.MASTODON:
         return redirect("social_accounts:connect_mastodon", workspace_id=workspace_id)
+    if platform == PlatformCredential.Platform.DEVTO:
+        return redirect("social_accounts:connect_devto", workspace_id=workspace_id)
 
     # Standard OAuth reconnect
     provider = _get_provider_for_platform(platform, request.org.id)
+    _apply_analytics_scope_flag(provider, platform)
     nonce = secrets.token_urlsafe(32)
     state = _sign_state(workspace_id, platform, request.user.id, nonce)
+    code_verifier = issue_pkce_verifier(provider)
 
     request.session[OAUTH_SESSION_KEY] = {
         "nonce": nonce,
         "workspace_id": str(workspace_id),
         "platform": platform,
+        "code_verifier": code_verifier,
     }
 
     redirect_uri = _build_redirect_uri(request, platform)
-    auth_url = provider.get_auth_url(redirect_uri, state)
+    auth_url = provider.get_auth_url(redirect_uri, state, **pkce_kwargs(code_verifier))
     return redirect(auth_url)
 
 
@@ -729,6 +839,8 @@ def _create_or_update_account(
             "instance_url": instance_url,
             "connection_status": SocialAccount.ConnectionStatus.CONNECTED,
             "last_error": "",
+            # Fresh OAuth grant invalidates any prior analytics-scope failure.
+            "analytics_needs_reconnect": False,
         },
     )
 

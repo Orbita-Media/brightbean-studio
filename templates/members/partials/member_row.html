@@ -1,6 +1,6 @@
 <div class="px-6 py-4 group" id="member-{{ member.membership.id }}"
      style="border-bottom: 1px solid var(--border);"
-     x-data="{ showActions: false, showWorkspaces: false }">
+     x-data="{ showActions: false, showWorkspaces: false, menuStyle: {} }">
     <!-- Row 1: Member info -->
     <div class="flex items-center gap-4">
         <!-- Avatar / Initials -->
@@ -36,18 +36,21 @@
         <!-- Actions -->
         {% if is_admin and member.user.id != current_user.id %}
         <div class="flex-shrink-0 relative">
-            <button @click="showActions = !showActions"
-                    class="p-1.5 rounded-lg transition-colors cursor-pointer"
-                    style="color: var(--text-tertiary);"
-                    onmouseenter="this.style.background='var(--neutral-100)'"
-                    onmouseleave="this.style.background='transparent'">
+            <button @click="showActions = !showActions; if (showActions) { const r = $el.getBoundingClientRect(); menuStyle = { position: 'fixed', top: (r.bottom + 4) + 'px', left: (r.right - 208) + 'px', zIndex: 9999 } }"
+                    class="btn-neutral-100 p-1.5 rounded-lg transition-colors cursor-pointer"
+                    style="color: var(--text-tertiary);">
                 <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
             </button>
 
-            <!-- Dropdown -->
+            <!-- Dropdown (teleported to body so it escapes the card's overflow:hidden) -->
+            <template x-teleport="body">
             <div x-show="showActions" @click.outside="showActions = false"
+                 @keydown.escape.window="showActions = false"
+                 @scroll.window="showActions = false"
                  x-transition
-                 class="absolute right-0 top-full mt-1 w-52 py-1 rounded-lg shadow-lg z-10"
+                 x-init="window.htmx && htmx.process($el)"
+                 :style="menuStyle"
+                 class="w-52 py-1 rounded-lg shadow-lg"
                  style="background: var(--surface-0); border: 1px solid var(--border);">
 
                 <!-- Change Role -->
@@ -75,11 +78,10 @@
                 <!-- Manage Workspaces -->
                 <button @click="showWorkspaces = true; showActions = false"
                         hx-get="{% url 'members:manage_workspaces' membership_id=member.membership.id %}"
-                        hx-target="#ws-modal-content"
-                        class="w-full text-left px-3 py-2 text-sm cursor-pointer transition-colors"
-                        style="color: var(--text-primary);"
-                        onmouseenter="this.style.background='var(--neutral-50)'"
-                        onmouseleave="this.style.background='transparent'">
+                        hx-target="#ws-modal-content-{{ member.membership.id }}"
+                        hx-swap="innerHTML"
+                        class="btn-neutral-surface w-full text-left px-3 py-2 text-sm cursor-pointer transition-colors"
+                        style="color: var(--text-primary);">
                     Manage Workspaces
                 </button>
 
@@ -90,14 +92,13 @@
                       hx-confirm="Remove {{ member.user.display_name }} from the organization? This will also remove them from all workspaces.">
                     {% csrf_token %}
                     <button type="submit"
-                            class="w-full text-left px-3 py-2 text-sm cursor-pointer transition-colors"
-                            style="color: #DC2626;"
-                            onmouseenter="this.style.background='#FEF2F2'"
-                            onmouseleave="this.style.background='transparent'">
+                            class="btn-danger-soft-bg w-full text-left px-3 py-2 text-sm cursor-pointer transition-colors"
+                            style="color: #DC2626;">
                         Remove from Organization
                     </button>
                 </form>
             </div>
+            </template>
         </div>
         {% endif %}
     </div>
@@ -136,7 +137,7 @@
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                 </div>
-                <div id="ws-modal-content">
+                <div id="ws-modal-content-{{ member.membership.id }}">
                     <p class="text-sm" style="color: var(--text-tertiary);">Loading...</p>
                 </div>
             </div>

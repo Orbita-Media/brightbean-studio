@@ -28,9 +28,9 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.composer.models import PlatformPost
-from apps.credentials.models import PlatformCredential
+from apps.credentials.models import resolve_platform_credentials
 from providers import get_provider
-from providers.types import AuthType, PostType, PublishContent
+from providers.types import PostType, PublishContent
 
 from .models import PublishLog, RateLimitState
 
@@ -43,21 +43,15 @@ RETRY_BACKOFF = [60, 300, 1800]  # 1min, 5min, 30min
 def _resolve_publish_credentials(account):
     """Resolve the credentials dict for publishing on behalf of `account`.
 
-    Combines org-level `PlatformCredential` (falling back to env) with
+    Combines org-level `PlatformCredential` (with `.env` dominant) with
     per-account federation metadata (Mastodon `instance_url` +
     `MastodonAppRegistration`, Bluesky `pds_url`). Returns a plain dict
     suitable for `get_provider(platform, credentials)`.
     """
     platform = account.platform
 
-    try:
-        cred = PlatformCredential.objects.for_org(account.workspace.organization_id).get(
-            platform=platform, is_configured=True
-        )
-        credentials = dict(cred.credentials)
-    except PlatformCredential.DoesNotExist:
-        env_creds = getattr(settings, "PLATFORM_CREDENTIALS_FROM_ENV", {})
-        credentials = dict(env_creds.get(platform, {}))
+    # .env is dominant; admin-entered org credentials are the fallback.
+    credentials = resolve_platform_credentials(platform, account.workspace.organization_id)
 
     if platform == "mastodon" and account.instance_url:
         from apps.common.validators import is_safe_url
@@ -79,7 +73,19 @@ def _resolve_publish_credentials(account):
                 account.id,
             )
     elif platform == "bluesky" and account.instance_url:
-        credentials["pds_url"] = account.instance_url
+        from apps.common.validators import is_safe_url
+
+        if is_safe_url(account.instance_url):
+            credentials["pds_url"] = account.instance_url
+        else:
+            logger.warning(
+                "Bluesky PDS URL failed SSRF check for account %s",
+                account.id,
+            )
+    elif platform == "facebook":
+        credentials["page_id"] = account.account_platform_id
+    elif platform == "instagram":
+        credentials["ig_user_id"] = account.account_platform_id
 
     return credentials
 
@@ -133,6 +139,10 @@ class PublishEngine:
             )
             .annotate(effective_at=Coalesce("scheduled_at", "post__scheduled_at"))
             .filter(effective_at__lte=now)
+            # Never publish a post that has any platform on hold — a client hold
+            # parks the whole post out of the publish path even if a sibling
+            # platform is already scheduled.
+            .exclude(post__platform_posts__status=PlatformPost.Status.ON_HOLD)
             .select_related("post__workspace", "social_account")
             .order_by("effective_at")[:MAX_CONCURRENT_PUBLISHES]
         )
@@ -146,15 +156,21 @@ class PublishEngine:
         """
         # Lock and transition each due child from SCHEDULED → PUBLISHING.
         with transaction.atomic():
-            platform_posts = list(
+            # Lock ALL of this post's platform rows (not just the due scheduled
+            # ones) so a concurrent client hold serializes against publishing:
+            # request_hold()'s UPDATE on an approved sibling blocks on the locked
+            # row until we commit, and we re-check on_hold here under the lock.
+            locked = list(
                 PlatformPost.objects.select_for_update()
-                .filter(
-                    post_id=post.id,
-                    id__in=[pp.id for pp in due_pps],
-                    status=PlatformPost.Status.SCHEDULED,
-                )
+                .filter(post_id=post.id)
                 .select_related("social_account", "post__workspace")
             )
+
+            if any(pp.status == PlatformPost.Status.ON_HOLD for pp in locked):
+                return
+
+            due_ids = {pp.id for pp in due_pps}
+            platform_posts = [pp for pp in locked if pp.id in due_ids and pp.status == PlatformPost.Status.SCHEDULED]
 
             if not platform_posts:
                 return
@@ -181,10 +197,13 @@ class PublishEngine:
         # Schedule first comments for successful publishes (non-blocking)
         for pp in platform_posts:
             pp.refresh_from_db()
-            if pp.status == PlatformPost.Status.PUBLISHED:
-                comment_text = pp.effective_first_comment
-                if comment_text:
-                    _post_first_comment_task(str(pp.id), schedule=FIRST_COMMENT_DELAY)
+            if pp.status != PlatformPost.Status.PUBLISHED:
+                continue
+            if not pp.social_account.supports_first_comment():
+                continue
+            comment_text = pp.effective_first_comment
+            if comment_text:
+                _post_first_comment_task(str(pp.id), schedule=FIRST_COMMENT_DELAY)
 
     def _publish_platform_post(self, platform_post):
         """Publish a single PlatformPost to its target platform.
@@ -213,9 +232,35 @@ class PublishEngine:
 
             if result["success"]:
                 platform_post.platform_post_id = result.get("platform_post_id", "")
+                response_extra = result.get("response")
+                if isinstance(response_extra, dict) and response_extra:
+                    platform_post.platform_extra = {
+                        **(platform_post.platform_extra or {}),
+                        **response_extra,
+                    }
                 platform_post.status = PlatformPost.Status.PUBLISHED
                 platform_post.published_at = timezone.now()
                 platform_post.save()
+
+                # A published post leaves the queue: drop the QueueEntry that
+                # held this channel's slot so the queue shows only upcoming posts
+                # and the slot frees up as a gap. Best-effort and isolated: the
+                # publish has already succeeded, so a cleanup failure here must
+                # NOT fall through to the `except` below (which would schedule a
+                # retry and double-post). The PlatformPost + published_at are kept.
+                try:
+                    from apps.calendar.models import QueueEntry
+
+                    QueueEntry.objects.filter(
+                        post_id=platform_post.post_id,
+                        queue__social_account_id=platform_post.social_account_id,
+                    ).delete()
+                except Exception:
+                    logger.warning(
+                        "Failed to drop QueueEntry for published PlatformPost %s",
+                        platform_post.id,
+                        exc_info=True,
+                    )
 
                 # Log success
                 PublishLog.objects.create(
@@ -257,7 +302,10 @@ class PublishEngine:
                 duration_ms=duration_ms,
             )
 
-            self._schedule_retry(platform_post, error_msg)
+            if getattr(e, "retryable", True):
+                self._schedule_retry(platform_post, error_msg)
+            else:
+                self._fail_permanently(platform_post, error_msg)
             return {"success": False, "error": error_msg}
 
     def _dispatch_to_provider(self, platform_post):
@@ -273,27 +321,16 @@ class PublishEngine:
         credentials = _resolve_publish_credentials(account)
         provider = get_provider(platform, credentials)
 
-        # Refresh token if expired or expiring soon (OAuth2 providers only)
+        # Refresh token if expired or expiring soon, for any provider that has
+        # a refresh token stored. This covers OAuth2 providers *and* session
+        # providers like Bluesky, whose accessJwt expires after only a few
+        # hours and must be renewed via refreshSession before each publish.
+        # Best-effort: on refresh failure we keep the old token and let the
+        # publish attempt surface the real error.
         access_token = account.oauth_access_token
-        if account.token_expires_at and account.is_token_expiring_soon and provider.auth_type == AuthType.OAUTH2:
+        if account.token_expires_at and account.is_token_expiring_soon and account.oauth_refresh_token:
             try:
-                new_tokens = provider.refresh_token(account.oauth_refresh_token)
-                account.oauth_access_token = new_tokens.access_token
-                if new_tokens.refresh_token:
-                    account.oauth_refresh_token = new_tokens.refresh_token
-                if new_tokens.expires_in:
-                    account.token_expires_at = timezone.now() + timedelta(seconds=new_tokens.expires_in)
-                account.connection_status = account.ConnectionStatus.CONNECTED
-                account.save(
-                    update_fields=[
-                        "oauth_access_token",
-                        "oauth_refresh_token",
-                        "token_expires_at",
-                        "connection_status",
-                        "updated_at",
-                    ]
-                )
-                access_token = new_tokens.access_token
+                access_token = account.refresh_oauth_token(provider)
                 logger.info("Refreshed token for %s", account)
             except Exception:
                 logger.exception("Token refresh failed for %s", account)
@@ -312,6 +349,7 @@ class PublishEngine:
             attachments = [pm for pm in attachments if pm.media_asset.media_type == "video"]
 
         first_media_type = None
+        primary_video_duration = None
         app_url = getattr(settings, "APP_URL", "").rstrip("/")
         try:
             for pm in attachments:
@@ -321,6 +359,11 @@ class PublishEngine:
                 # Track the first media type for post type detection
                 if first_media_type is None:
                     first_media_type = asset.media_type
+
+                # Capture the first video's duration so providers can enforce
+                # platform max-duration limits (e.g. TikTok max_video_post_duration_sec).
+                if primary_video_duration is None and asset.media_type == "video":
+                    primary_video_duration = asset.duration or None
 
                 # Collect the public/presigned URL for this asset
                 url = asset.file.url
@@ -350,6 +393,14 @@ class PublishEngine:
             # Inject page_id for Facebook from the connected account.
             if platform == "facebook" and "page_id" not in extra:
                 extra["page_id"] = account.account_platform_id
+
+            # Inject Instagram user ID for Facebook-login Instagram accounts.
+            if platform == "instagram" and "ig_user_id" not in extra:
+                extra["ig_user_id"] = account.account_platform_id
+
+            # Inject org author URN for LinkedIn Company Page.
+            if platform == "linkedin_company" and "author" not in extra:
+                extra["author"] = f"urn:li:organization:{account.account_platform_id}"
 
             # Pop link_url from extra and set on PublishContent directly
             link_url = extra.pop("link_url", None)
@@ -408,6 +459,7 @@ class PublishEngine:
                 post_type=post_type,
                 extra=extra,
                 link_url=link_url,
+                video_duration_sec=primary_video_duration,
             )
 
             logger.info(
@@ -460,7 +512,7 @@ class PublishEngine:
         # 3. Multi-media → CAROUSEL for Instagram/Threads
         if media_count > 1 and platform in (
             "instagram",
-            "instagram_personal",
+            "instagram_login",
             "threads",
         ):
             return PostType.CAROUSEL
@@ -472,18 +524,22 @@ class PublishEngine:
             return PostType.IMAGE
         return PostType.TEXT
 
+    def _fail_permanently(self, platform_post, error_msg, *, reason="non-retryable"):
+        """Mark a post FAILED with no further retries."""
+        platform_post.status = PlatformPost.Status.FAILED
+        platform_post.publish_error = error_msg
+        platform_post.save()
+        logger.warning(
+            "PlatformPost %s failed (%s): %s",
+            platform_post.id,
+            reason,
+            error_msg,
+        )
+
     def _schedule_retry(self, platform_post, error_msg):
         """Schedule a retry with exponential backoff."""
         if platform_post.retry_count >= MAX_RETRIES:
-            platform_post.status = PlatformPost.Status.FAILED
-            platform_post.publish_error = error_msg
-            platform_post.save()
-            logger.warning(
-                "PlatformPost %s failed after %d retries: %s",
-                platform_post.id,
-                MAX_RETRIES,
-                error_msg,
-            )
+            self._fail_permanently(platform_post, error_msg, reason=f"after {MAX_RETRIES} retries")
             return
 
         backoff_seconds = RETRY_BACKOFF[min(platform_post.retry_count, len(RETRY_BACKOFF) - 1)]
@@ -505,14 +561,23 @@ class PublishEngine:
     def _process_retries(self):
         """Process platform posts that are due for retry."""
         now = timezone.now()
-        retry_posts = PlatformPost.objects.filter(
-            status=PlatformPost.Status.SCHEDULED,
-            retry_count__gt=0,
-            retry_count__lte=MAX_RETRIES,
-            next_retry_at__lte=now,
-        ).select_related("social_account", "post")
+        # Mirror the primary due-query's hold guard: a retrying child must not
+        # publish while any sibling is on_hold (the exclude covers the query
+        # window; the per-row re-check below closes a hold placed after it).
+        retry_posts = (
+            PlatformPost.objects.filter(
+                status=PlatformPost.Status.SCHEDULED,
+                retry_count__gt=0,
+                retry_count__lte=MAX_RETRIES,
+                next_retry_at__lte=now,
+            )
+            .exclude(post__platform_posts__status=PlatformPost.Status.ON_HOLD)
+            .select_related("social_account", "post")
+        )
 
         for pp in retry_posts:
+            if pp.post.platform_posts.filter(status=PlatformPost.Status.ON_HOLD).exists():
+                continue
             try:
                 pp.status = PlatformPost.Status.PUBLISHING
                 pp.save(update_fields=["status", "updated_at"])

@@ -51,16 +51,20 @@ class Command(BaseCommand):
 
         self.stdout.write(f"Backfilling {days} days of messages for {accounts.count()} account(s)...")
 
+        from apps.publisher.engine import _resolve_publish_credentials
+
         for account in accounts:
             try:
-                provider = get_provider(account.platform)
+                provider = get_provider(account.platform, _resolve_publish_credentials(account))
                 messages = provider.get_messages(
                     access_token=account.oauth_access_token,
                     since=since,
                 )
                 count = 0
                 for msg in messages:
-                    engine._upsert_message(account, msg)
+                    # Backfill is explicit history seeding — never notify (the
+                    # periodic sync alerts for genuinely new messages instead).
+                    engine._upsert_message(account, msg, notify=False)
                     count += 1
                 self.stdout.write(self.style.SUCCESS(f"  {account.platform}/{account.account_name}: {count} messages"))
             except NotImplementedError:

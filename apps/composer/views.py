@@ -1,29 +1,38 @@
 """Views for the Post Composer (F-2.1)."""
 
+import base64
 import contextlib
 import json
 import re
 import uuid
-import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
+from urllib.parse import urljoin
 
 import httpx
 from dateutil import parser as date_parser
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import PermissionDenied, SuspiciousOperation, ValidationError
 from django.db import models, transaction
-from django.http import HttpResponse, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
 from django.utils.html import strip_tags
 from django.views.decorators.http import require_GET, require_POST
 
+from apps.common.validators import (
+    is_safe_url,
+    parse_and_truncate_tag_string,
+    parse_and_truncate_youtube_tag_string,
+    safe_xml_fromstring,
+)
 from apps.members.decorators import require_permission
 from apps.members.models import WorkspaceMembership
 from apps.social_accounts.models import SocialAccount
 from apps.workspaces.models import Workspace
+from providers.tiktok import VALID_PRIVACY_LEVELS as TIKTOK_PRIVACY_LEVELS
 
 from .forms import ContentCategoryForm, PostForm
 from .models import (
@@ -40,6 +49,11 @@ from .models import (
     Tag,
 )
 
+MAX_CSV_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB cap on CSV planner imports
+
+# Shown when every posting slot within the lookahead horizon is already taken.
+_QUEUE_FULL_MSG = "No open posting slot within the scheduling horizon — add posting slots or free one up."
+
 
 def _get_workspace(request, workspace_id):
     """Resolve workspace and enforce membership check."""
@@ -55,6 +69,64 @@ def _get_workspace(request, workspace_id):
     return workspace
 
 
+def _is_valid_uuid(value):
+    try:
+        uuid.UUID(value)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def _parse_selected_account_ids(raw):
+    """Split a comma-separated ``selected_accounts`` value into account IDs.
+
+    Non-UUID entries are dropped: they can only come from a crafted or
+    corrupted request, and letting them reach a UUIDField lookup raises
+    ValidationError (an unhandled 500) instead of being ignored.
+    """
+    return [s.strip() for s in (raw or "").split(",") if s.strip() and _is_valid_uuid(s.strip())]
+
+
+def _get_account_scope(request):
+    """Return the validated ``account_scope`` POST value, or ``None`` when unscoped.
+
+    The hidden input is server-rendered from a UUID-validated ``?account=``
+    param, so a malformed value means a crafted or corrupted request —
+    reject it outright (HTTP 400) rather than guessing which rows to touch.
+    """
+    scope = request.POST.get("account_scope", "").strip()
+    if not scope:
+        return None
+    if not _is_valid_uuid(scope):
+        raise SuspiciousOperation("Malformed account_scope.")
+    return scope
+
+
+def _remove_deselected_platform_posts(request, post, selected_ids):
+    """Delete PlatformPosts the user deselected in the composer form.
+
+    When the composer was opened scoped to a single account
+    (``?account=`` → hidden ``account_scope`` input), the form only renders
+    that account, so ``selected_ids`` is NOT the complete desired set —
+    restrict deletion to the scoped account to keep siblings intact.
+    Published/publishing rows are never deleted by deselection (explicit
+    post deletion remains the user's call — see PlatformPost.PROTECTED_STATUSES).
+    """
+    qs = post.platform_posts.exclude(social_account_id__in=selected_ids)
+    scope = _get_account_scope(request)
+    if scope:
+        qs = qs.filter(social_account_id=scope)
+    qs.exclude(status__in=PlatformPost.PROTECTED_STATUSES).delete()
+
+
+def _scoped_platform_post_ids(request, post):
+    """PlatformPost IDs inside the composer's ``account_scope``, or ``None`` when unscoped."""
+    scope = _get_account_scope(request)
+    if not scope:
+        return None
+    return list(post.platform_posts.filter(social_account_id=scope).values_list("id", flat=True))
+
+
 def _sync_platform_posts(request, post, workspace, initial_status=None):
     """Sync platform post selections from form data.
 
@@ -63,9 +135,8 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
     ``"pending_review"``). Existing rows are not touched here — call
     ``_transition_post_children`` separately if you want to move them.
     """
-    selected_ids_str = request.POST.get("selected_accounts", "")
-    selected_ids = [s.strip() for s in selected_ids_str.split(",") if s.strip()]
-    post.platform_posts.exclude(social_account_id__in=selected_ids).delete()
+    selected_ids = _parse_selected_account_ids(request.POST.get("selected_accounts", ""))
+    _remove_deselected_platform_posts(request, post, selected_ids)
     for acc_id in selected_ids:
         try:
             account = SocialAccount.objects.get(id=acc_id, workspace=workspace)
@@ -88,8 +159,7 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
 
         # Per-platform extras
         if account.platform == "youtube":
-            tags_raw = request.POST.get(f"yt_tags_{acc_id}", "")
-            tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
+            tags_list = parse_and_truncate_youtube_tag_string(request.POST.get(f"yt_tags_{acc_id}", ""))
             privacy_status = request.POST.get(f"yt_privacy_status_{acc_id}", "public")
             if privacy_status not in ("public", "unlisted", "private"):
                 privacy_status = "public"
@@ -102,8 +172,11 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
             }
 
         elif account.platform == "pinterest":
+            board_id = request.POST.get(f"pin_board_id_{acc_id}", "").strip()
+            if not board_id:
+                board_id = (pp.platform_extra or {}).get("board_id") or None
             pp.platform_extra = {
-                "board_id": request.POST.get(f"pin_board_id_{acc_id}", "").strip() or None,
+                "board_id": board_id,
                 "link_url": request.POST.get(f"pin_link_url_{acc_id}", "").strip() or None,
                 "alt_text": request.POST.get(f"pin_alt_text_{acc_id}", "").strip() or None,
                 "tag_products": request.POST.get(f"pin_tag_products_{acc_id}", "").strip() or None,
@@ -112,7 +185,68 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
                 "cover_image_asset_id": request.POST.get(f"pin_cover_image_asset_id_{acc_id}", "").strip() or None,
             }
 
+        elif account.platform == "tiktok" and f"tiktok_privacy_level_{acc_id}" in request.POST:
+            # Only rebuild extras when the TikTok panel was part of the form,
+            # so non-composer saves can't wipe a previously chosen privacy level.
+            privacy = request.POST.get(f"tiktok_privacy_level_{acc_id}", "").strip()
+            if privacy not in TIKTOK_PRIVACY_LEVELS:
+                # An empty/invalid submit (required-validation bypassed) must
+                # not wipe a previously saved choice.
+                privacy = (pp.platform_extra or {}).get("privacy_level", "")
+            # Comment / Duet / Stitch are independent interaction settings —
+            # TikTok's UX guidelines require a separate toggle per interaction,
+            # each greyed out on its own when the creator disabled it.
+            extra = {
+                "disable_comment": request.POST.get(f"tiktok_allow_comment_{acc_id}") != "true",
+                "disable_duet": request.POST.get(f"tiktok_allow_duet_{acc_id}") != "true",
+                "disable_stitch": request.POST.get(f"tiktok_allow_stitch_{acc_id}") != "true",
+                "brand_organic_toggle": request.POST.get(f"tiktok_brand_organic_{acc_id}") == "true",
+                "brand_content_toggle": request.POST.get(f"tiktok_brand_content_{acc_id}") == "true",
+                "is_aigc": request.POST.get(f"tiktok_is_aigc_{acc_id}") == "true",
+            }
+            if privacy:
+                extra["privacy_level"] = privacy
+            # Cover frame timestamp from the composer's frame picker; omitted
+            # when blank/invalid so TikTok falls back to the first frame.
+            # Parse with int() rather than str.isdigit() — isdigit() accepts
+            # non-ASCII digits (e.g. "²", "١٢") that int() then rejects with an
+            # unhandled ValueError.
+            cover_ms = request.POST.get(f"tiktok_video_cover_timestamp_ms_{acc_id}", "").strip()
+            if cover_ms:
+                try:
+                    cover_ms_val = int(cover_ms)
+                except ValueError:
+                    cover_ms_val = -1
+                if cover_ms_val >= 0:
+                    extra["video_cover_timestamp_ms"] = cover_ms_val
+            pp.platform_extra = extra
+
         pp.save()
+
+
+def _validate_pinterest_board_selection(request, post, workspace):
+    """Selected Pinterest accounts need a board before composer save/submit."""
+    selected_ids = _parse_selected_account_ids(request.POST.get("selected_accounts", ""))
+    if not selected_ids:
+        return None
+
+    accounts = SocialAccount.objects.filter(id__in=selected_ids, workspace=workspace, platform="pinterest")
+    for account in accounts:
+        acc_id = str(account.id)
+        board_id = request.POST.get(f"pin_board_id_{acc_id}", "").strip()
+        if not board_id and post.pk:
+            board_id = (
+                PlatformPost.objects.filter(post=post, social_account=account)
+                .values_list("platform_extra__board_id", flat=True)
+                .first()
+                or ""
+            )
+        if not board_id:
+            return JsonResponse(
+                {"errors": {"pinterest_board": f"Select a Pinterest board for {account.account_name}."}},
+                status=400,
+            )
+    return None
 
 
 def _save_version(post, user):
@@ -167,8 +301,7 @@ def _resolve_queues_for_post(queue_id, workspace, post_data):
         q = Queue.objects.filter(id=queue_id, workspace=workspace, is_active=True).first()
         return [q] if q else []
 
-    selected_raw = post_data.get("selected_accounts", "") or ""
-    account_ids = [a.strip() for a in selected_raw.split(",") if a.strip()]
+    account_ids = _parse_selected_account_ids(post_data.get("selected_accounts", ""))
     if not account_ids:
         return []
 
@@ -186,37 +319,6 @@ def _resolve_queues_for_post(queue_id, workspace, post_data):
         seen.add(q.social_account_id)
         unique.append(q)
     return unique
-
-
-def _reassign_queue_slots_from_floor(queues, post, floor_date, workspace):
-    """Override per-platform scheduled_at for *post* with the next posting slot
-    on/after *floor_date* for each queue's social account.
-
-    Used when the composer was opened from a specific calendar day - we want
-    each platform to pick its earliest available slot starting that day,
-    independently.
-    """
-    from apps.calendar.services import _next_slot_datetimes
-    from apps.composer.services import sync_post_scheduled_at
-
-    ws_tz = workspace.effective_timezone or "UTC"
-    import zoneinfo
-
-    tz = zoneinfo.ZoneInfo(ws_tz)
-    floor_dt = datetime.combine(floor_date, datetime.min.time()).replace(tzinfo=tz)
-    floor_dt = max(floor_dt, timezone.now())
-
-    for q in queues:
-        slots = _next_slot_datetimes(q.social_account, floor_dt, count=1)
-        if not slots:
-            continue
-        pp = post.platform_posts.filter(social_account=q.social_account).first()
-        if pp is None:
-            continue
-        pp.scheduled_at = slots[0]
-        pp.save(update_fields=["scheduled_at", "updated_at"])
-
-    sync_post_scheduled_at(post)
 
 
 def _resolve_template_data(template_id, workspace):
@@ -258,6 +360,19 @@ def compose(request, workspace_id, post_id=None):
     """Render the full-page composer for creating or editing a post."""
     workspace = _get_workspace(request, workspace_id)
 
+    # ?account= scopes the composer to one connected account (calendar links).
+    # Validate it up front: a malformed value must behave as "unscoped" rather
+    # than leak into UUID lookups (ValidationError → 500) or the hidden
+    # account_scope input the save endpoints trust.
+    account_filter = request.GET.get("account", "").strip()
+    if account_filter and not _is_valid_uuid(account_filter):
+        account_filter = ""
+
+    # True when the Schedule Post panel is pre-filled from a draft's *proposed*
+    # time rather than a committed schedule — the composer uses this to keep the
+    # primary action as "Save Draft" instead of arming "schedule for real".
+    schedule_prefill_is_proposed = False
+
     # Load existing post or prepare a blank one
     if post_id:
         post = get_object_or_404(Post, id=post_id, workspace=workspace)
@@ -268,22 +383,27 @@ def compose(request, workspace_id, post_id=None):
         if post.author != request.user and not perms.get("edit_others_posts", False):
             raise PermissionDenied("You do not have permission to edit this post.")
         form = PostForm(instance=post)
-        if post.scheduled_at:
+        # Prefer a committed schedule; fall back to a draft-stage proposal so
+        # the Schedule Post panel shows whichever time the post carries.
+        prefill_dt = post.scheduled_at or post.proposed_publish_at
+        if prefill_dt:
             import zoneinfo
 
             tz = zoneinfo.ZoneInfo(workspace.effective_timezone or "UTC")
-            local_dt = post.scheduled_at.astimezone(tz)
+            local_dt = prefill_dt.astimezone(tz)
             form.initial["scheduled_date"] = local_dt.strftime("%Y-%m-%d")
             form.initial["scheduled_time"] = local_dt.strftime("%H:%M")
-        _acct_filter = request.GET.get("account")
-        if _acct_filter:
-            selected_account_ids = list(
-                post.platform_posts.filter(social_account_id=_acct_filter).values_list("social_account_id", flat=True)
-            )
+            schedule_prefill_is_proposed = post.scheduled_at is None
+        # One fetch serves selected ids, extras, and the status checks below.
+        platform_post_list = list(post.platform_posts.select_related("social_account"))
+        if account_filter:
+            selected_account_ids = [
+                pp.social_account_id for pp in platform_post_list if str(pp.social_account_id) == account_filter
+            ]
         else:
-            selected_account_ids = list(post.platform_posts.values_list("social_account_id", flat=True))
+            selected_account_ids = [pp.social_account_id for pp in platform_post_list]
         media_attachments = post.media_attachments.select_related("media_asset").all()
-        platform_extras = {str(pp.social_account_id): (pp.platform_extra or {}) for pp in post.platform_posts.all()}
+        platform_extras = {str(pp.social_account_id): (pp.platform_extra or {}) for pp in platform_post_list}
         template_data = None
     else:
         post = None
@@ -310,6 +430,7 @@ def compose(request, workspace_id, post_id=None):
         if template_data and template_data.get("caption"):
             initial["caption"] = template_data["caption"]
         form = PostForm(initial=initial)
+        platform_post_list = []
         selected_account_ids = []
         media_attachments = []
         platform_extras = {}
@@ -332,21 +453,23 @@ def compose(request, workspace_id, post_id=None):
         .order_by("platform", "account_name")
     )
 
-    # When opening from calendar with a specific account, show only that account
-    account_filter = request.GET.get("account")
-    if account_filter and post_id:
+    # When opening from calendar with a specific account, show only that account.
+    if account_filter:
         social_accounts = social_accounts.filter(id=account_filter)
+        if not post_id and social_accounts.exists():
+            selected_account_ids = [account_filter]
 
     # Platform character limits for JS
-    char_limits = {
-        str(acc.id): {
+    char_limits = {}
+    for acc in social_accounts:
+        cfg = dict(acc.field_config)
+        cfg["supports_first_comment"] = acc.supports_first_comment()
+        char_limits[str(acc.id)] = {
             "platform": acc.platform,
             "limit": acc.char_limit,
             "name": acc.account_name or acc.account_handle,
-            **acc.field_config,
+            **cfg,
         }
-        for acc in social_accounts
-    }
 
     # Workspace defaults
     default_first_comment = workspace.default_first_comment
@@ -372,24 +495,49 @@ def compose(request, workspace_id, post_id=None):
 
     # Approval workflow context
     workflow_mode = workspace.approval_workflow_mode
-    show_submit_button = workflow_mode != "none"
-    show_resubmit_button = (
-        post is not None and post.platform_posts.filter(status__in=("changes_requested", "rejected")).exists()
+    show_resubmit_button = any(pp.status in ("changes_requested", "rejected", "approved") for pp in platform_post_list)
+    # Fresh drafts get "Submit for Approval"; posts already in the workflow
+    # (changes-requested / rejected / approved-but-edited) get "Resubmit" instead.
+    show_submit_button = workflow_mode != "none" and not show_resubmit_button
+    # Once the post is committed to publishing, the Schedule Post panel re-times
+    # a live schedule; while still a draft it captures a *proposed* time on save.
+    # Mirror _capture_proposed_publish_at's guard exactly (scheduled_at OR a
+    # committed child) so the hint, the JS schedule-arming, and the save path
+    # never disagree.
+    post_is_scheduled = post is not None and (
+        post.scheduled_at is not None
+        or any(pp.status in ("scheduled", "publishing", "published") for pp in platform_post_list)
     )
 
     # Approval history and comments for existing posts
     approval_history = []
     post_comments = []
+    latest_feedback = None
     if post:
         from apps.approvals.models import ApprovalAction
 
-        approval_history = ApprovalAction.objects.filter(post=post).select_related("user").order_by("-created_at")[:10]
+        # Show recent history (bounded) — a heavily-cycled post can accumulate
+        # unboundedly many actions; 50 is plenty for the timeline.
+        approval_history = list(
+            ApprovalAction.objects.filter(post=post).select_related("user").order_by("-created_at")[:50]
+        )
+        # Most recent reviewer feedback to surface in the edit banner.
+        latest_feedback = next(
+            (a for a in approval_history if a.action in ("changes_requested", "rejected") and a.comment),
+            None,
+        )
         from apps.approvals.comments import get_comments_for_post
 
         post_comments = get_comments_for_post(post, request.user)
 
     # Workspace tags for the tag dropdown
     all_tags = Tag.objects.for_workspace(workspace.id)
+
+    # Failed platform posts with an error message — shown as a banner so the
+    # user can see why a publish failed before retrying.
+    failed_platform_posts = [
+        pp for pp in platform_post_list if pp.status == PlatformPost.Status.FAILED and pp.publish_error
+    ]
 
     # Build media_items for the initial preview render
     media_items = []
@@ -443,17 +591,18 @@ def compose(request, workspace_id, post_id=None):
         "form": form,
         "social_accounts": social_accounts,
         "selected_account_ids": [str(aid) for aid in selected_account_ids],
-        "platform_extras_json": json.dumps(platform_extras),
+        "platform_extras": platform_extras,
         "media_attachments": media_attachments,
         "media_items": media_items,
-        "media_items_json": json.dumps(media_items),
-        "char_limits_json": json.dumps(char_limits),
+        "char_limits": char_limits,
         "default_first_comment": default_first_comment,
         "default_hashtags": json.dumps(default_hashtags),
         "can_publish": can_publish,
         "can_approve": can_approve,
         "can_view_internal_notes": can_view_internal_notes,
         "is_edit": post is not None,
+        "schedule_prefill_is_proposed": schedule_prefill_is_proposed,
+        "post_is_scheduled": post_is_scheduled,
         "categories": categories,
         "queues": queues,
         "template_data_json": json.dumps(template_data) if template_data else "null",
@@ -461,9 +610,15 @@ def compose(request, workspace_id, post_id=None):
         "show_submit_button": show_submit_button,
         "show_resubmit_button": show_resubmit_button,
         "approval_history": approval_history,
+        "latest_feedback": latest_feedback,
         "post_comments": post_comments,
         "pending_assets": pending_assets,
         "all_tags": all_tags,
+        # When opened scoped to one account (?account=), the form only renders
+        # that account — the save endpoints use this to leave siblings alone.
+        "account_scope": account_filter if (post_id and account_filter) else "",
+        "failed_platform_posts": failed_platform_posts,
+        "unsplash_enabled": bool(settings.UNSPLASH_ACCESS_KEY),
     }
     return render(request, "composer/compose.html", context)
 
@@ -508,9 +663,79 @@ def _transition_post_children(post, target, *, allow_via_draft=True, only=None):
     return moved, skipped
 
 
+def _base_content_snapshot(post):
+    """Reviewable base content used to detect edits to an approved post."""
+    return (post.title, post.caption, post.first_comment, tuple(post.tags or []))
+
+
+def _revert_approved_to_review(post):
+    """Option A: editing an approved post's content sends it back for re-approval.
+
+    Silently reverts any ``approved`` children to ``pending_review`` so edited
+    content can't publish without a fresh review. (The explicit "Resubmit for
+    review" button additionally notifies reviewers; this is the safety net for
+    plain saves/autosaves.) Returns the reverted children.
+    """
+    reverted = []
+    for pp in post.platform_posts.all():
+        if pp.status == "approved" and pp.can_transition_to("pending_review"):
+            pp.transition_to("pending_review")
+            pp.save(update_fields=["status", "published_at", "updated_at"])
+            reverted.append(pp)
+    return reverted
+
+
 def _platform_status_map(post):
     """Return ``{platform_post_id: status}`` for HTMX response headers."""
     return {str(pp.id): pp.status for pp in post.platform_posts.all()}
+
+
+def _combine_schedule_dt(workspace, sched_date, sched_time):
+    """Combine the composer's date + time inputs into a workspace-tz-aware datetime.
+
+    Returns ``None`` unless both parts are present. Shared by the real
+    schedule (``action='schedule'``) and the draft-stage proposed time so both
+    interpret the same Schedule Post panel inputs identically.
+    """
+    if not (sched_date and sched_time):
+        return None
+    import zoneinfo
+
+    tz = zoneinfo.ZoneInfo(workspace.effective_timezone or "UTC")
+    return datetime.combine(sched_date, sched_time).replace(tzinfo=tz)
+
+
+def _capture_proposed_publish_at(post, post_id, workspace, form, *, clear_when_blank=True):
+    """Set ``post.proposed_publish_at`` from the composer's Schedule Post panel.
+
+    Used by the draft-stage save actions (save draft, submit/resubmit for
+    approval) so a proposed time entered in the panel is persisted and shown in
+    the drafts/approval lists. Mutates ``post`` in place; the caller persists it.
+
+    A no-op once the post is committed to publishing — ``post.scheduled_at`` is
+    set or any child is scheduled/publishing/published — because then the
+    date/time inputs reflect the live schedule (pre-filled from ``scheduled_at``)
+    and must not be reinterpreted as a proposal.
+
+    ``clear_when_blank`` (default True, for Save Draft where the panel *is* the
+    proposed-time editor) clears the proposal when the panel is empty. The
+    approval submit/resubmit actions pass False so routing a draft through
+    approval with an untouched/absent panel can't silently wipe a proposal an
+    agent set via the REST/MCP API.
+    """
+    already_scheduled = post.scheduled_at is not None or (
+        bool(post_id) and post.platform_posts.filter(status__in=["scheduled", "publishing", "published"]).exists()
+    )
+    if already_scheduled:
+        return
+    proposed = _combine_schedule_dt(
+        workspace,
+        form.cleaned_data.get("scheduled_date"),
+        form.cleaned_data.get("scheduled_time"),
+    )
+    if proposed is None and not clear_when_blank:
+        return
+    post.proposed_publish_at = proposed
 
 
 @login_required
@@ -528,8 +753,10 @@ def save_post(request, workspace_id, post_id=None):
         perms = membership.effective_permissions if membership else {}
         if post.author != request.user and not perms.get("edit_others_posts", False):
             raise PermissionDenied("You do not have permission to edit this post.")
+        _orig_content = _base_content_snapshot(post)
         form = PostForm(request.POST, instance=post)
     else:
+        _orig_content = None
         form = PostForm(request.POST)
 
     if not form.is_valid():
@@ -540,6 +767,10 @@ def save_post(request, workspace_id, post_id=None):
     if not post_id:
         post.author = request.user
 
+    pinterest_board_error = _validate_pinterest_board_selection(request, post, workspace)
+    if pinterest_board_error is not None:
+        return pinterest_board_error
+
     # Handle action — note that Post itself no longer carries an editorial
     # status: every transition below operates on the PlatformPost children,
     # which is why we sync those before/after running it.
@@ -547,21 +778,20 @@ def save_post(request, workspace_id, post_id=None):
     initial_status = "draft"  # default status for newly created PlatformPosts
 
     if action == "schedule":
-        sched_date = form.cleaned_data.get("scheduled_date")
-        sched_time = form.cleaned_data.get("scheduled_time")
-        if sched_date and sched_time:
-            ws_tz = workspace.effective_timezone or "UTC"
-            import zoneinfo
-
-            tz = zoneinfo.ZoneInfo(ws_tz)
-            naive_dt = datetime.combine(sched_date, sched_time)
-            aware_dt = naive_dt.replace(tzinfo=tz)
+        aware_dt = _combine_schedule_dt(
+            workspace,
+            form.cleaned_data.get("scheduled_date"),
+            form.cleaned_data.get("scheduled_time"),
+        )
+        if aware_dt:
             if aware_dt <= timezone.now():
                 return JsonResponse(
                     {"errors": {"schedule": "Scheduled time must be in the future."}},
                     status=400,
                 )
             post.scheduled_at = aware_dt
+            # A committed schedule supersedes any draft-stage proposal.
+            post.proposed_publish_at = None
             # Propagate the manually chosen time to every PlatformPost so all
             # selected platforms publish at the same moment.
             post._schedule_propagate_dt = aware_dt  # handled after post.save()
@@ -577,29 +807,41 @@ def save_post(request, workspace_id, post_id=None):
             raise PermissionDenied("You do not have permission to publish directly.")
         now_dt = timezone.now()
         post.scheduled_at = now_dt
+        post.proposed_publish_at = None
         post._schedule_propagate_dt = now_dt  # handled after post.save()
         pending_target = "scheduled"
         initial_status = "scheduled"
     elif action == "add_to_queue":
-        from apps.calendar.services import add_to_queue
+        from django.db import transaction
+
+        from apps.calendar.services import QueueFullError, add_to_queue
 
         queue_id = request.POST.get("queue_id")
         queues = _resolve_queues_for_post(queue_id, workspace, request.POST)
         if not queues:
             return JsonResponse({"errors": {"queue": "No active queue found for the selected channel."}}, status=400)
+        # Queueing assigns real per-platform slots below — drop any proposal.
+        post.proposed_publish_at = None
         post.save()
         # Ensure PlatformPost rows exist for every selected account before the
         # queue service writes per-platform scheduled_at values.
         _sync_platform_posts(request, post, workspace, initial_status="draft")
-        for q in queues:
-            add_to_queue(post, q)
-        # If opened from a specific calendar day (month/week/day "+" CTA), each
-        # queue should use that day as its floor - re-assign slots accordingly.
-        floor_date = form.cleaned_data.get("scheduled_date")
-        if floor_date:
-            _reassign_queue_slots_from_floor(queues, post, floor_date, workspace)
-        # Transition every child whose scheduled_at was filled in to "scheduled".
-        _transition_post_children(post, "scheduled")
+        # "Next Available" always places the post in the queue's soonest open
+        # slot. It deliberately ignores the Schedule-panel date/time: those
+        # inputs are prefilled from the post's own scheduled_at/proposed time
+        # when editing, and treating them as a floor would push the post past
+        # the true next slot.
+        try:
+            # One transaction across every queue: if a later queue is full, the
+            # earlier queues' slot writes roll back instead of leaving a child
+            # half-queued.
+            with transaction.atomic():
+                for q in queues:
+                    add_to_queue(post, q)
+                # Transition every child whose scheduled_at was filled in.
+                _transition_post_children(post, "scheduled", only=_scoped_platform_post_ids(request, post))
+        except QueueFullError:
+            return JsonResponse({"errors": {"queue": _QUEUE_FULL_MSG}}, status=400)
         _save_version(post, request.user)
         if request.htmx:
             return HttpResponse(
@@ -611,17 +853,26 @@ def save_post(request, workspace_id, post_id=None):
             )
         return redirect("composer:compose_edit", workspace_id=workspace.id, post_id=post.id)
     elif action == "add_to_queue_priority":
-        from apps.calendar.services import add_to_queue
+        from django.db import transaction
+
+        from apps.calendar.services import QueueFullError, add_to_queue
 
         queue_id = request.POST.get("queue_id")
         queues = _resolve_queues_for_post(queue_id, workspace, request.POST)
         if not queues:
             return JsonResponse({"errors": {"queue": "No active queue found for the selected channel."}}, status=400)
+        # Queueing assigns real per-platform slots below — drop any proposal.
+        post.proposed_publish_at = None
         post.save()
         _sync_platform_posts(request, post, workspace, initial_status="draft")
-        for q in queues:
-            add_to_queue(post, q, priority=True)
-        _transition_post_children(post, "scheduled")
+        try:
+            # One transaction across every queue (see add_to_queue above).
+            with transaction.atomic():
+                for q in queues:
+                    add_to_queue(post, q, priority=True)
+                _transition_post_children(post, "scheduled", only=_scoped_platform_post_ids(request, post))
+        except QueueFullError:
+            return JsonResponse({"errors": {"queue": _QUEUE_FULL_MSG}}, status=400)
         _save_version(post, request.user)
         if request.htmx:
             return HttpResponse(
@@ -634,6 +885,7 @@ def save_post(request, workspace_id, post_id=None):
         return redirect("composer:compose_edit", workspace_id=workspace.id, post_id=post.id)
     elif action == "submit_for_approval":
         # Save post first so it has a PK, then delegate to approval service
+        _capture_proposed_publish_at(post, post_id, workspace, form, clear_when_blank=False)
         post.save()
         # Sync platform posts before submitting
         _sync_platform_posts(request, post, workspace, initial_status="draft")
@@ -652,6 +904,7 @@ def save_post(request, workspace_id, post_id=None):
         return redirect("composer:compose_edit", workspace_id=workspace.id, post_id=post.id)
     elif action == "resubmit_for_approval":
         # Resubmit after changes requested or rejection
+        _capture_proposed_publish_at(post, post_id, workspace, form, clear_when_blank=False)
         post.save()
         _sync_platform_posts(request, post, workspace, initial_status="draft")
         _save_version(post, request.user)
@@ -667,8 +920,12 @@ def save_post(request, workspace_id, post_id=None):
                 },
             )
         return redirect("composer:compose_edit", workspace_id=workspace.id, post_id=post.id)
-    # else: save_draft — leave children as-is for existing posts; new children
-    # default to draft via initial_status above.
+    elif action == "save_draft":
+        # The Schedule Post panel doubles as the proposed-time picker for a
+        # draft; capture it (or clear it when blank) before the save below.
+        _capture_proposed_publish_at(post, post_id, workspace, form)
+    # Fall through (save_draft / unknown action): persist below; existing
+    # children are left as-is, new children default to draft via initial_status.
 
     post.save()
 
@@ -730,15 +987,36 @@ def save_post(request, workspace_id, post_id=None):
     _sync_platform_posts(request, post, workspace, initial_status=initial_status)
 
     # Propagate manually-chosen schedule/publish_now datetimes to every
-    # PlatformPost now that they exist.
+    # PlatformPost now that they exist — except published/publishing rows
+    # (their schedule is history) and, in scoped mode, siblings outside the
+    # ``?account=`` scope.
+    scoped_ids = _scoped_platform_post_ids(request, post)
     propagate_dt = getattr(post, "_schedule_propagate_dt", None)
     if propagate_dt is not None:
-        post.platform_posts.update(scheduled_at=propagate_dt)
+        propagate_qs = post.platform_posts.exclude(status__in=PlatformPost.PROTECTED_STATUSES)
+        if scoped_ids is not None:
+            propagate_qs = propagate_qs.filter(id__in=scoped_ids)
+        propagate_qs.update(scheduled_at=propagate_dt)
 
-    # Move existing children to the requested target state (no-op for
-    # save_draft — children that are already mid-workflow stay put).
+    # Option A: editing an approved post's reviewable content sends it back for
+    # re-approval so edits can't publish un-reviewed. Run this BEFORE applying any
+    # publish target — otherwise a schedule/publish_now in the *same* save would
+    # push the just-edited (no-longer-approved) content straight to scheduled.
+    # Only ``approved`` children are reverted; anything else is a no-op.
+    content_changed = _orig_content is not None and _base_content_snapshot(post) != _orig_content
+    reverted_ids = {str(pp.id) for pp in _revert_approved_to_review(post)} if content_changed else set()
+
+    # Move existing children to the requested target state (no-op for save_draft —
+    # children that are already mid-workflow stay put). Children just reverted for
+    # re-review are excluded so a same-save publish action can't drag them back
+    # out of review.
     if pending_target:
-        _transition_post_children(post, pending_target)
+        if reverted_ids:
+            candidates = scoped_ids if scoped_ids is not None else [pp.id for pp in post.platform_posts.all()]
+            target_only = [pid for pid in candidates if str(pid) not in reverted_ids]
+        else:
+            target_only = scoped_ids
+        _transition_post_children(post, pending_target, only=target_only)
 
     # Save version
     _save_version(post, request.user)
@@ -800,6 +1078,14 @@ def transition_platform_post(request, workspace_id, post_id, platform_post_id):
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     pp.save(update_fields=["status", "published_at", "updated_at"])
+    # Committing a child to publishing obsoletes any draft-stage proposal.
+    # Clear it directly rather than via sync_post_scheduled_at: this view sets
+    # ``scheduled`` WITHOUT a ``scheduled_at``, and the publisher relies on the
+    # ``Coalesce(scheduled_at, post__scheduled_at)`` fallback — recomputing the
+    # Post.scheduled_at aggregate here could strand a post that depends on it.
+    if target in ("scheduled", "publishing", "published") and pp.post.proposed_publish_at is not None:
+        pp.post.proposed_publish_at = None
+        pp.post.save(update_fields=["proposed_publish_at", "updated_at"])
     return JsonResponse({"ok": True, "status": pp.status, "platform_post_id": str(pp.id)})
 
 
@@ -816,6 +1102,7 @@ def autosave(request, workspace_id, post_id=None):
     workspace = _get_workspace(request, workspace_id)
 
     is_new = False
+    orig_content = None
     if post_id:
         post = get_object_or_404(Post, id=post_id, workspace=workspace)
         # Enforce edit permissions on existing posts
@@ -823,6 +1110,7 @@ def autosave(request, workspace_id, post_id=None):
         perms = membership.effective_permissions if membership else {}
         if post.author != request.user and not perms.get("edit_others_posts", False):
             raise PermissionDenied("You do not have permission to edit this post.")
+        orig_content = _base_content_snapshot(post)
     else:
         # Check if a previous autosave already created a draft for this session
         # by looking for the post_id passed from the client
@@ -842,9 +1130,7 @@ def autosave(request, workspace_id, post_id=None):
     post.first_comment = request.POST.get("first_comment", "")
     post.internal_notes = request.POST.get("internal_notes", "")
 
-    tags_raw = request.POST.get("tags", "")
-    if tags_raw:
-        post.tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    post.tags = parse_and_truncate_tag_string(request.POST.get("tags", ""))
 
     post.save()
 
@@ -868,14 +1154,18 @@ def autosave(request, workspace_id, post_id=None):
             del request.session[session_key]
 
     # Sync platform selections
-    selected_ids_str = request.POST.get("selected_accounts", "")
-    selected_ids = [s.strip() for s in selected_ids_str.split(",") if s.strip()]
-    post.platform_posts.exclude(social_account_id__in=selected_ids).delete()
+    selected_ids = _parse_selected_account_ids(request.POST.get("selected_accounts", ""))
+    _remove_deselected_platform_posts(request, post, selected_ids)
     for acc_id in selected_ids:
         PlatformPost.objects.get_or_create(
             post=post,
             social_account_id=acc_id,
         )
+
+    # Option A: an autosave that changed an approved post's content reverts it to
+    # pending_review so edited content can't publish without a fresh review.
+    if orig_content is not None and _base_content_snapshot(post) != orig_content:
+        _revert_approved_to_review(post)
 
     return HttpResponse(
         f'<span class="text-xs text-gray-400">Saved {timezone.now().strftime("%H:%M")}</span>',
@@ -884,7 +1174,7 @@ def autosave(request, workspace_id, post_id=None):
 
 
 @login_required
-@require_GET
+@require_POST
 def preview(request, workspace_id):
     """Live preview endpoint - renders platform-specific preview from form state.
 
@@ -892,11 +1182,10 @@ def preview(request, workspace_id):
     Stateless - no DB queries except social account lookup.
     """
     workspace = _get_workspace(request, workspace_id)
-    title = request.GET.get("title", "")
-    caption = request.GET.get("caption", "")
-    first_comment = request.GET.get("first_comment", "")
-    selected_ids_str = request.GET.get("selected_accounts", "")
-    selected_ids = [s.strip() for s in selected_ids_str.split(",") if s.strip()]
+    title = request.POST.get("title", "")
+    caption = request.POST.get("caption", "")
+    first_comment = request.POST.get("first_comment", "")
+    selected_ids = _parse_selected_account_ids(request.POST.get("selected_accounts", ""))
 
     # Build preview data per platform
     previews = []
@@ -908,8 +1197,8 @@ def preview(request, workspace_id):
         for account in accounts:
             override_title_key = f"override_title_{account.id}"
             override_key = f"override_caption_{account.id}"
-            effective_title = request.GET.get(override_title_key, "") or title
-            effective_caption = request.GET.get(override_key, "") or caption
+            effective_title = request.POST.get(override_title_key, "") or title
+            effective_caption = request.POST.get(override_key, "") or caption
             char_limit = account.char_limit
             field_config = account.field_config
             previews.append(
@@ -932,7 +1221,7 @@ def preview(request, workspace_id):
     from apps.media_library.models import MediaAsset
 
     media_items = []
-    post_id_str = request.GET.get("_autosave_post_id", "")
+    post_id_str = request.POST.get("_autosave_post_id", "")
 
     if post_id_str:
         try:
@@ -985,7 +1274,9 @@ def media_picker(request, workspace_id, post_id=None):
     if post_id:
         post = get_object_or_404(Post, id=post_id, workspace=workspace)
 
-    assets = MediaAsset.objects.for_workspace(workspace.id).order_by("-created_at")[:50]
+    assets = MediaAsset.objects.for_workspace_with_shared(workspace.id, workspace.organization_id).order_by(
+        "-created_at"
+    )[:50]
     return render(
         request,
         "composer/partials/media_picker.html",
@@ -1041,6 +1332,7 @@ def thumbnail_upload(request, workspace_id):
     from apps.media_library.models import MediaAsset
 
     asset = MediaAsset.objects.create(
+        organization=workspace.organization,
         workspace=workspace,
         uploaded_by=request.user,
         file=uploaded_file,
@@ -1066,6 +1358,412 @@ def thumbnail_upload(request, workspace_id):
     )
 
 
+_RANGE_HEADER_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+class _RangeFileIterator:
+    """Iterate a bounded byte window of an already-positioned file handle."""
+
+    def __init__(self, file_handle, remaining, chunk_size=64 * 1024):
+        self.file_handle = file_handle
+        self.remaining = remaining
+        self.chunk_size = chunk_size
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.remaining <= 0:
+            raise StopIteration
+        data = self.file_handle.read(min(self.chunk_size, self.remaining))
+        if not data:
+            raise StopIteration
+        self.remaining -= len(data)
+        return data
+
+    def close(self):
+        if hasattr(self.file_handle, "close"):
+            self.file_handle.close()
+
+
+@login_required
+@require_GET
+def media_stream(request, workspace_id, asset_id):
+    """Stream a media asset through the app's own origin, with Range support.
+
+    The composer's frame picker draws video frames onto a canvas, which the
+    browser only allows for same-origin (or CORS-approved) media. Object
+    storage like S3/R2 serves signed URLs from another origin, usually
+    without CORS headers, so the raw file URL would taint the canvas.
+
+    Byte-range requests matter here: without them the browser can't seek a
+    <video> beyond what it has buffered (the scrubber and filmstrip clicks
+    silently do nothing) and has to download the whole file up front.
+    """
+    workspace = _get_workspace(request, workspace_id)
+
+    from apps.media_library.models import MediaAsset
+
+    asset = get_object_or_404(
+        MediaAsset.objects.for_workspace_with_shared(
+            workspace_id=workspace.id,
+            organization_id=workspace.organization_id,
+        ),
+        pk=asset_id,
+    )
+    if not asset.file:
+        raise Http404
+    # The DB row can outlive the stored object (lifecycle rule, manual S3
+    # deletion); opening/stat-ing it then raises a backend error rather than
+    # returning an empty FieldFile, so map that to 404 instead of a 500.
+    try:
+        size = asset.file.size
+        file_handle = asset.file.open("rb")
+    except Exception:  # noqa: BLE001 - storage backends raise varied errors (OSError, botocore ClientError)
+        raise Http404 from None
+
+    content_type = asset.mime_type or "application/octet-stream"
+    range_match = _RANGE_HEADER_RE.match(request.headers.get("Range", ""))
+
+    if range_match and size:
+        start_str, end_str = range_match.groups()
+        if not start_str:
+            # Suffix range: the last N bytes.
+            length = min(int(end_str or 0), size)
+            start = size - length
+            end = size - 1
+        else:
+            start = int(start_str)
+            end = min(int(end_str), size - 1) if end_str else size - 1
+        if start >= size or start > end:
+            file_handle.close()
+            response = HttpResponse(status=416)
+            response["Content-Range"] = f"bytes */{size}"
+            return response
+        file_handle.seek(start)
+        response = StreamingHttpResponse(
+            _RangeFileIterator(file_handle, end - start + 1),
+            status=206,
+            content_type=content_type,
+        )
+        response["Content-Length"] = str(end - start + 1)
+        response["Content-Range"] = f"bytes {start}-{end}/{size}"
+    else:
+        response = FileResponse(file_handle, content_type=content_type)
+
+    response["Accept-Ranges"] = "bytes"
+    # Asset files are immutable per id - let the browser cache the stream so
+    # reopening the frame picker doesn't re-download the whole video.
+    response["Cache-Control"] = "private, max-age=3600"
+    return response
+
+
+@login_required
+@require_GET
+def media_filmstrip(request, workspace_id, asset_id):
+    """Return evenly-spaced thumbnail frames for the frame-picker filmstrip.
+
+    Extracted server-side with ffmpeg, which seeks each frame via byte ranges
+    instead of making the browser download (and decode) most of the video to
+    build the strip client-side.
+    """
+    workspace = _get_workspace(request, workspace_id)
+
+    import os
+    import tempfile
+
+    from apps.media_library.models import MediaAsset
+    from apps.media_library.services import extract_video_frames, extract_video_metadata
+
+    asset = get_object_or_404(
+        MediaAsset.objects.for_workspace_with_shared(
+            workspace_id=workspace.id,
+            organization_id=workspace.organization_id,
+        ),
+        pk=asset_id,
+    )
+    if asset.media_type != MediaAsset.MediaType.VIDEO or not asset.file:
+        raise Http404
+
+    # Mirror media_library's video pipeline: pull the file to one local temp
+    # file, then run all the ffmpeg seeks against it. Extracting each frame
+    # straight from the (remote) signed URL re-opens the connection and
+    # re-reads the moov atom every time - on R2 that was ~1.5s per frame.
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=f".{asset.file_extension}", delete=False) as tmp:
+            for chunk in asset.file.chunks():
+                tmp.write(chunk)
+            tmp_path = tmp.name
+    except Exception:  # noqa: BLE001 - storage backends raise varied errors when the object is gone
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise Http404 from None
+
+    try:
+        duration = asset.duration or extract_video_metadata(tmp_path).get("duration_seconds") or 0
+        if not duration:
+            return JsonResponse({"error": "Could not read video duration."}, status=502)
+
+        count = 8
+        timestamps = [round(duration * (i + 0.5) / count, 3) for i in range(count)]
+        jpegs = extract_video_frames(tmp_path, timestamps, width=160)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+
+    frames = [
+        {"time": t, "dataUrl": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()}
+        for t, jpg in zip(timestamps, jpegs, strict=False)
+        if jpg
+    ]
+    if not frames:
+        return JsonResponse({"error": "Could not extract frames."}, status=502)
+    return JsonResponse({"frames": frames, "duration": duration})
+
+
+UNSPLASH_API_BASE = "https://api.unsplash.com"
+UNSPLASH_IMAGE_HOST = "https://images.unsplash.com/"
+UNSPLASH_NOT_CONFIGURED = (
+    "Unsplash is not configured. Add UNSPLASH_ACCESS_KEY to your environment to enable stock-photo search."
+)
+UNSPLASH_MAX_IMPORT = 10
+UNSPLASH_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+
+
+def _as_str(value):
+    """Coerce an external/client JSON field to a string.
+
+    Client- and Unsplash-supplied payloads can carry ``null`` (or numbers)
+    where we expect a URL/text, so guard before ``.startswith()`` or feeding
+    a model's non-null string column - otherwise an ``AttributeError`` (or
+    IntegrityError) turns a should-fail-gracefully path into a 500.
+    """
+    return value if isinstance(value, str) else ""
+
+
+@login_required
+@require_GET
+def unsplash_search(request, workspace_id):
+    """Proxy an Unsplash photo search so the API key stays server-side.
+
+    Returns results trimmed to what the composer modal needs. Grid images are
+    hotlinked from the Unsplash CDN per their API guidelines.
+    """
+    _get_workspace(request, workspace_id)
+
+    if not settings.UNSPLASH_ACCESS_KEY:
+        return JsonResponse({"error": UNSPLASH_NOT_CONFIGURED}, status=503)
+
+    query = request.GET.get("q", "").strip()
+    if not query:
+        return JsonResponse({"error": "Missing search query"}, status=400)
+
+    try:
+        resp = httpx.get(
+            f"{UNSPLASH_API_BASE}/search/photos",
+            params={"query": query, "page": 1, "per_page": 24},
+            headers={
+                "Authorization": f"Client-ID {settings.UNSPLASH_ACCESS_KEY}",
+                "Accept-Version": "v1",
+            },
+            timeout=10.0,
+        )
+    except httpx.RequestError:
+        return JsonResponse({"error": "Could not reach Unsplash. Try again."}, status=502)
+
+    if resp.status_code in (401, 403):
+        return JsonResponse({"error": "Unsplash rejected the API key. Check UNSPLASH_ACCESS_KEY."}, status=502)
+    if resp.status_code == 429:
+        return JsonResponse({"error": "Unsplash rate limit reached. Try again in a few minutes."}, status=429)
+    if resp.status_code != 200:
+        return JsonResponse({"error": "Unsplash search failed. Try again."}, status=502)
+
+    # A 200 with a malformed body or an unexpected result shape (e.g. a bare
+    # list or null instead of an object) must surface as a friendly 502, not
+    # an unhandled 500.
+    try:
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected Unsplash response shape")
+        results = [
+            {
+                "id": p["id"],
+                "thumb": p["urls"]["small"],
+                "full": p["urls"]["regular"],
+                "width": p.get("width"),
+                "height": p.get("height"),
+                "color": p.get("color"),
+                "alt": p.get("alt_description") or p.get("description") or "",
+                "photographer": p["user"]["name"],
+                "photographer_url": p["user"]["links"]["html"],
+                "photo_url": p["links"]["html"],
+                "download_location": p["links"]["download_location"],
+            }
+            for p in data.get("results", [])
+        ]
+        total = data.get("total", 0)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return JsonResponse({"error": "Unexpected response from Unsplash. Try again."}, status=502)
+    return JsonResponse({"results": results, "total": total})
+
+
+@login_required
+@require_POST
+def unsplash_import(request, workspace_id, post_id=None):
+    """Download selected Unsplash photos server-side and attach them as media.
+
+    Mirrors upload_media: attaches to the post when post_id is given, else
+    queues in the pending-media session. Hits each photo's download_location
+    first, as Unsplash's guidelines require when a photo is actually used.
+    """
+    workspace = _get_workspace(request, workspace_id)
+
+    if not settings.UNSPLASH_ACCESS_KEY:
+        return JsonResponse({"error": UNSPLASH_NOT_CONFIGURED}, status=503)
+
+    try:
+        payload = json.loads(request.body)
+        photos = payload["photos"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return JsonResponse({"error": "Invalid request body"}, status=400)
+
+    if not isinstance(photos, list) or not photos:
+        return JsonResponse({"error": "No photos selected"}, status=400)
+    if len(photos) > UNSPLASH_MAX_IMPORT:
+        return JsonResponse({"error": f"Select at most {UNSPLASH_MAX_IMPORT} photos per import."}, status=400)
+
+    from django.core.files.base import ContentFile
+
+    from apps.media_library.models import MediaAsset
+    from apps.media_library.quotas import StorageQuotaExceededError, enforce_storage_quota
+
+    post = None
+    if post_id:
+        post = get_object_or_404(Post, id=post_id, workspace=workspace)
+
+    auth_headers = {"Authorization": f"Client-ID {settings.UNSPLASH_ACCESS_KEY}"}
+    new_assets = []
+    attachments = []
+    failed = 0
+    quota_exceeded = False
+
+    # follow_redirects is OFF: the host allowlist below is only meaningful if a
+    # 30x can't bounce the request to an internal address (SSRF). One pooled
+    # client reuses connections across the per-photo registration + download.
+    with httpx.Client(follow_redirects=False, timeout=30.0) as client:
+        for photo in photos:
+            if not isinstance(photo, dict):
+                failed += 1
+                continue
+            photo_id = _as_str(photo.get("id")).strip()
+            download_location = _as_str(photo.get("download_location"))
+            fallback_url = _as_str(photo.get("full"))
+            # The client supplies these URLs - only ever fetch from Unsplash hosts.
+            if not photo_id or not download_location.startswith(f"{UNSPLASH_API_BASE}/"):
+                failed += 1
+                continue
+
+            content = None
+            content_type = ""
+            try:
+                # Register the download (required by Unsplash API guidelines);
+                # the response carries the actual file URL to fetch. A non-JSON
+                # body here must fail this one photo, not the whole request.
+                dl_resp = client.get(download_location, headers=auth_headers, timeout=10.0)
+                image_url = ""
+                if dl_resp.status_code == 200:
+                    # A non-JSON or non-object body must fail this one photo,
+                    # not 500 the whole request.
+                    with contextlib.suppress(ValueError, AttributeError):
+                        image_url = _as_str(dl_resp.json().get("url"))
+                if not image_url:
+                    image_url = fallback_url
+                if not image_url.startswith(UNSPLASH_IMAGE_HOST):
+                    failed += 1
+                    continue
+
+                # Stream and cap the download so a huge (or mis-declared) body
+                # can't be buffered whole - reject before exceeding the limit.
+                with client.stream("GET", image_url) as img_resp:
+                    content_type = img_resp.headers.get("content-type", "")
+                    declared = img_resp.headers.get("content-length", "")
+                    if (
+                        img_resp.status_code != 200
+                        or not content_type.startswith("image/")
+                        or (declared.isdigit() and int(declared) > UNSPLASH_MAX_IMAGE_BYTES)
+                    ):
+                        failed += 1
+                        continue
+                    buf = bytearray()
+                    for chunk in img_resp.iter_bytes():
+                        buf += chunk
+                        if len(buf) > UNSPLASH_MAX_IMAGE_BYTES:
+                            break
+                    if len(buf) > UNSPLASH_MAX_IMAGE_BYTES:
+                        failed += 1
+                        continue
+                    content = bytes(buf)
+            except httpx.HTTPError:
+                failed += 1
+                continue
+
+            try:
+                enforce_storage_quota(workspace.organization, len(content))
+            except StorageQuotaExceededError:
+                quota_exceeded = True
+                break
+
+            filename = f"unsplash-{photo_id}.jpg"
+            asset = MediaAsset.objects.create(
+                organization=workspace.organization,
+                workspace=workspace,
+                uploaded_by=request.user,
+                file=ContentFile(content, name=filename),
+                filename=filename,
+                media_type=MediaAsset.MediaType.IMAGE,
+                mime_type=content_type,
+                file_size=len(content),
+                source="unsplash",
+                source_url=_as_str(photo.get("photo_url")),
+                attribution=f"Photo by {_as_str(photo.get('photographer')) or 'Unknown'} on Unsplash",
+                alt_text=_as_str(photo.get("alt")),
+            )
+            new_assets.append(asset)
+            attachment = _attach_asset_for_composer(request, workspace, asset, post)
+            if attachment is not None:
+                attachments.append(attachment)
+
+    if not new_assets:
+        if quota_exceeded:
+            return JsonResponse(
+                {"error": "Storage quota exceeded. Free up space or upgrade your plan."},
+                status=413,
+            )
+        return JsonResponse({"error": "Could not import the selected photos."}, status=502)
+
+    if post is not None:
+        html = render_to_string(
+            "composer/partials/media_list.html",
+            {"media_attachments": attachments, "post": post, "workspace": workspace},
+            request=request,
+        )
+    else:
+        html = render_to_string(
+            "composer/partials/media_list_pending.html",
+            {"pending_assets": new_assets, "workspace": workspace},
+            request=request,
+        )
+
+    return JsonResponse(
+        {
+            "html": html,
+            "assets": [{"id": str(a.id), "url": a.file.url} for a in new_assets],
+            "failed": failed,
+        }
+    )
+
+
 @login_required
 @require_GET
 def pinterest_boards(request, workspace_id, account_id):
@@ -1073,19 +1771,11 @@ def pinterest_boards(request, workspace_id, account_id):
     workspace = _get_workspace(request, workspace_id)
     account = get_object_or_404(SocialAccount, id=account_id, workspace=workspace, platform="pinterest")
 
-    from apps.credentials.models import PlatformCredential
+    from apps.credentials.models import resolve_platform_credentials
     from providers import get_provider
 
-    try:
-        cred = PlatformCredential.objects.for_org(workspace.organization_id).get(
-            platform="pinterest", is_configured=True
-        )
-        credentials = cred.credentials
-    except PlatformCredential.DoesNotExist:
-        from django.conf import settings as django_settings
-
-        env_creds = getattr(django_settings, "PLATFORM_CREDENTIALS_FROM_ENV", {})
-        credentials = env_creds.get("pinterest", {})
+    # .env is dominant; admin-entered org credentials are the fallback.
+    credentials = resolve_platform_credentials("pinterest", workspace.organization_id)
 
     provider = get_provider("pinterest", credentials)
 
@@ -1093,25 +1783,7 @@ def pinterest_boards(request, workspace_id, account_id):
     access_token = account.oauth_access_token
     if account.token_expires_at and account.is_token_expiring_soon:
         try:
-            new_tokens = provider.refresh_token(account.oauth_refresh_token)
-            account.oauth_access_token = new_tokens.access_token
-            if new_tokens.refresh_token:
-                account.oauth_refresh_token = new_tokens.refresh_token
-            if new_tokens.expires_in:
-                from datetime import timedelta
-
-                account.token_expires_at = timezone.now() + timedelta(seconds=new_tokens.expires_in)
-            account.connection_status = account.ConnectionStatus.CONNECTED
-            account.save(
-                update_fields=[
-                    "oauth_access_token",
-                    "oauth_refresh_token",
-                    "token_expires_at",
-                    "connection_status",
-                    "updated_at",
-                ]
-            )
-            access_token = new_tokens.access_token
+            access_token = account.refresh_oauth_token(provider)
         except Exception:
             return JsonResponse({"error": "Token refresh failed"}, status=502)
 
@@ -1121,6 +1793,69 @@ def pinterest_boards(request, workspace_id, account_id):
         return JsonResponse({"error": "Failed to fetch boards"}, status=502)
 
     return JsonResponse({"boards": [{"id": b.get("id"), "name": b.get("name")} for b in boards]})
+
+
+@login_required
+@require_GET
+def tiktok_creator_info(request, workspace_id, account_id):
+    """Fetch TikTok creator info for the composer's TikTok settings panel.
+
+    TikTok's integration guidelines require querying this fresh before each
+    post: the allowed privacy levels depend on the app's audit status and the
+    creator's account settings.
+    """
+    workspace = _get_workspace(request, workspace_id)
+    account = get_object_or_404(SocialAccount, id=account_id, workspace=workspace, platform="tiktok")
+
+    from apps.credentials.models import resolve_platform_credentials
+    from providers import get_provider
+
+    credentials = resolve_platform_credentials("tiktok", workspace.organization_id)
+    provider = get_provider("tiktok", credentials)
+
+    # This endpoint enriches the composer panel; the real privacy/audit gate is
+    # enforced at publish time. When the creator-info lookup can't run (no
+    # token, expired token, TikTok API down), degrade to a 200 with empty
+    # options and let the panel fall back to its defaults, rather than logging
+    # a 5xx in the browser on every composer load.
+    def _unavailable(reason):
+        return JsonResponse(
+            {
+                "available": False,
+                "error": reason,
+                "creator_nickname": "",
+                "privacy_level_options": [],
+                "comment_disabled": False,
+                "duet_disabled": False,
+                "stitch_disabled": False,
+                "max_video_post_duration_sec": None,
+            }
+        )
+
+    # Refresh token if expiring
+    access_token = account.oauth_access_token
+    if account.token_expires_at and account.is_token_expiring_soon:
+        try:
+            access_token = account.refresh_oauth_token(provider)
+        except Exception:
+            return _unavailable("Token refresh failed")
+
+    try:
+        info = provider.query_creator_info(access_token)
+    except Exception:
+        return _unavailable("Failed to fetch creator info")
+
+    return JsonResponse(
+        {
+            "available": True,
+            "creator_nickname": info.get("creator_nickname", ""),
+            "privacy_level_options": info.get("privacy_level_options") or [],
+            "comment_disabled": bool(info.get("comment_disabled")),
+            "duet_disabled": bool(info.get("duet_disabled")),
+            "stitch_disabled": bool(info.get("stitch_disabled")),
+            "max_video_post_duration_sec": info.get("max_video_post_duration_sec"),
+        }
+    )
 
 
 @login_required
@@ -1136,7 +1871,10 @@ def attach_media(request, workspace_id, post_id):
 
     from apps.media_library.models import MediaAsset
 
-    asset = get_object_or_404(MediaAsset, id=media_asset_id, workspace=workspace)
+    asset = get_object_or_404(
+        MediaAsset.objects.for_workspace_with_shared(workspace.id, workspace.organization_id),
+        id=media_asset_id,
+    )
 
     max_pos = post.media_attachments.aggregate(models.Max("position"))["position__max"]
     position = (max_pos or 0) + 1
@@ -1146,6 +1884,9 @@ def attach_media(request, workspace_id, post_id):
         media_asset=asset,
         defaults={"position": position},
     )
+
+    # Option A: changing media on an approved post sends it back for re-approval.
+    _revert_approved_to_review(post)
 
     response = render(
         request,
@@ -1172,7 +1913,10 @@ def attach_pending_media(request, workspace_id):
 
     from apps.media_library.models import MediaAsset
 
-    asset = get_object_or_404(MediaAsset, id=media_asset_id, workspace=workspace)
+    asset = get_object_or_404(
+        MediaAsset.objects.for_workspace_with_shared(workspace.id, workspace.organization_id),
+        id=media_asset_id,
+    )
 
     session_key = f"pending_media_{workspace.id}"
     pending = request.session.get(session_key, [])
@@ -1191,6 +1935,46 @@ def attach_pending_media(request, workspace_id):
     )
     response["HX-Trigger"] = "previewUpdate"
     return response
+
+
+def _attach_asset_for_composer(request, workspace, asset, post=None):
+    """Attach an asset to a post, or queue it in the pending-media session.
+
+    Post path: migrates any session-pending media first (can happen when the
+    media picker still uses attach_pending_media after autosave created the
+    post and updated the upload URL), then appends the asset at the next
+    position. Returns the PostMedia attachment, or None on the pending path.
+    """
+    from apps.media_library.models import MediaAsset
+
+    session_key = f"pending_media_{workspace.id}"
+
+    if post is not None:
+        pending_ids = request.session.get(session_key, [])
+        if pending_ids:
+            existing_pos = post.media_attachments.aggregate(models.Max("position"))["position__max"] or 0
+            for idx, pid in enumerate(pending_ids):
+                try:
+                    pending_asset = MediaAsset.objects.get(id=pid, workspace=workspace)
+                    PostMedia.objects.get_or_create(
+                        post=post,
+                        media_asset=pending_asset,
+                        defaults={"position": existing_pos + idx + 1},
+                    )
+                except MediaAsset.DoesNotExist:
+                    continue
+            del request.session[session_key]
+
+        max_pos = post.media_attachments.aggregate(models.Max("position"))["position__max"]
+        position = (max_pos or 0) + 1
+        return PostMedia.objects.create(post=post, media_asset=asset, position=position)
+
+    # No post yet - store pending media IDs in session so they can be
+    # attached when the post is eventually saved.
+    pending = request.session.get(session_key, [])
+    pending.append(str(asset.id))
+    request.session[session_key] = pending
+    return None
 
 
 @login_required
@@ -1217,6 +2001,7 @@ def upload_media(request, workspace_id, post_id=None):
         media_type = MediaAsset.MediaType.DOCUMENT
 
     asset = MediaAsset.objects.create(
+        organization=workspace.organization,
         workspace=workspace,
         uploaded_by=request.user,
         file=uploaded_file,
@@ -1227,33 +2012,11 @@ def upload_media(request, workspace_id, post_id=None):
         source="upload",
     )
 
-    # If a post ID is provided, attach immediately
     if post_id:
         post = get_object_or_404(Post, id=post_id, workspace=workspace)
-
-        # Migrate any session pending media to the post (can happen when the
-        # media picker still uses attach_pending_media after autosave created
-        # the post and updated the upload URL).
-        session_key = f"pending_media_{workspace.id}"
-        pending_ids = request.session.get(session_key, [])
-        if pending_ids:
-            existing_pos = post.media_attachments.aggregate(models.Max("position"))["position__max"] or 0
-            for idx, pid in enumerate(pending_ids):
-                try:
-                    pending_asset = MediaAsset.objects.get(id=pid, workspace=workspace)
-                    PostMedia.objects.get_or_create(
-                        post=post,
-                        media_asset=pending_asset,
-                        defaults={"position": existing_pos + idx + 1},
-                    )
-                except MediaAsset.DoesNotExist:
-                    continue
-            del request.session[session_key]
-
-        max_pos = post.media_attachments.aggregate(models.Max("position"))["position__max"]
-        position = (max_pos or 0) + 1
-        attachment = PostMedia.objects.create(post=post, media_asset=asset, position=position)
-
+        attachment = _attach_asset_for_composer(request, workspace, asset, post)
+        # Option A: changing media on an approved post sends it back for re-approval.
+        _revert_approved_to_review(post)
         response = render(
             request,
             "composer/partials/media_list.html",
@@ -1263,25 +2026,17 @@ def upload_media(request, workspace_id, post_id=None):
                 "workspace": workspace,
             },
         )
-        response["X-Uploaded-Asset-Id"] = str(asset.id)
-        response["X-Uploaded-Asset-Url"] = asset.file.url
-        return response
+    else:
+        _attach_asset_for_composer(request, workspace, asset)
+        response = render(
+            request,
+            "composer/partials/media_list_pending.html",
+            {
+                "pending_assets": [asset],
+                "workspace": workspace,
+            },
+        )
 
-    # No post yet - store pending media IDs in session so they can be
-    # attached when the post is eventually saved.
-    session_key = f"pending_media_{workspace.id}"
-    pending = request.session.get(session_key, [])
-    pending.append(str(asset.id))
-    request.session[session_key] = pending
-
-    response = render(
-        request,
-        "composer/partials/media_list_pending.html",
-        {
-            "pending_assets": [asset],
-            "workspace": workspace,
-        },
-    )
     response["X-Uploaded-Asset-Id"] = str(asset.id)
     response["X-Uploaded-Asset-Url"] = asset.file.url
     return response
@@ -1294,6 +2049,9 @@ def remove_media(request, workspace_id, post_id, media_id):
     workspace = _get_workspace(request, workspace_id)
     post = get_object_or_404(Post, id=post_id, workspace=workspace)
     PostMedia.objects.filter(id=media_id, post=post).delete()
+
+    # Option A: changing media on an approved post sends it back for re-approval.
+    _revert_approved_to_review(post)
 
     response = render(
         request,
@@ -1332,7 +2090,7 @@ def remove_pending_media(request, workspace_id, asset_id):
 
     # Return updated pending list
     pending_assets = MediaAsset.objects.filter(id__in=pending, workspace=workspace)
-    return render(
+    response = render(
         request,
         "composer/partials/media_list_pending.html",
         {
@@ -1340,6 +2098,8 @@ def remove_pending_media(request, workspace_id, asset_id):
             "workspace": workspace,
         },
     )
+    response["HX-Trigger"] = "previewUpdate"
+    return response
 
 
 @login_required
@@ -1406,6 +2166,34 @@ def post_delete(request, workspace_id, post_id):
         status=204,
         headers={"HX-Trigger": "postChanged"},
     )
+
+
+@login_required
+@require_POST
+def clone_post_view(request, workspace_id, post_id):
+    """Clone a post into a fresh draft (Clone / Repost) and open the copy.
+
+    The composer makes published/publishing posts read-only; this is the escape
+    hatch to repost — the duplicate starts as a draft with the same content but
+    no schedule, so it can be edited and re-queued without touching the original.
+    """
+    from django.urls import reverse
+
+    from apps.composer.services import clone_post
+
+    workspace = _get_workspace(request, workspace_id)
+    post = get_object_or_404(Post, id=post_id, workspace=workspace)
+
+    membership = request.workspace_membership
+    perms = membership.effective_permissions if membership else {}
+    if not perms.get("create_posts", False):
+        raise PermissionDenied("You do not have permission to create posts.")
+
+    new_post = clone_post(post, author=request.user)
+    target = reverse("composer:compose_edit", kwargs={"workspace_id": workspace.id, "post_id": new_post.id})
+    if request.htmx:
+        return HttpResponse(status=204, headers={"HX-Redirect": target})
+    return redirect(target)
 
 
 # ---------------------------------------------------------------------------
@@ -1716,8 +2504,7 @@ def idea_create(request, workspace_id):
     workspace = _get_workspace(request, workspace_id)
     title = request.POST.get("title", "").strip()
     description = request.POST.get("description", "").strip()
-    tags_raw = request.POST.get("tags", "")
-    tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    tags = parse_and_truncate_tag_string(request.POST.get("tags", ""))
 
     if not title:
         return HttpResponse("Title is required.", status=400)
@@ -1800,8 +2587,7 @@ def idea_edit(request, workspace_id, idea_id):
 
     idea.title = request.POST.get("title", idea.title).strip()
     idea.description = request.POST.get("description", idea.description).strip()
-    tags_raw = request.POST.get("tags", "")
-    idea.tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    idea.tags = parse_and_truncate_tag_string(request.POST.get("tags", ""))
 
     group_id = request.POST.get("group", "").strip()
     if group_id:
@@ -2301,6 +3087,12 @@ def csv_upload(request, workspace_id):
         import io
 
         csv_file = request.FILES["csv_file"]
+        if csv_file.size and csv_file.size > MAX_CSV_UPLOAD_BYTES:
+            return render(
+                request,
+                "composer/csv_import.html",
+                {"workspace": workspace, "error": "CSV file too large (max 5 MB)."},
+            )
         decoded = csv_file.read().decode("utf-8-sig")
         reader = csv.reader(io.StringIO(decoded))
         rows = list(reader)
@@ -2342,8 +3134,6 @@ def csv_upload(request, workspace_id):
             "filename": csv_file.name,
         }
 
-        import json as json_mod
-
         return render(
             request,
             "composer/partials/csv_mapping.html",
@@ -2352,7 +3142,6 @@ def csv_upload(request, workspace_id):
                 "headers": headers,
                 "preview_rows": preview_rows,
                 "auto_mapping": auto_mapping,
-                "auto_mapping_json": json_mod.dumps(auto_mapping),
                 "field_choices": list(field_map.keys()),
             },
         )
@@ -2714,10 +3503,15 @@ def _parse_published_at(raw_value):
 
 
 def _parse_feed_document(xml_content):
-    """Parse RSS/Atom document into metadata and raw entries."""
-    try:
-        root = ET.fromstring(xml_content)
-    except ET.ParseError:
+    """Parse RSS/Atom document into metadata and raw entries.
+
+    Uses safe_xml_fromstring to bound size and reject DTD/entity-bearing
+    payloads (billion-laughs defence).
+    """
+    if isinstance(xml_content, str):
+        xml_content = xml_content.encode("utf-8", errors="replace")
+    root = safe_xml_fromstring(xml_content)
+    if root is None:
         return None
 
     root_name = _xml_local_name(root.tag)
@@ -2801,8 +3595,45 @@ def _build_event_from_entry(feed, parsed_feed, entry):
     }
 
 
+def _safe_fetch_feed(url, headers, *, timeout=8.0, max_redirects=5):
+    """Fetch *url* with manual redirect handling, re-validating each hop with
+    is_safe_url. Returns (response, final_url) on success or (None, None) on
+    any reject path (initial-URL failed SSRF check, intermediate hop failed
+    SSRF check, broken redirect, transport error).
+    """
+    if not is_safe_url(url):
+        return None, None
+    current_url = url
+    try:
+        response = httpx.get(current_url, headers=headers, timeout=timeout, follow_redirects=False)
+    except httpx.RequestError:
+        return None, None
+    for _ in range(max_redirects):
+        if response.status_code not in (301, 302, 303, 307, 308):
+            return response, current_url
+        location = response.headers.get("Location")
+        if not location:
+            return None, None
+        next_url = urljoin(current_url, location)
+        if not is_safe_url(next_url):
+            return None, None
+        try:
+            response = httpx.get(next_url, headers=headers, timeout=timeout, follow_redirects=False)
+        except httpx.RequestError:
+            return None, None
+        current_url = next_url
+    # Too many redirects.
+    return None, None
+
+
 def _fetch_feed_events_for_workspace(feeds):
-    """Fetch and aggregate recent events across all workspace feeds."""
+    """Fetch and aggregate recent events across all workspace feeds.
+
+    Each feed is re-validated against is_safe_url at fetch time (not just at
+    add time), and redirects are followed manually with per-hop SSRF checks.
+    This closes the DNS-rebind / redirect-bait window that would otherwise
+    let a previously-valid feed URL reach internal hosts on subsequent polls.
+    """
     if not feeds:
         return []
 
@@ -2811,17 +3642,15 @@ def _fetch_feed_events_for_workspace(feeds):
         "User-Agent": "Brightbean RSS Reader/1.0",
     }
     all_events = []
-    with httpx.Client(headers=headers, timeout=8.0, follow_redirects=True) as client:
-        for feed in feeds:
-            with contextlib.suppress(httpx.RequestError):
-                response = client.get(feed.url)
-                if response.status_code >= 400:
-                    continue
-                parsed_feed = _parse_feed_document(response.content)
-                if not parsed_feed:
-                    continue
-                for entry in parsed_feed["entries"][:50]:
-                    all_events.append(_build_event_from_entry(feed, parsed_feed, entry))
+    for feed in feeds:
+        response, _final_url = _safe_fetch_feed(feed.url, headers)
+        if response is None or response.status_code >= 400:
+            continue
+        parsed_feed = _parse_feed_document(response.content)
+        if not parsed_feed:
+            continue
+        for entry in parsed_feed["entries"][:50]:
+            all_events.append(_build_event_from_entry(feed, parsed_feed, entry))
 
     deduped_events = []
     seen = set()
@@ -2916,9 +3745,8 @@ def _validate_rss_url(rss_url):
         "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
         "User-Agent": "Brightbean RSS Validator/1.0",
     }
-    try:
-        response = httpx.get(rss_url, headers=headers, timeout=8.0, follow_redirects=True)
-    except httpx.RequestError:
+    response, _final_url = _safe_fetch_feed(rss_url, headers)
+    if response is None:
         return False, "Could not reach this URL. Please check the link and try again.", {}
 
     if response.status_code >= 400:

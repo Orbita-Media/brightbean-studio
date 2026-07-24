@@ -2,22 +2,26 @@
 
 import calendar as cal_mod
 import json
+import uuid
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db.models import QuerySet
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
+from apps.common.validators import is_valid_hex_color
 from apps.composer.models import ContentCategory, PlatformPost, Post
+from apps.members.decorators import require_permission
 from apps.members.models import WorkspaceMembership
 from apps.social_accounts.models import SocialAccount
 from apps.workspaces.models import Workspace
 
 from .holidays import get_holidays_for_range
-from .models import CustomCalendarEvent, PostingSlot, Queue
+from .models import CustomCalendarEvent, PostingSlot, Queue, QueueEntry
 
 # Common timezones for the publish page timezone dropdown
 COMMON_TIMEZONES = [
@@ -53,6 +57,22 @@ def _slots_updated_response(account_id):
     )
 
 
+def _missing_slot_response(request, payload):
+    """Idempotent no-op response for a slot that is already gone.
+
+    Reached on a stale page, a concurrent delete, or a double-click. The
+    workspace-scoped lookup found no slot, so nothing is mutated here. For htmx
+    we refresh the caller's grid via the ``slotsUpdated`` trigger so the phantom
+    row clears; we fall back to a bare 204 only when no ``social_account_id`` was
+    posted (the real forms always post it, so the grid can be targeted).
+    Non-htmx callers get *payload*.
+    """
+    if request.htmx:
+        account_id = request.POST.get("social_account_id")
+        return _slots_updated_response(account_id) if account_id else HttpResponse(status=204)
+    return JsonResponse(payload)
+
+
 def _get_workspace(request, workspace_id):
     """Resolve workspace and enforce membership check."""
     workspace = get_object_or_404(Workspace, id=workspace_id)
@@ -75,6 +95,17 @@ def _parse_date(date_str, default=None):
         except (ValueError, TypeError):
             pass
     return default or date.today()
+
+
+def _get_valid_channel_filter(request):
+    """Return a UUID-safe channel filter value, or blank when malformed."""
+    channel = request.GET.get("channel", "").strip()
+    if not channel:
+        return ""
+    try:
+        return str(uuid.UUID(channel))
+    except (TypeError, ValueError, AttributeError):
+        return ""
 
 
 def _get_filtered_posts(workspace, request):
@@ -152,6 +183,11 @@ def _get_filtered_platform_posts(workspace, request):
     if platforms:
         qs = qs.filter(social_account__platform__in=platforms)
 
+    # Channel filter (calendar toolbar sends the selected SocialAccount id).
+    channel = _get_valid_channel_filter(request)
+    if channel:
+        qs = qs.filter(social_account_id=channel)
+
     # Author filter
     authors = request.GET.getlist("author")
     if authors:
@@ -173,6 +209,112 @@ def _get_filtered_platform_posts(workspace, request):
         qs = qs.filter(tag_q)
 
     return qs
+
+
+def _get_calendar_slot_occurrences(workspace, request, display_tz, visible_dates, platform_posts):
+    """Return PostingSlot occurrences grouped by display date/hour.
+
+    PostingSlot times are defined in the workspace timezone. Convert concrete
+    occurrences into the active display timezone before placing them in the
+    day/week timeline, so timezone changes move slots and posts together.
+    """
+    import zoneinfo
+
+    from django.utils import timezone
+
+    workspace_tz = zoneinfo.ZoneInfo(workspace.effective_timezone or "UTC")
+    now = timezone.now()
+    visible_dates = set(visible_dates)
+    if not visible_dates:
+        return defaultdict(list)
+
+    first_date = min(visible_dates) - timedelta(days=1)
+    last_date = max(visible_dates) + timedelta(days=1)
+    occurrence_dates = [first_date + timedelta(days=offset) for offset in range((last_date - first_date).days + 1)]
+
+    slots = PostingSlot.objects.filter(
+        social_account__workspace=workspace,
+        social_account__connection_status=SocialAccount.ConnectionStatus.CONNECTED,
+        is_active=True,
+    )
+    channel = _get_valid_channel_filter(request)
+    if channel:
+        slots = slots.filter(social_account_id=channel)
+
+    slots = slots.select_related("social_account").order_by(
+        "time",
+        "social_account__platform",
+        "social_account__account_name",
+    )
+
+    slots_by_hour = defaultdict(list)
+    slot_keys = set()
+    slot_occurrences = []
+    dates_by_weekday = defaultdict(list)
+    for occurrence_date in occurrence_dates:
+        dates_by_weekday[occurrence_date.weekday()].append(occurrence_date)
+
+    for slot in slots:
+        for occurrence_date in dates_by_weekday.get(slot.day_of_week, []):
+            workspace_dt = datetime.combine(occurrence_date, slot.time, tzinfo=workspace_tz)
+            local_dt = workspace_dt.astimezone(display_tz)
+            if local_dt.date() not in visible_dates:
+                continue
+
+            key = (slot.social_account_id, local_dt.date(), local_dt.hour, local_dt.minute)
+            slot_keys.add(key)
+            slot_occurrences.append(
+                (
+                    key,
+                    {
+                        "account": slot.social_account,
+                        "date": local_dt.date(),
+                        "hour": local_dt.hour,
+                        "minute": local_dt.minute,
+                        "time_label": local_dt.strftime("%H:%M"),
+                        "compose_date": workspace_dt.strftime("%Y-%m-%d"),
+                        "compose_time": workspace_dt.strftime("%H:%M"),
+                        # Precise per-occurrence gate: a slot earlier in the
+                        # current hour is already past, so the template must show
+                        # "Open" (faded) rather than an actionable "+" that the
+                        # composer would then reject as a past schedule time.
+                        "is_past": workspace_dt <= now,
+                    },
+                )
+            )
+
+    taken_keys = set()
+    for pp in platform_posts:
+        pp.takes_calendar_slot = False
+        if not pp.effective_at:
+            continue
+        local_dt = pp.effective_at.astimezone(display_tz)
+        key = (pp.social_account_id, local_dt.date(), local_dt.hour, local_dt.minute)
+        if key in slot_keys:
+            pp.takes_calendar_slot = True
+            taken_keys.add(key)
+
+    for key, slot in slot_occurrences:
+        if key in taken_keys:
+            continue
+        slots_by_hour[(slot["date"], slot["hour"])].append(slot)
+
+    return slots_by_hour
+
+
+def _cell_compose_params(display_date, hour, display_tz, workspace_tz):
+    """Workspace-tz wall-clock (date, time) strings for a display-tz grid cell.
+
+    The composer reads ``?scheduled_date``/``?scheduled_time`` in the *workspace*
+    timezone (see ``apps.composer.views.save_post``), so a calendar "+" must hand
+    it the workspace-tz wall time of the instant the cell represents. Passing the
+    raw display-tz hour would schedule at the wrong moment whenever the active
+    display timezone differs from the workspace timezone. (Channel-slot "+" links
+    already do this via the slot's ``compose_date``/``compose_time``.)
+    """
+    cell_dt = datetime.combine(display_date, time(hour), tzinfo=display_tz)
+    workspace_dt = cell_dt.astimezone(workspace_tz)
+    return workspace_dt.strftime("%Y-%m-%d"), workspace_dt.strftime("%H:%M")
 
 
 def _get_publish_context(workspace, request):
@@ -209,28 +351,26 @@ def _get_publish_context(workspace, request):
         "workspace_timezone": ws_tz,
         "queue_count": PlatformPost.objects.filter(post__workspace_id=workspace.id, status="scheduled").count(),
         "drafts_count": PlatformPost.objects.filter(post__workspace_id=workspace.id, status="draft").count(),
-        "approvals_count": PlatformPost.objects.filter(
-            post__workspace_id=workspace.id,
-            status__in=["pending_review", "pending_client", "approved", "rejected", "changes_requested"],
-        ).count(),
+        # Distinct posts (one row per post in the redesigned tab), incl. on_hold —
+        # matches the tab's "All" pill count.
+        "approvals_count": Post.objects.for_workspace(workspace.id)
+        .filter(
+            platform_posts__status__in=[
+                "pending_review",
+                "pending_client",
+                "approved",
+                "rejected",
+                "changes_requested",
+                "on_hold",
+            ]
+        )
+        .distinct()
+        .count(),
         "sent_count": PlatformPost.objects.filter(
             post__workspace_id=workspace.id,
             status__in=["published", "failed"],
         ).count(),
     }
-
-
-def _apply_publish_filters(qs, request):
-    """Apply channel and tag filters from publish page dropdowns."""
-    channel = request.GET.get("channel")
-    if channel:
-        qs = qs.filter(platform_posts__social_account_id=channel).distinct()
-
-    tag = request.GET.get("tag")
-    if tag:
-        qs = qs.filter(tags__contains=[tag])
-
-    return qs
 
 
 def _apply_pp_publish_filters(qs, request):
@@ -244,6 +384,199 @@ def _apply_pp_publish_filters(qs, request):
         qs = qs.filter(post__tags__contains=[tag])
 
     return qs
+
+
+_TAB_TEMPLATES = {
+    "queue": "calendar/partials/publish_queue.html",
+    "drafts": "calendar/partials/publish_drafts.html",
+    "approvals": "calendar/partials/publish_approvals.html",
+    "sent": "calendar/partials/publish_sent.html",
+}
+
+
+def _coerce_timezone(*candidates: str | None) -> str:
+    """Return the first candidate that names a real IANA zone, else ``"UTC"``.
+
+    Guards the ``{% timezone %}`` tag against an unknown/empty user-supplied
+    ``?tz=`` value (which would otherwise raise inside template rendering).
+    """
+    import zoneinfo
+
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            zoneinfo.ZoneInfo(name)
+        except (ValueError, zoneinfo.ZoneInfoNotFoundError):
+            continue
+        return name
+    return "UTC"
+
+
+def _get_tab_context(request, workspace, tab: str) -> dict:
+    """Build the template context for one publish tab partial.
+
+    Used both by `calendar_view` (initial server render) and the four
+    `publish_tab_*` HTMX endpoints so the rendering paths stay in sync.
+    """
+    from django.db.models.functions import Coalesce
+
+    if tab not in _TAB_TEMPLATES:
+        tab = "queue"
+
+    # ``tz`` is a user-controlled query param fed straight into the templates'
+    # ``{% timezone %}`` tag, which calls ``zoneinfo.ZoneInfo`` and raises
+    # (ZoneInfoNotFoundError / ValueError) on an unknown or empty value — that
+    # would 500 the whole tab. Coerce to the first valid candidate.
+    display_tz = _coerce_timezone(request.GET.get("tz"), workspace.effective_timezone)
+    has_connected_accounts = SocialAccount.objects.filter(
+        workspace=workspace,
+        connection_status=SocialAccount.ConnectionStatus.CONNECTED,
+    ).exists()
+    base_ctx = {
+        "workspace": workspace,
+        "display_timezone": display_tz,
+        "has_connected_accounts": has_connected_accounts,
+    }
+
+    platform_posts: QuerySet[PlatformPost]
+    if tab == "queue":
+        platform_posts = (
+            PlatformPost.objects.filter(post__workspace_id=workspace.id, status="scheduled")
+            .select_related("post__author", "social_account")
+            .prefetch_related("post__media_attachments__media_asset")
+            .annotate(effective_at=Coalesce("scheduled_at", "post__scheduled_at"))
+            .order_by("effective_at", "-post__created_at")
+        )
+        platform_posts = _apply_pp_publish_filters(platform_posts, request)
+        return {**base_ctx, "platform_posts": platform_posts[:200]}
+
+    if tab == "drafts":
+        platform_posts = (
+            PlatformPost.objects.filter(post__workspace_id=workspace.id, status="draft")
+            .select_related("post__author", "social_account")
+            .prefetch_related("post__media_attachments__media_asset")
+            .order_by("-post__updated_at")
+        )
+        platform_posts = _apply_pp_publish_filters(platform_posts, request)
+        return {**base_ctx, "platform_posts": platform_posts[:200]}
+
+    if tab == "sent":
+        platform_posts = (
+            PlatformPost.objects.filter(
+                post__workspace_id=workspace.id,
+                status__in=["published", "failed"],
+            )
+            .select_related("post__author", "social_account")
+            .prefetch_related("post__media_attachments__media_asset")
+            .order_by("-post__scheduled_at", "-post__created_at")
+        )
+        platform_posts = _apply_pp_publish_filters(platform_posts, request)
+        return {**base_ctx, "platform_posts": platform_posts[:200]}
+
+    # approvals — one row per Post (bundled), matching the approval-action model
+    # and the approved design. on_hold is included so client-held posts surface
+    # to the team under "All".
+    from collections import defaultdict
+
+    from django.db.models import Count, Exists, OuterRef, Prefetch, Q
+    from django.utils.http import urlencode
+
+    from apps.approvals.models import PostComment
+
+    approval_statuses = ["pending_review", "pending_client", "approved", "rejected", "changes_requested", "on_hold"]
+    status_filter = request.GET.get("approval_status", "all")
+
+    # Population + channel + status must all be satisfied by the SAME PlatformPost
+    # row. Chaining .filter(platform_posts__...) spawns a separate join per call, so
+    # Django could otherwise match a post whose pending child is on a different
+    # channel than the one filtered — surfacing (and letting bulk actions target) a
+    # post that isn't actually pending for the selected channel. An Exists subquery
+    # anchors every condition to one child row.
+    pp_match = PlatformPost.objects.filter(post_id=OuterRef("pk"))
+    if status_filter != "all" and status_filter in approval_statuses:
+        pp_match = pp_match.filter(status=status_filter)
+    else:
+        pp_match = pp_match.filter(status__in=approval_statuses)
+    channel = request.GET.get("channel")
+    if channel:
+        pp_match = pp_match.filter(social_account_id=channel)
+
+    posts_qs = (
+        Post.objects.for_workspace(workspace.id)
+        .filter(Exists(pp_match))
+        .select_related("author")
+        .prefetch_related("platform_posts__social_account", "media_attachments__media_asset", "versions")
+        .order_by("scheduled_at", "-created_at")
+    )
+    # Tag is a Post-level attribute (can't cross child rows) — apply it directly.
+    tag = request.GET.get("tag")
+    if tag:
+        posts_qs = posts_qs.filter(tags__contains=[tag])
+
+    posts = list(posts_qs[:200])
+
+    membership = getattr(request, "workspace_membership", None)
+    perms = membership.effective_permissions if membership else {}
+    can_approve = perms.get("approve_posts", False)
+    is_client = bool(membership and membership.workspace_role == "client")
+
+    # Batch the expandable-panel comments in one query (avoid a per-post N+1).
+    active_replies = PostComment.objects.filter(deleted_at__isnull=True).select_related("author")
+    comment_qs = (
+        PostComment.objects.filter(
+            post_id__in=[p.id for p in posts],
+            deleted_at__isnull=True,
+            parent_comment__isnull=True,
+        )
+        .select_related("author")
+        .prefetch_related(Prefetch("replies", queryset=active_replies))
+        .order_by("created_at")
+    )
+    if is_client:
+        comment_qs = comment_qs.filter(visibility=PostComment.Visibility.EXTERNAL)
+    comments_by_post = defaultdict(list)
+    for comment in comment_qs:
+        comments_by_post[comment.post_id].append(comment)
+    for post in posts:
+        post.visible_comments = comments_by_post.get(post.id, [])
+        # Actionability follows the child platforms, not the aggregate Post.status
+        # (a lower-ranked sibling like draft must not mask a pending child).
+        post.is_actionable = any(pp.status in ("pending_review", "pending_client") for pp in post.platform_posts.all())
+
+    # Pill counts in one conditional-aggregate query (was 6 separate COUNTs).
+    counts = (
+        Post.objects.for_workspace(workspace.id)
+        .filter(platform_posts__status__in=approval_statuses)
+        .aggregate(
+            all=Count("id", distinct=True),
+            pending_review=Count("id", filter=Q(platform_posts__status="pending_review"), distinct=True),
+            pending_client=Count("id", filter=Q(platform_posts__status="pending_client"), distinct=True),
+            approved=Count("id", filter=Q(platform_posts__status="approved"), distinct=True),
+            rejected=Count("id", filter=Q(platform_posts__status="rejected"), distinct=True),
+            changes_requested=Count("id", filter=Q(platform_posts__status="changes_requested"), distinct=True),
+            on_hold=Count("id", filter=Q(platform_posts__status="on_hold"), distinct=True),
+        )
+    )
+
+    # Preserve the active channel/tag/timezone filters across status pills and the
+    # post-action self-refresh (otherwise acting on a post drops the filter).
+    filter_qs = urlencode({k: request.GET[k] for k in ("channel", "tag", "tz") if request.GET.get(k)})
+
+    return {
+        **base_ctx,
+        "posts": posts,
+        "status_filter": status_filter,
+        "can_approve": can_approve,
+        "approval_filter_qs": filter_qs,
+        "all_count": counts["all"],
+        "pending_review_count": counts["pending_review"],
+        "pending_client_count": counts["pending_client"],
+        "approved_count": counts["approved"],
+        "rejected_count": counts["rejected"],
+        "changes_requested_count": counts["changes_requested"],
+        "on_hold_count": counts["on_hold"],
+    }
 
 
 @login_required
@@ -312,6 +645,14 @@ def calendar_view(request, workspace_id):
         "show_holidays": show_holidays,
         **publish_ctx,
     }
+
+    # For list mode: fetch the active tab's data so the shell can render the
+    # initial tab inline server-side (avoids a JS-triggered HTMX waterfall and
+    # the resulting content shift).
+    if mode == "list":
+        context.update(_get_tab_context(request, workspace, active_tab))
+        context["initial_tab_template"] = _TAB_TEMPLATES.get(active_tab, _TAB_TEMPLATES["queue"])
+        context["is_htmx"] = False
 
     # HTMX partial: switching between list and calendar mode
     # Only intercept when the toggle buttons explicitly request a mode switch
@@ -474,7 +815,7 @@ def _week_view_data(request, workspace, target_date, context):
     week_days = [monday + timedelta(days=i) for i in range(7)]
 
     # Widen query by ±1 day to handle timezone boundary shifts
-    platform_posts = (
+    platform_posts = list(
         _get_filtered_platform_posts(workspace, request)
         .filter(
             effective_at__date__gte=week_days[0] - timedelta(days=1),
@@ -493,17 +834,30 @@ def _week_view_data(request, workspace, target_date, context):
                 key = (local_dt.date(), local_dt.hour)
                 posts_by_slot[key].append(pp)
 
+    slots_by_hour = _get_calendar_slot_occurrences(workspace, request, display_tz, week_days, platform_posts)
     hours = list(range(0, 24))
 
     # Build a grid structure the template can iterate:
-    # week_slots = [(hour, [(day, posts), ...]), ...]
+    # week_slots = [(hour, [cell, ...]), ...] where each cell is a dict with
+    # day/posts/slots plus the workspace-tz compose_date/compose_time used by the
+    # "Create post" CTA (so it schedules correctly under a non-workspace display tz).
+    workspace_tz = zoneinfo.ZoneInfo(workspace.effective_timezone or "UTC")
     week_slots = []
     for hour in hours:
-        day_slots = []
+        day_cells = []
         for day in week_days:
             key = (day, hour)
-            day_slots.append((day, posts_by_slot.get(key, [])))
-        week_slots.append((hour, day_slots))
+            compose_date, compose_time = _cell_compose_params(day, hour, display_tz, workspace_tz)
+            day_cells.append(
+                {
+                    "day": day,
+                    "posts": posts_by_slot.get(key, []),
+                    "slots": slots_by_hour.get(key, []),
+                    "compose_date": compose_date,
+                    "compose_time": compose_time,
+                }
+            )
+        week_slots.append((hour, day_cells))
 
     from django.utils import timezone as _tz
 
@@ -536,7 +890,7 @@ def _day_view_data(request, workspace, target_date, context):
     display_tz = zoneinfo.ZoneInfo(context.get("display_timezone", "UTC"))
 
     # Widen query by ±1 day to handle timezone boundary shifts
-    platform_posts = (
+    platform_posts = list(
         _get_filtered_platform_posts(workspace, request)
         .filter(
             effective_at__date__gte=target_date - timedelta(days=1),
@@ -553,10 +907,25 @@ def _day_view_data(request, workspace, target_date, context):
             if local_dt.date() == target_date:
                 posts_by_hour[local_dt.hour].append(pp)
 
+    slots_by_hour = _get_calendar_slot_occurrences(workspace, request, display_tz, [target_date], platform_posts)
     hours = list(range(0, 24))
 
-    # Build a list of (hour, posts) tuples for easy template iteration
-    day_slots = [(hour, posts_by_hour.get(hour, [])) for hour in hours]
+    # One cell per hour. ``compose_date``/``compose_time`` are the workspace-tz
+    # wall time of the cell so the "Create post" CTA schedules at the right
+    # instant even when the display timezone differs from the workspace one.
+    workspace_tz = zoneinfo.ZoneInfo(workspace.effective_timezone or "UTC")
+    day_slots = []
+    for hour in hours:
+        compose_date, compose_time = _cell_compose_params(target_date, hour, display_tz, workspace_tz)
+        day_slots.append(
+            {
+                "hour": hour,
+                "posts": posts_by_hour.get(hour, []),
+                "slots": slots_by_hour.get((target_date, hour), []),
+                "compose_date": compose_date,
+                "compose_time": compose_time,
+            }
+        )
 
     from django.utils import timezone as _tz
 
@@ -611,152 +980,39 @@ def _list_view(request, workspace, target_date, context):
 # ---------------------------------------------------------------------------
 
 
+def _render_tab(request, workspace, tab):
+    """Shared HTMX-tab renderer used by the four `publish_tab_*` endpoints."""
+    ctx = _get_tab_context(request, workspace, tab)
+    ctx["is_htmx"] = True
+    return render(request, _TAB_TEMPLATES[tab], ctx)
+
+
 @login_required
 def publish_tab_queue(request, workspace_id):
     """HTMX partial: Queue tab content - shows all scheduled platform posts."""
     workspace = _get_workspace(request, workspace_id)
-    display_tz = request.GET.get("tz", workspace.effective_timezone or "UTC")
-
-    from django.db.models.functions import Coalesce
-
-    platform_posts = (
-        PlatformPost.objects.filter(post__workspace_id=workspace.id, status="scheduled")
-        .select_related("post__author", "social_account")
-        .prefetch_related("post__media_attachments__media_asset")
-        .annotate(effective_at=Coalesce("scheduled_at", "post__scheduled_at"))
-        .order_by("effective_at", "-post__created_at")
-    )
-    platform_posts = _apply_pp_publish_filters(platform_posts, request)
-
-    has_connected_accounts = SocialAccount.objects.filter(
-        workspace=workspace,
-        connection_status=SocialAccount.ConnectionStatus.CONNECTED,
-    ).exists()
-
-    return render(
-        request,
-        "calendar/partials/publish_queue.html",
-        {
-            "workspace": workspace,
-            "platform_posts": platform_posts[:200],
-            "display_timezone": display_tz,
-            "has_connected_accounts": has_connected_accounts,
-        },
-    )
+    return _render_tab(request, workspace, "queue")
 
 
 @login_required
 def publish_tab_drafts(request, workspace_id):
     """HTMX partial: Drafts tab content for the publish page."""
     workspace = _get_workspace(request, workspace_id)
-    display_tz = request.GET.get("tz", workspace.effective_timezone or "UTC")
-
-    platform_posts = (
-        PlatformPost.objects.filter(post__workspace_id=workspace.id, status="draft")
-        .select_related("post__author", "social_account")
-        .prefetch_related("post__media_attachments__media_asset")
-        .order_by("-post__updated_at")
-    )
-    platform_posts = _apply_pp_publish_filters(platform_posts, request)
-
-    has_connected_accounts = SocialAccount.objects.filter(
-        workspace=workspace,
-        connection_status=SocialAccount.ConnectionStatus.CONNECTED,
-    ).exists()
-
-    return render(
-        request,
-        "calendar/partials/publish_drafts.html",
-        {
-            "workspace": workspace,
-            "platform_posts": platform_posts[:200],
-            "display_timezone": display_tz,
-            "has_connected_accounts": has_connected_accounts,
-        },
-    )
+    return _render_tab(request, workspace, "drafts")
 
 
 @login_required
 def publish_tab_approvals(request, workspace_id):
     """HTMX partial: Approvals tab content for the publish page."""
     workspace = _get_workspace(request, workspace_id)
-    display_tz = request.GET.get("tz", workspace.effective_timezone or "UTC")
-
-    approval_statuses = ["pending_review", "pending_client", "approved", "rejected", "changes_requested"]
-    status_filter = request.GET.get("approval_status", "all")
-    platform_posts = (
-        PlatformPost.objects.filter(
-            post__workspace_id=workspace.id,
-            status__in=approval_statuses,
-        )
-        .select_related("post__author", "social_account")
-        .prefetch_related("post__media_attachments__media_asset")
-        .order_by("post__scheduled_at", "-post__created_at")
-    )
-    platform_posts = _apply_pp_publish_filters(platform_posts, request)
-
-    if status_filter != "all" and status_filter in approval_statuses:
-        platform_posts = platform_posts.filter(status=status_filter)
-
-    # Permission check for action buttons
-    membership = getattr(request, "workspace_membership", None)
-    perms = membership.effective_permissions if membership else {}
-    can_approve = perms.get("approve_posts", False)
-
-    # Counts per sub-tab
-    def _count(status):
-        return PlatformPost.objects.filter(post__workspace_id=workspace.id, status=status).count()
-
-    return render(
-        request,
-        "calendar/partials/publish_approvals.html",
-        {
-            "workspace": workspace,
-            "platform_posts": platform_posts,
-            "status_filter": status_filter,
-            "can_approve": can_approve,
-            "pending_review_count": _count("pending_review"),
-            "pending_client_count": _count("pending_client"),
-            "approved_count": _count("approved"),
-            "rejected_count": _count("rejected"),
-            "changes_requested_count": _count("changes_requested"),
-            "display_timezone": display_tz,
-        },
-    )
+    return _render_tab(request, workspace, "approvals")
 
 
 @login_required
 def publish_tab_sent(request, workspace_id):
     """HTMX partial: Sent tab content for the publish page."""
     workspace = _get_workspace(request, workspace_id)
-    display_tz = request.GET.get("tz", workspace.effective_timezone or "UTC")
-
-    platform_posts = (
-        PlatformPost.objects.filter(
-            post__workspace_id=workspace.id,
-            status__in=["published", "failed"],
-        )
-        .select_related("post__author", "social_account")
-        .prefetch_related("post__media_attachments__media_asset")
-        .order_by("-post__scheduled_at", "-post__created_at")
-    )
-    platform_posts = _apply_pp_publish_filters(platform_posts, request)
-
-    has_connected_accounts = SocialAccount.objects.filter(
-        workspace=workspace,
-        connection_status=SocialAccount.ConnectionStatus.CONNECTED,
-    ).exists()
-
-    return render(
-        request,
-        "calendar/partials/publish_sent.html",
-        {
-            "workspace": workspace,
-            "platform_posts": platform_posts[:200],
-            "display_timezone": display_tz,
-            "has_connected_accounts": has_connected_accounts,
-        },
-    )
+    return _render_tab(request, workspace, "sent")
 
 
 @login_required
@@ -787,7 +1043,7 @@ def reschedule_post(request, workspace_id):
     membership = request.workspace_membership
     perms = membership.effective_permissions if membership else {}
     is_own_post = post.author_id == request.user.id
-    can_edit = (is_own_post and perms.get("edit_own_posts")) or perms.get("edit_others_posts")
+    can_edit = is_own_post or perms.get("edit_others_posts")
     if not can_edit:
         return JsonResponse({"error": "Permission denied."}, status=403)
 
@@ -805,6 +1061,12 @@ def reschedule_post(request, workspace_id):
         if pp.status == "draft" and pp.can_transition_to("scheduled"):
             pp.transition_to("scheduled")
         pp.save(update_fields=["status", "scheduled_at", "updated_at"])
+        # Keep any queue entry's slot mirror in step with the manual reschedule
+        # so the queue list shows the real time (the slot ops read scheduled_at,
+        # but the detail page still orders by assigned_slot_datetime).
+        QueueEntry.objects.filter(post=post, queue__social_account=pp.social_account).update(
+            assigned_slot_datetime=new_dt
+        )
         sync_post_scheduled_at(post)
     except (ValueError, TypeError) as e:
         return JsonResponse({"error": f"Invalid datetime: {e}"}, status=400)
@@ -847,6 +1109,7 @@ def posting_slots(request, workspace_id):
 
 @login_required
 @require_POST
+@require_permission("manage_social_accounts")
 def save_posting_slot(request, workspace_id):
     """Create or update a posting slot."""
     workspace = _get_workspace(request, workspace_id)
@@ -882,13 +1145,21 @@ def save_posting_slot(request, workspace_id):
 
 @login_required
 @require_POST
+@require_permission("manage_social_accounts")
 def delete_posting_slot(request, workspace_id, slot_id):
-    """Delete a posting slot."""
+    """Delete a posting slot.
+
+    Idempotent: a slot that is already gone (stale page, concurrent delete, or a
+    double-click) still returns the grid-refresh trigger so the phantom row
+    clears instead of 404ing.
+    """
     workspace = _get_workspace(request, workspace_id)
-    slot = get_object_or_404(PostingSlot, id=slot_id)
-    # Verify the slot belongs to this workspace
-    if slot.social_account.workspace_id != workspace.id:
-        return JsonResponse({"error": "Not found."}, status=404)
+    slot = PostingSlot.objects.filter(
+        id=slot_id,
+        social_account__workspace=workspace,
+    ).first()
+    if slot is None:
+        return _missing_slot_response(request, {"deleted": False})
 
     account_id = str(slot.social_account_id)
     slot.delete()
@@ -898,6 +1169,7 @@ def delete_posting_slot(request, workspace_id, slot_id):
 
 
 @login_required
+@require_permission("manage_social_accounts")
 def account_posting_slots_partial(request, workspace_id):
     """Return the posting slots grid partial for a single account (HTMX)."""
     workspace = _get_workspace(request, workspace_id)
@@ -916,8 +1188,14 @@ def account_posting_slots_partial(request, workspace_id):
 
 @login_required
 @require_POST
+@require_permission("manage_social_accounts")
 def toggle_posting_slot_day(request, workspace_id):
-    """Toggle is_active for all posting slots of an account on a given day."""
+    """Toggle is_active for all posting slots of an account on a given day.
+
+    Account-level op: unlike delete/update (which self-heal a vanished *slot*),
+    this acts on the *account*, so a 404 on a missing account is intentional —
+    if the account itself is gone the whole card is stale, not just the grid.
+    """
     workspace = _get_workspace(request, workspace_id)
     account_id = request.POST.get("social_account_id")
     day = request.POST.get("day_of_week")
@@ -946,12 +1224,20 @@ def toggle_posting_slot_day(request, workspace_id):
 
 @login_required
 @require_POST
+@require_permission("manage_social_accounts")
 def update_posting_slot(request, workspace_id, slot_id):
-    """Update a posting slot's time."""
+    """Update a posting slot's time.
+
+    Idempotent: a slot that is already gone refreshes the grid (clearing the
+    phantom row) instead of 404ing.
+    """
     workspace = _get_workspace(request, workspace_id)
-    slot = get_object_or_404(PostingSlot, id=slot_id)
-    if slot.social_account.workspace_id != workspace.id:
-        return JsonResponse({"error": "Not found."}, status=404)
+    slot = PostingSlot.objects.filter(
+        id=slot_id,
+        social_account__workspace=workspace,
+    ).first()
+    if slot is None:
+        return _missing_slot_response(request, {"updated": False})
 
     time_str = request.POST.get("time")
     if not time_str:
@@ -1024,11 +1310,17 @@ def queue_create(request, workspace_id):
 
     account = get_object_or_404(SocialAccount, id=account_id, workspace=workspace)
 
+    # Scope category to the same workspace — without this, the queue could be
+    # bound to a category from another workspace via a forged POST.
+    category = None
+    if category_id:
+        category = get_object_or_404(ContentCategory, id=category_id, workspace=workspace)
+
     Queue.objects.create(
         workspace=workspace,
         name=name,
         social_account=account,
-        category_id=category_id,
+        category=category,
     )
 
     if request.htmx:
@@ -1039,12 +1331,16 @@ def queue_create(request, workspace_id):
 @login_required
 def queue_detail(request, workspace_id, queue_id):
     """Show queue entries in order with drag-to-reorder."""
+    from django.db.models import F
+
     workspace = _get_workspace(request, workspace_id)
     queue = get_object_or_404(Queue, id=queue_id, workspace=workspace)
+    # Slot datetime is the source of truth for order now (positions can be sparse
+    # after gap-fills); show entries chronologically, unslotted ones last.
     entries = (
         queue.entries.select_related("post__author")
         .prefetch_related("post__platform_posts__social_account")
-        .order_by("position")
+        .order_by(F("assigned_slot_datetime").asc(nulls_last=True), "position")
     )
 
     return render(
@@ -1090,12 +1386,61 @@ def queue_reorder(request, workspace_id, queue_id):
     return JsonResponse({"reordered": True})
 
 
+@login_required
+@require_POST
+def queue_entry_remove(request, workspace_id, queue_id, entry_id):
+    """Remove a single post from a queue, leaving a gap (comment §3).
+
+    Workspace-scoped and idempotent: a vanished entry (stale page, double-click)
+    still refreshes the list via the ``queueReordered`` trigger instead of 404ing.
+    """
+    workspace = _get_workspace(request, workspace_id)
+    entry = (
+        QueueEntry.objects.filter(id=entry_id, queue_id=queue_id, queue__workspace=workspace)
+        .select_related("post", "queue__social_account")
+        .first()
+    )
+    if entry is not None:
+        from .services import remove_from_queue
+
+        remove_from_queue(entry)
+
+    if request.htmx:
+        return HttpResponse(status=204, headers={"HX-Trigger": "queueReordered"})
+    return JsonResponse({"removed": entry is not None})
+
+
+@login_required
+@require_POST
+def queue_entry_reslot(request, workspace_id, queue_id, entry_id):
+    """Move a queued post to the queue's next open slot (comment §4)."""
+    workspace = _get_workspace(request, workspace_id)
+    entry = get_object_or_404(
+        QueueEntry.objects.select_related("post", "queue__social_account"),
+        id=entry_id,
+        queue_id=queue_id,
+        queue__workspace=workspace,
+    )
+
+    from .services import QueueFullError, reslot_to_next_available
+
+    try:
+        reslot_to_next_available(entry)
+    except QueueFullError:
+        return JsonResponse({"error": "No open slot within the scheduling horizon."}, status=409)
+
+    if request.htmx:
+        return HttpResponse(status=204, headers={"HX-Trigger": "queueReordered"})
+    return JsonResponse({"reslotted": True})
+
+
 # ---------------------------------------------------------------------------
 # Custom Calendar Events CRUD
 # ---------------------------------------------------------------------------
 
 
 @login_required
+@require_permission("create_posts")
 @require_POST
 def event_create(request, workspace_id):
     """Create a custom calendar event via HTMX."""
@@ -1108,6 +1453,9 @@ def event_create(request, workspace_id):
 
     if not title or not start_date_str or not end_date_str:
         return JsonResponse({"error": "Title, start date, and end date required."}, status=400)
+
+    if not is_valid_hex_color(color):
+        return JsonResponse({"error": "Color must be a 6-digit hex value like #3B82F6."}, status=400)
 
     try:
         start = date.fromisoformat(start_date_str)
@@ -1134,6 +1482,7 @@ def event_create(request, workspace_id):
 
 
 @login_required
+@require_permission("create_posts")
 @require_POST
 def event_edit(request, workspace_id, event_id):
     """Edit a custom calendar event."""
@@ -1142,7 +1491,10 @@ def event_edit(request, workspace_id, event_id):
 
     event.title = request.POST.get("title", event.title).strip()
     event.description = request.POST.get("description", event.description).strip()
-    event.color = request.POST.get("color", event.color)
+    new_color = request.POST.get("color", event.color)
+    if not is_valid_hex_color(new_color):
+        return JsonResponse({"error": "Color must be a 6-digit hex value like #3B82F6."}, status=400)
+    event.color = new_color
 
     import contextlib
 
@@ -1163,6 +1515,7 @@ def event_edit(request, workspace_id, event_id):
 
 
 @login_required
+@require_permission("create_posts")
 @require_POST
 def event_delete(request, workspace_id, event_id):
     """Delete a custom calendar event."""

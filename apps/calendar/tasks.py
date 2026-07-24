@@ -1,7 +1,9 @@
 """Background tasks for the Content Calendar (F-2.3)."""
 
+import copy
 import logging
-from datetime import timedelta
+import zoneinfo
+from datetime import datetime, timedelta
 
 from dateutil.relativedelta import relativedelta
 from django.utils import timezone
@@ -24,7 +26,6 @@ def generate_recurring_posts():
     """
     rules = RecurrenceRule.objects.filter(is_active=True).select_related("post")
     now = timezone.now()
-    cutoff = now.date() + timedelta(days=LOOKAHEAD_DAYS)
     generated_total = 0
 
     for rule in rules:
@@ -32,38 +33,44 @@ def generate_recurring_posts():
         if not source.scheduled_at:
             continue
 
-        # Respect end_date
+        # Recurrence dates and times are computed in the post's workspace
+        # timezone so the wall-clock time is preserved across DST boundaries
+        # (a 09:00-local series stays at 09:00 local, not drifting by the DST
+        # offset). ``scheduled_at`` is stored as UTC, so convert it back first.
+        ws_tz = zoneinfo.ZoneInfo(source.workspace.effective_timezone or "UTC")
+        local_start = source.scheduled_at.astimezone(ws_tz)
+        base_date = local_start.date()
+        base_time = local_start.time()
+        today_local = now.astimezone(ws_tz).date()
+
+        # Bound the lookahead horizon in the workspace's local calendar so it
+        # lands on the same local day for every timezone, not the UTC date.
+        cutoff = today_local + timedelta(days=LOOKAHEAD_DAYS)
         end = rule.end_date or cutoff
         if end > cutoff:
             end = cutoff
 
-        # Compute recurrence dates
-        base_date = source.scheduled_at.date()
-        base_time = source.scheduled_at.time()
-        base_tz = source.scheduled_at.tzinfo
-
         dates = _compute_recurrence_dates(base_date, rule.frequency, rule.interval, end)
 
-        # Filter out dates already generated (posts with same source scheduled time)
-        existing_dates = set(
-            Post.objects.filter(
-                workspace=source.workspace,
-                caption=source.caption,
-                scheduled_at__date__in=dates,
+        # Filter out dates already generated (posts with same source caption).
+        # Extract dates in the workspace zone so they line up with the ws-local
+        # recurrence dates above rather than UTC calendar days.
+        with timezone.override(ws_tz):
+            existing_dates = set(
+                Post.objects.filter(
+                    workspace=source.workspace,
+                    caption=source.caption,
+                    scheduled_at__date__in=dates,
+                )
+                .exclude(id=source.id)
+                .values_list("scheduled_at__date", flat=True)
             )
-            .exclude(id=source.id)
-            .values_list("scheduled_at__date", flat=True)
-        )
 
         for d in dates:
-            if d in existing_dates or d <= now.date():
+            if d in existing_dates or d <= today_local:
                 continue
 
-            from datetime import datetime
-
-            scheduled_dt = datetime.combine(d, base_time)
-            if base_tz:
-                scheduled_dt = scheduled_dt.replace(tzinfo=base_tz)
+            scheduled_dt = datetime.combine(d, base_time).replace(tzinfo=ws_tz)
 
             # Clone the post
             new_post = Post.objects.create(
@@ -96,6 +103,11 @@ def generate_recurring_posts():
                             platform_specific_caption=pp.platform_specific_caption,
                             platform_specific_first_comment=pp.platform_specific_first_comment,
                             platform_specific_media=pp.platform_specific_media,
+                            # Carry per-platform settings (e.g. TikTok privacy level,
+                            # comment/duet/stitch toggles, disclosure flags) into each
+                            # recurrence. Without this the publisher falls back to
+                            # provider defaults and loses the creator's choices.
+                            platform_extra=copy.deepcopy(pp.platform_extra) if pp.platform_extra else {},
                             scheduled_at=pp_scheduled,
                             status="scheduled",
                         )

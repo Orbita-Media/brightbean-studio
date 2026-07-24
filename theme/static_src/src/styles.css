@@ -25,6 +25,13 @@
   --brand-800: #2E2A8A;
   --brand-900: #1F1C5C;
 
+  /* Brand Tokens - BrightBean Green (the bean in the logo) — used for
+     selection controls (checkboxes, toggle switches) */
+  --brand-green-100: #EFF2DC;
+  --brand-green-200: #DDE4B9;
+  --brand-green-500: #94A43F;
+  --brand-green-600: #7B8A33;
+
   --brand-font-display: Georgia, 'Times New Roman', serif;
   --brand-font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --brand-font-mono: ui-monospace, SFMono-Regular, 'Cascadia Code', 'Consolas', monospace;
@@ -230,6 +237,13 @@ img.sidebar-logo-mark {
   background: var(--neutral-50) !important;
 }
 
+.btn-neutral-100 {
+  transition: background var(--dur-fast) ease;
+}
+.btn-neutral-100:hover {
+  background: var(--neutral-100) !important;
+}
+
 .btn-danger-soft {
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
@@ -238,8 +252,97 @@ img.sidebar-logo-mark {
   color: white !important;
 }
 
+.btn-danger-soft-bg {
+  transition: background var(--dur-fast) ease;
+}
+.btn-danger-soft-bg:hover {
+  background: #FEF2F2 !important;
+}
+
+.btn-primary-hover {
+  transition: background var(--dur-fast) ease;
+}
+.btn-primary-hover:hover {
+  background: var(--primary-hover) !important;
+}
+
+.btn-primary-lift {
+  transition: background var(--dur-fast) ease, transform var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+.btn-primary-lift:hover {
+  background: var(--primary-hover) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(249,115,22,0.35);
+}
+
+.card-hover-lift {
+  transition: box-shadow var(--dur-fast) ease, border-color var(--dur-fast) ease, transform var(--dur-fast) ease;
+}
+.card-hover-lift:hover {
+  box-shadow: var(--shadow-lg) !important;
+  border-color: transparent !important;
+  transform: translateY(-2px);
+}
+
+.btn-surface-1:hover {
+  background: var(--surface-1) !important;
+}
+.btn-surface-2:hover {
+  background: var(--surface-2, #F5F5F4) !important;
+}
+
+.btn-error-darker {
+  transition: background var(--dur-fast) ease;
+}
+.btn-error-darker:hover {
+  background: var(--error-600, #DC2626) !important;
+}
+
 .btn-opacity:hover {
   opacity: 0.9;
+}
+
+.btn-text-hover-primary {
+  transition: color var(--dur-fast) ease;
+}
+.btn-text-hover-primary:hover {
+  color: var(--text-primary) !important;
+}
+
+.btn-icon-hover {
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.btn-icon-hover:hover {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+}
+
+.btn-surface-neutral-50 {
+  transition: background var(--dur-fast) ease;
+}
+.btn-surface-neutral-50:hover {
+  background: var(--neutral-50) !important;
+}
+
+.btn-amber {
+  transition: background var(--dur-fast) ease;
+}
+.btn-amber:hover {
+  background: #FDE68A !important;
+}
+
+.btn-danger-tint {
+  transition: background var(--dur-fast) ease;
+}
+.btn-danger-tint:hover {
+  background: rgba(239,68,68,0.08) !important;
+}
+
+.btn-primary-tint {
+  transition: background var(--dur-fast) ease;
+}
+.btn-primary-tint:hover {
+  background: rgba(var(--primary-rgb, 249, 115, 22), 0.2) !important;
 }
 
 .input-focus {
@@ -252,6 +355,20 @@ img.sidebar-logo-mark {
 .input-focus:not(:focus) {
   border-color: var(--border);
   box-shadow: none;
+}
+
+.input-focus-surface {
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.input-focus-surface:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px var(--primary-ring) !important;
+  background: var(--surface-0) !important;
+}
+.input-focus-surface:not(:focus) {
+  border-color: var(--border);
+  box-shadow: none;
+  background: var(--surface-1);
 }
 
 /* Form input base */
@@ -604,4 +721,80 @@ span.flatpickr-weekday {
 }
 .flatpickr-time .numInputWrapper span.arrowDown::after {
   border-top-color: var(--text-secondary);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FORM SELECTION CONTROLS — bean-green accents
+   Native checkboxes pick up the brand green via accent-color (the
+   Tailwind forms plugin isn't installed, so text-* utilities don't
+   restyle them and browsers fall back to their default blue).
+   ═══════════════════════════════════════════════════════════════ */
+.bb-checkbox {
+  accent-color: var(--brand-green-500);
+}
+.bb-checkbox:focus-visible {
+  outline: 2px solid var(--brand-green-200);
+  outline-offset: 1px;
+}
+
+/* Select with a custom chevron inset from the edge (the native arrow hugs
+   the right border). Pair with the usual border/padding utility classes. */
+.bb-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2378716C' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem 1rem;
+  padding-right: 2.5rem;
+}
+
+/* Toggle switch:
+   <label class="bb-toggle"><input type="checkbox" …><span class="bb-toggle-track"></span></label> */
+.bb-toggle {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+.bb-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.bb-toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: var(--neutral-300);
+  transition: background 0.15s ease;
+}
+.bb-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s ease;
+}
+.bb-toggle input:checked + .bb-toggle-track {
+  background: var(--brand-green-500);
+}
+.bb-toggle input:checked + .bb-toggle-track::after {
+  transform: translateX(16px);
+}
+.bb-toggle input:focus-visible + .bb-toggle-track {
+  outline: 2px solid var(--brand-green-200);
+  outline-offset: 1px;
+}
+.bb-toggle input:disabled + .bb-toggle-track {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

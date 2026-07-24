@@ -9,10 +9,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .bluesky import BlueskyProvider
+from .devto import DevtoProvider
 from .facebook import FacebookProvider
 from .google_business import GoogleBusinessProvider
 from .instagram import InstagramProvider
-from .instagram_personal import InstagramPersonalProvider
+from .instagram_login import InstagramLoginProvider
 from .linkedin_company import LinkedInCompanyProvider
 from .linkedin_personal import LinkedInPersonalProvider
 from .mastodon import MastodonProvider
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 PROVIDER_REGISTRY: dict[str, type[SocialProvider]] = {
     "facebook": FacebookProvider,
     "instagram": InstagramProvider,
-    "instagram_personal": InstagramPersonalProvider,
+    "instagram_login": InstagramLoginProvider,
     "linkedin_personal": LinkedInPersonalProvider,
     "linkedin_company": LinkedInCompanyProvider,
     "tiktok": TikTokProvider,
@@ -38,6 +39,7 @@ PROVIDER_REGISTRY: dict[str, type[SocialProvider]] = {
     "bluesky": BlueskyProvider,
     "google_business": GoogleBusinessProvider,
     "mastodon": MastodonProvider,
+    "devto": DevtoProvider,
     "x": XProvider,
 }
 
@@ -49,6 +51,8 @@ def get_provider(platform: str, credentials: dict | None = None) -> SocialProvid
         platform: A PlatformCredential.Platform value (e.g. "facebook").
         credentials: Platform app credentials (client_id, client_secret, etc.)
                      from PlatformCredential or settings.PLATFORM_CREDENTIALS_FROM_ENV.
+                     If None, falls back to env credentials from
+                     ``settings.PLATFORM_CREDENTIALS_FROM_ENV``.
 
     Raises:
         ValueError: If no provider is registered for the given platform.
@@ -56,4 +60,9 @@ def get_provider(platform: str, credentials: dict | None = None) -> SocialProvid
     provider_cls = PROVIDER_REGISTRY.get(platform)
     if provider_cls is None:
         raise ValueError(f"No provider registered for platform: {platform}")
-    return provider_cls(credentials=credentials or {})
+    if credentials is None:
+        from django.conf import settings
+
+        env_creds = getattr(settings, "PLATFORM_CREDENTIALS_FROM_ENV", {})
+        credentials = env_creds.get(platform, {})
+    return provider_cls(credentials=credentials)

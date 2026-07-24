@@ -10,7 +10,7 @@
     <div class="flex items-center gap-3">
         <!-- List / Calendar toggle -->
         <div class="flex items-center bg-stone-50 rounded-full p-0.5" x-data="{ activeMode: '{{ mode|default:'calendar' }}' }">
-            <button class="view-btn" :class="activeMode === 'list' && 'active'"
+            <button class="view-btn{% if mode == 'list' %} active{% endif %}" :class="{ active: activeMode === 'list' }"
                     @click="activeMode = 'list'"
                     hx-get="{% url 'calendar:calendar' workspace_id=workspace.id %}?mode=list&tab={{ active_tab|default:'queue' }}&_switch_mode=1"
                     hx-target="#publish-body"
@@ -19,7 +19,7 @@
                 <svg class="w-3.5 h-3.5 inline -mt-px mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
                 List
             </button>
-            <button class="view-btn" :class="activeMode === 'calendar' && 'active'"
+            <button class="view-btn{% if mode == 'calendar' %} active{% endif %}" :class="{ active: activeMode === 'calendar' }"
                     @click="activeMode = 'calendar'"
                     hx-get="{% url 'calendar:calendar' workspace_id=workspace.id %}?mode=calendar&view={{ view_type|default:'month' }}&_switch_mode=1"
                     hx-target="#publish-body"
@@ -101,6 +101,8 @@
     .status-partially_published .chip-dot { background: #EAB308; }
     .status-failed     { background: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
     .status-failed .chip-dot { background: #EF4444; }
+    .status-on_hold    { background: #F5F3FF; color: #6D28D9; border: 1px solid #DDD6FE; }
+    .status-on_hold .chip-dot { background: #7C3AED; }
 
     /* View switcher */
     .view-btn {
@@ -176,6 +178,8 @@
     .pi-facebook   { background: #1877F2; }
     .pi-instagram  { background: linear-gradient(135deg, #F58529, #DD2A7B, #8134AF); }
     .pi-linkedin   { background: #0A66C2; }
+    .pi-linkedin_personal { background: #0A66C2; }
+    .pi-linkedin_company  { background: #0A66C2; }
     .pi-tiktok     { background: #010101; }
     .pi-youtube    { background: #FF0000; }
     .pi-pinterest  { background: #E60023; }
@@ -233,6 +237,68 @@
         transform: scale(1.1);
     }
 
+    .calendar-channel-slot {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        max-width: 100%;
+        min-height: 24px;
+        padding: 3px 5px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        border: 1px dashed #E7E5E4;
+        background: #FFFFFF;
+        color: #78716C;
+    }
+    .calendar-channel-slot--week {
+        width: 100%;
+        font-size: 10px;
+        gap: 4px;
+    }
+    .calendar-channel-slot.is-past-open {
+        opacity: 0.45;
+        background: #FAFAF9;
+    }
+    .calendar-slot-platform-icon {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 9999px;
+        background: #F5F5F4;
+        color: #78716C;
+    }
+    .calendar-slot-add {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 9999px;
+        background: #FFEDD5;
+        color: #C2410C;
+    }
+    .calendar-slot-add:hover {
+        background: #FED7AA;
+        transform: scale(1.05);
+    }
+    .calendar-post-slot-check {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 9999px;
+        background: rgba(255,255,255,0.72);
+        color: #15803D;
+        margin-left: auto;
+    }
+
     /* Draggable feedback */
     .post-chip.dragging { opacity: 0.5; transform: rotate(2deg); }
 
@@ -240,6 +306,9 @@
         from { opacity: 0; transform: translateY(8px); }
         to   { opacity: 1; transform: translateY(0); }
     }
+
+    /* Play slideUp only on HTMX-swapped tab content, not initial server render */
+    .tab-slide-in { animation: slideUp 200ms cubic-bezier(0.16,1,0.3,1) both; }
 </style>
 {% endblock %}
 
@@ -251,6 +320,8 @@
         {% include "calendar/partials/publish_calendar_shell.html" %}
     {% endif %}
 </div>
+{# Toast host — outside #tab-content so an approval action's list refresh doesn't tear down the toast #}
+{% include "approvals/partials/_toasts.html" %}
 {% endblock %}
 
 {% block extra_js %}
@@ -296,7 +367,7 @@ function calendarApp() {
             event.dataTransfer.dropEffect = 'move';
         },
 
-        dropOnSlot(event, dateStr, hour) {
+        dropOnSlot(event, dateStr, timeStr) {
             event.preventDefault();
             const platformPostId = this.draggedPlatformPostId;
             if (!platformPostId) return;
@@ -317,7 +388,11 @@ function calendarApp() {
             }
             this.draggedPlatformPostId = null;
 
-            const newDatetime = dateStr + 'T' + String(hour).padStart(2, '0') + ':00:00';
+            // dateStr/timeStr are the target cell's workspace-tz wall date/time
+            // (see _cell_compose_params); reschedule_post interprets the naive
+            // value in the workspace timezone, so the drop lands on the right
+            // instant even when the calendar display timezone differs from it.
+            const newDatetime = dateStr + 'T' + timeStr + ':00';
 
             const csrfToken =
                 (document.querySelector('[name=csrfmiddlewaretoken]') || {}).value ||

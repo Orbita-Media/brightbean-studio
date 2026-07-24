@@ -214,3 +214,7 @@ theme/static/css/dist/
 *.sqlite3
 /.claude/worktrees
 .DS_Store
+
+# Local seed scripts (not for version control)
+/seed_ad_analytics.py
+/seed_ad_calendar.py

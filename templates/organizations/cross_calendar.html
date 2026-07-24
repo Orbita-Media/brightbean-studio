@@ -55,11 +55,14 @@
     .status-published  { background: #F0FDF4; color: #15803D; }
     .status-partially_published { background: #F0FDF4; color: #15803D; }
     .status-failed     { background: #FEF2F2; color: #B91C1C; }
+    .status-on_hold    { background: #F5F3FF; color: #6D28D9; }
 
     /* Platform icon badges */
     .pi-facebook   { background: #1877F2; }
     .pi-instagram  { background: linear-gradient(135deg, #F58529, #DD2A7B, #8134AF); }
     .pi-linkedin   { background: #0A66C2; }
+    .pi-linkedin_personal { background: #0A66C2; }
+    .pi-linkedin_company  { background: #0A66C2; }
     .pi-tiktok     { background: #010101; }
     .pi-youtube    { background: #FF0000; }
     .pi-pinterest  { background: #E60023; }
@@ -162,12 +165,12 @@
         <div class="flex-1"></div>
 
         <!-- Right side: filter dropdowns -->
-        <div class="flex items-center gap-2">
+        <div x-data class="flex items-center gap-2">
             <!-- Status filter -->
             <div class="relative">
                 <svg class="org-filter-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
                 <select class="org-filter-select has-icon"
-                        onchange="window.location.href='?view={{ view_type }}&date={{ target_date|date:'Y-m-d' }}{% for sid in selected_workspace_ids %}&workspace={{ sid }}{% endfor %}{% if request.GET.channel %}&channel={{ request.GET.channel }}{% endif %}{% if request.GET.tag %}&tag={{ request.GET.tag }}{% endif %}' + (this.value ? '&status=' + this.value : '')">
+                        @change="window.location.href='?view={{ view_type }}&date={{ target_date|date:'Y-m-d' }}{% for sid in selected_workspace_ids %}&workspace={{ sid }}{% endfor %}{% if request.GET.channel %}&channel={{ request.GET.channel }}{% endif %}{% if request.GET.tag %}&tag={{ request.GET.tag }}{% endif %}' + ($event.target.value ? '&status=' + $event.target.value : '')">
                     <option value="">All Posts</option>
                     {% for value, label in status_choices %}
                     <option value="{{ value }}" {% if request.GET.status == value %}selected{% endif %}>{{ label }}</option>
@@ -179,7 +182,7 @@
             <div class="relative">
                 <svg class="org-filter-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 006 0v-1a10 10 0 10-3.92 7.94"/></svg>
                 <select class="org-filter-select has-icon"
-                        onchange="window.location.href='?view={{ view_type }}&date={{ target_date|date:'Y-m-d' }}{% for sid in selected_workspace_ids %}&workspace={{ sid }}{% endfor %}{% if request.GET.status %}&status={{ request.GET.status }}{% endif %}{% if request.GET.tag %}&tag={{ request.GET.tag }}{% endif %}' + (this.value ? '&channel=' + this.value : '')">
+                        @change="window.location.href='?view={{ view_type }}&date={{ target_date|date:'Y-m-d' }}{% for sid in selected_workspace_ids %}&workspace={{ sid }}{% endfor %}{% if request.GET.status %}&status={{ request.GET.status }}{% endif %}{% if request.GET.tag %}&tag={{ request.GET.tag }}{% endif %}' + ($event.target.value ? '&channel=' + $event.target.value : '')">
                     <option value="">Channels</option>
                     {% for acc in social_accounts %}
                     <option value="{{ acc.id }}" {% if request.GET.channel == acc.id|stringformat:'s' %}selected{% endif %}>{{ acc.account_name|default:acc.account_handle }} ({{ acc.get_platform_display }})</option>
@@ -191,7 +194,7 @@
             <div class="relative">
                 <svg class="org-filter-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
                 <select class="org-filter-select has-icon"
-                        onchange="window.location.href='?view={{ view_type }}&date={{ target_date|date:'Y-m-d' }}{% for sid in selected_workspace_ids %}&workspace={{ sid }}{% endfor %}{% if request.GET.status %}&status={{ request.GET.status }}{% endif %}{% if request.GET.channel %}&channel={{ request.GET.channel }}{% endif %}' + (this.value ? '&tag=' + this.value : '')">
+                        @change="window.location.href='?view={{ view_type }}&date={{ target_date|date:'Y-m-d' }}{% for sid in selected_workspace_ids %}&workspace={{ sid }}{% endfor %}{% if request.GET.status %}&status={{ request.GET.status }}{% endif %}{% if request.GET.channel %}&channel={{ request.GET.channel }}{% endif %}' + ($event.target.value ? '&tag=' + $event.target.value : '')">
                     <option value="">Tags</option>
                     {% for t in all_tags %}
                     <option value="{{ t }}" {% if request.GET.tag == t %}selected{% endif %}>#{{ t }}</option>
@@ -263,7 +266,7 @@
                 {% for day in week %}
                 <div class="cross-cal-day cal-add-cell {% if day.is_today %}today{% elif day.is_past %}past{% endif %} {% if not day.is_current_month %}other-month{% endif %}">
                     {% if default_workspace and not day.is_past and day.is_current_month %}
-                    <a href="{% url 'composer:compose' workspace_id=default_workspace.id %}?scheduled_date={{ day.date|date:'Y-m-d' }}" class="cal-add-btn" title="Create post">
+                    <a href="{% url 'composer:compose' workspace_id=default_workspace.id %}?scheduled_date={{ day.date|date:'Y-m-d' }}&scheduled_time=09:00" class="cal-add-btn" title="Create post">
                         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
                     </a>
                     {% endif %}

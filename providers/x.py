@@ -4,10 +4,18 @@ Free-Tier-kompatibel: Nur Text-Tweets (500 Posts/Monat Limit).
 Media-Upload würde den Paid-Tier erfordern und ist absichtlich nicht
 implementiert — publish_post lehnt Media-Posts mit PublishError ab.
 
-PKCE wird deterministisch aus dem OAuth-state-Parameter abgeleitet,
-damit der stateless Provider-Ansatz (get_auth_url / exchange_code auf
-verschiedenen Instanzen) ohne Session-Storage funktioniert. Die Ableitung
-nutzt SHA-256(state) als code_verifier, method=plain.
+PKCE laeuft ueber den zentralen Mechanismus des Frameworks
+(``apps/social_accounts/oauth_pkce.py``): die Connect-View erzeugt einen
+zufaelligen ``code_verifier``, legt ihn in der OAuth-Session ab und reicht
+ihn an ``get_auth_url`` sowie spaeter an ``exchange_code`` durch. Wir leiten
+daraus die ``code_challenge`` nach RFC 7636 ab (base64url ohne Padding,
+Methode S256).
+
+Historie: bis zum Upstream-Merge am 24.07.2026 hat dieser Provider den
+Verifier deterministisch aus dem ``state`` abgeleitet (Methode ``plain``),
+weil das Framework damals keinen Verifier durchreichen konnte. Seit dem
+Upstream-Commit 5fd5d36 gibt es dafuer einen offiziellen Weg - der ist
+sicherer (echter Zufall statt ableitbarer Wert) und wird hier genutzt.
 """
 
 from __future__ import annotations
@@ -40,9 +48,13 @@ REVOKE_URL = "https://api.twitter.com/2/oauth2/revoke"
 API_BASE = "https://api.twitter.com/2"
 
 
-def _derive_code_verifier(state: str) -> str:
-    """Deterministisch 43 chars aus state ableiten (PKCE min length = 43)."""
-    digest = hashlib.sha256(state.encode()).digest()
+def _pkce_code_challenge(code_verifier: str) -> str:
+    """RFC-7636-``code_challenge`` aus dem Verifier ableiten (S256).
+
+    base64url-kodierter SHA-256-Digest ohne Padding - das ist der Standard,
+    den X (anders als TikTok) genau so erwartet.
+    """
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
 
@@ -53,6 +65,11 @@ class XProvider(SocialProvider):
     - ``client_id`` — OAuth 2.0 Client ID from developer.twitter.com
     - ``client_secret`` — OAuth 2.0 Client Secret (for Confidential Clients)
     """
+
+    # X verlangt PKCE auf dem Authorization-Request. Das Flag sorgt dafuer,
+    # dass die Connect-/Reconnect-Views einen Verifier erzeugen und ihn ueber
+    # die Session bis zum Token-Tausch durchreichen.
+    uses_pkce = True
 
     @property
     def platform_name(self) -> str:
@@ -101,26 +118,29 @@ class XProvider(SocialProvider):
     # OAuth flow
     # ------------------------------------------------------------------
 
-    def get_auth_url(self, redirect_uri: str, state: str) -> str:
-        code_verifier = _derive_code_verifier(state)
+    def get_auth_url(self, redirect_uri: str, state: str, code_verifier: str | None = None) -> str:
+        if not code_verifier:
+            raise OAuthError(
+                "X get_auth_url requires a PKCE code_verifier",
+                platform=self.platform_name,
+            )
         params = {
             "response_type": "code",
             "client_id": self.credentials["client_id"],
             "redirect_uri": redirect_uri,
             "scope": " ".join(self.required_scopes),
             "state": state,
-            "code_challenge": code_verifier,
-            "code_challenge_method": "plain",
+            "code_challenge": _pkce_code_challenge(code_verifier),
+            "code_challenge_method": "S256",
         }
         return f"{AUTH_URL}?{urlencode(params)}"
 
-    def exchange_code(self, code: str, redirect_uri: str, state: str | None = None) -> OAuthTokens:
-        if not state:
+    def exchange_code(self, code: str, redirect_uri: str, code_verifier: str | None = None) -> OAuthTokens:
+        if not code_verifier:
             raise OAuthError(
-                "X exchange_code requires state parameter for PKCE verification",
+                "X exchange_code requires the PKCE code_verifier from the OAuth session",
                 platform=self.platform_name,
             )
-        code_verifier = _derive_code_verifier(state)
         resp = self._request(
             "POST",
             TOKEN_URL,

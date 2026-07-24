@@ -12,6 +12,23 @@ from . import services
 from .decorators import require_org_role
 from .models import Invitation, OrgMembership, WorkspaceMembership
 
+
+def _org_role_choices_for(membership):
+    """Org-role options the *viewer* is allowed to assign.
+
+    Only owners can grant the Admin role (mirrors the owner-only guard in
+    ``services.create_invitation`` / ``services.update_member_org_role``), so
+    non-owners only ever see Member — they never get offered a role the
+    backend would reject. The backend checks remain as the defense-in-depth
+    backstop; this is UX only.
+    """
+    choices = []
+    if membership.org_role == OrgMembership.OrgRole.OWNER:
+        choices.append((OrgMembership.OrgRole.ADMIN, "Admin"))
+    choices.append((OrgMembership.OrgRole.MEMBER, "Member"))
+    return choices
+
+
 # ---------------------------------------------------------------------------
 # Team Members List
 # ---------------------------------------------------------------------------
@@ -67,11 +84,8 @@ def member_list(request):
             .order_by("-created_at")
         )
 
-    # Role choices for forms (exclude owner)
-    org_role_choices = [
-        (OrgMembership.OrgRole.ADMIN, "Admin"),
-        (OrgMembership.OrgRole.MEMBER, "Member"),
-    ]
+    # Role choices for forms: only owners may assign Admin (see helper).
+    org_role_choices = _org_role_choices_for(request.org_membership)
     workspace_role_choices = WorkspaceMembership.WorkspaceRole.choices
 
     return render(
@@ -125,6 +139,7 @@ def invite_member(request):
             org_role=org_role,
             workspace_assignments=workspace_assignments,
             invited_by=request.user,
+            inviter=request.user,
         )
     except ValueError as e:
         return HttpResponse(
@@ -262,7 +277,7 @@ def update_member_role(request, membership_id):
     new_role = request.POST.get("org_role")
 
     try:
-        services.update_member_org_role(request.org, membership, new_role)
+        services.update_member_org_role(request.org, membership, new_role, caller=request.user)
     except ValueError as e:
         return HttpResponse(
             f'<div class="text-red-600 text-sm">{e}</div>',
@@ -291,6 +306,7 @@ def update_member_role(request, membership_id):
                 "is_admin": True,
                 "current_user": request.user,
                 "workspace_role_choices": WorkspaceMembership.WorkspaceRole.choices,
+                "org_role_choices": _org_role_choices_for(request.org_membership),
             },
         )
     return redirect("members:list")
@@ -351,7 +367,7 @@ def manage_workspaces(request, membership_id):
                 )
 
         try:
-            services.update_workspace_assignments(org, membership.user, assignments)
+            services.update_workspace_assignments(org, membership.user, assignments, inviter=request.user)
         except ValueError as e:
             return HttpResponse(str(e), status=422)
 
@@ -373,6 +389,7 @@ def manage_workspaces(request, membership_id):
                     "is_admin": True,
                     "current_user": request.user,
                     "workspace_role_choices": WorkspaceMembership.WorkspaceRole.choices,
+                    "org_role_choices": _org_role_choices_for(request.org_membership),
                 },
             )
         return redirect("members:list")
