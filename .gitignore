@@ -218,3 +218,16 @@ theme/static/css/dist/
 # Local seed scripts (not for version control)
 /seed_ad_analytics.py
 /seed_ad_calendar.py
+
+# Orbita: Schutz vor globalen Ignore-Regeln auf dem Entwicklungsrechner.
+# Noahs ~/.gitignore_global enthält "*credentials*" (gegen versehentlich
+# eingecheckte Zugangsdaten). Diese Regel trifft aber auch unser App-
+# Verzeichnis apps/credentials/ – am 24.07.2026 ist dadurch beim
+# Upstream-Merge eine neue Migration (0006_orbita_add_x_platform.py) still
+# aus "git add -A" herausgefallen. Aufgefallen ist es nur, weil der Commit
+# gegengeprüft wurde; im Deploy hätte gefehlt, was lokal noch da war.
+# Die folgenden Zeilen holen das Verzeichnis explizit zurück. Kein Secret
+# liegt dort – es ist Anwendungscode, die echten Zugangsdaten stehen
+# verschlüsselt in der Datenbank.
+!apps/credentials/
+!apps/credentials/**
