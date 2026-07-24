@@ -231,3 +231,7 @@ theme/static/css/dist/
 # verschlüsselt in der Datenbank.
 !apps/credentials/
 !apps/credentials/**
+# ... aber die Python-Caches dort bleiben natuerlich draussen (die Negation
+# oben wuerde sonst auch __pycache__ wieder einschliessen).
+apps/credentials/**/__pycache__/
+apps/credentials/**/*.py[cod]
