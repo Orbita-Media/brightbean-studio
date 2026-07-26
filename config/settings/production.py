@@ -69,3 +69,13 @@ if _os.environ.get("AWS_ACCESS_KEY_ID"):
     EMAIL_BACKEND = "django_ses.SESBackend"
     AWS_SES_REGION_NAME = _os.environ.get("AWS_DEFAULT_REGION", "eu-north-1")
     AWS_SES_REGION_ENDPOINT = "email.eu-north-1.amazonaws.com"
+    # SES-Zugangsdaten ausdrücklich festnageln (MEDIA-01).
+    # Seit STORAGE_BACKEND=s3 setzt base.py die Django-Settings
+    # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY auf die R2-Zugangsdaten.
+    # django_ses/conf.py greift zuerst auf AWS_SES_ACCESS_KEY_ID zu und fällt
+    # sonst genau auf diese beiden Settings zurück – ohne die nächsten zwei
+    # Zeilen würde SES also mit dem R2-Token authentifizieren und jeder
+    # Mailversand (Einladungen, Passwort-Reset) mit InvalidClientTokenId
+    # scheitern. Die SES-Schlüssel kommen weiterhin aus der Umgebung.
+    AWS_SES_ACCESS_KEY_ID = _os.environ["AWS_ACCESS_KEY_ID"]
+    AWS_SES_SECRET_ACCESS_KEY = _os.environ.get("AWS_SECRET_ACCESS_KEY", "")

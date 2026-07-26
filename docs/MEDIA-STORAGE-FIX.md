@@ -95,5 +95,97 @@ Python-Prozess leiten.
   dort liegen Buchcover und Produktionsdaten; ein Bucket, der für Meta öffentlich
   lesbar sein muss, darf diese Daten nicht enthalten.
 
-Nächster Schritt: Bucket und öffentliche Domain anlegen, Code-Korrekturen, ENV
-über die Coolify-API setzen.
+## Schritt 2 – Speicher angelegt und geprüft (ERLEDIGT)
+
+### Bucket und öffentliche Domain
+
+| Punkt | Wert |
+|---|---|
+| Bucket | `orbita-social-media`, Region **WEUR** (Westeuropa, nah am Hetzner) |
+| Öffentliche Adresse | **`https://social-cdn.orbita-media.de`** (R2 Custom Domain in der Zone `orbita-media.de`) |
+| TLS | `ssl: active`, `ownership: active`, `minTLS: 1.2` (per API bestätigt) |
+| Zugangsdaten | eigener, **auf genau diesen Bucket beschränkter** R2-Token `orbita-social-media-rw` (Rechte „Bucket Item Read" + „Bucket Item Write") |
+
+Bewusst eine Custom Domain statt der `pub-….r2.dev`-Adresse: die
+Entwicklungs-URL ist laut Cloudflare nicht für Produktion gedacht und wird
+gedrosselt. Die Custom Domain liegt hinter dem Cloudflare-Cache, was genau dem
+Zugriffsmuster von Meta entgegenkommt (mehrere Abrufe derselben Datei je Post).
+
+Die Domain-Ebene ist mit Absicht flach (`social-cdn.orbita-media.de` statt
+`media.social.orbita-media.de`): das Universal-Zertifikat von Cloudflare deckt
+nur `*.orbita-media.de` ab, eine weitere Ebene hätte ein kostenpflichtiges
+Advanced-Zertifikat gebraucht.
+
+### Am Speicher selbst nachgewiesen (vor jeder Code-Änderung)
+
+| Prüfung | Ergebnis |
+|---|---|
+| `PUT` mit `ACL=private` (so wie django-storages es standardmässig sendet) | **OK** – R2 ignoriert den ACL-Header, kein Fehler, kein Code-Fix nötig |
+| `PUT` ohne ACL | OK |
+| `GET https://social-cdn.orbita-media.de/…` **ohne Authentifizierung** | **HTTP 200**, `Content-Type: text/plain`, korrekter Inhalt, `Server: cloudflare` |
+
+Der erste Abruf lief noch in ein **403**, weil die Zertifikatsausstellung
+(`ssl: pending`) noch lief. Nach dem Wechsel auf `ssl: active` antwortet die
+Domain sauber. Wer den Fehler später wiedersieht: zuerst den SSL-Status der
+Custom Domain prüfen, nicht die Zugangsdaten.
+
+### Wie die URL entsteht, die Meta später abruft
+
+Im laufenden Container geprüft (`django-storages 1.14.6`,
+`storages/backends/s3.py:668-689`): Ist `AWS_S3_CUSTOM_DOMAIN` gesetzt und kein
+CloudFront-Signierer konfiguriert, liefert `url()` eine **einfache, absolute,
+unsignierte** Adresse:
+
+```
+https://social-cdn.orbita-media.de/media_library/2026/07/datei.jpg
+```
+
+Das ist wichtig, weil `AWS_QUERYSTRING_AUTH = True` in `base.py:199` steht.
+Ohne Custom Domain wären das presignte URLs mit einer Stunde Gültigkeit – für
+geplante Beiträge eine Zeitbombe. **Mit** Custom Domain greift dieser Zweig gar
+nicht erst. Deshalb bleibt `base.py` unangetastet.
+
+### Der eine Fehler, der ohne Prüfung durchgerutscht wäre: SES
+
+`config/settings/base.py:192-193` setzt im S3-Zweig die Django-Settings
+`AWS_ACCESS_KEY_ID` und `AWS_SECRET_ACCESS_KEY` auf die **R2**-Zugangsdaten.
+`django_ses/conf.py:14-28` (im Container nachgelesen) löst seine Zugangsdaten so
+auf:
+
+```python
+return getattr(django_settings, 'AWS_SES_ACCESS_KEY_ID',
+               getattr(django_settings, 'AWS_ACCESS_KEY_ID', None))
+```
+
+Bisher lieferte das `None`, weshalb boto3 auf die Umgebungsvariablen mit dem
+SES-IAM-Schlüssel zurückfiel. Mit `STORAGE_BACKEND=s3` hätte django-ses
+stattdessen den **R2-Token** benutzt – jeder Mailversand (Einladungen,
+Passwort-Reset) wäre mit `InvalidClientTokenId` gescheitert, und zwar erst
+Tage später und ohne erkennbaren Zusammenhang zur Medien-Umstellung.
+
+Behoben in `config/settings/production.py:73-81`: die SES-Schlüssel werden
+ausdrücklich aus der Umgebung gesetzt und damit von den Storage-Schlüsseln
+entkoppelt.
+
+### Neue Tests
+
+`tests/test_media_storage_settings.py` (6 Tests) sichert die drei Eigenschaften
+ab, auf denen die Reparatur beruht – besonders gegen künftige Upstream-Merges:
+
+1. `STORAGE_BACKEND=s3` aktiviert den S3-Zweig und trägt die Storage-Domain in
+   `CSP_IMG_SRC`/`CSP_MEDIA_SRC` nach (ohne die blockiert der Browser die
+   Vorschaubilder), `local` bleibt unverändert Dateisystem.
+2. Die SES-Schlüssel unterscheiden sich nachweislich von den Storage-Schlüsseln.
+3. `S3Storage.url()` liefert mit Custom Domain eine absolute Adresse **ohne**
+   Signatur-Parameter.
+
+| Prüfung | Ergebnis |
+|---|---|
+| Neue Tests | 6 von 6 grün |
+| Komplette Testsuite | **1070 Tests, alle grün** (1064 vorher + 6 neue) |
+
+Gelaufen in einem Wegwerf-Container aus dem aktuell deployten Image
+(`861aa3d…`) gegen eine eigene Postgres-Instanz – die Produktionsdatenbank
+wurde dafür nicht angefasst.
+
+Nächster Schritt: Umgebungsvariablen über die Coolify-API setzen und deployen.
