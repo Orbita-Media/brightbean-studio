@@ -105,6 +105,40 @@ class TestSesCredentialsAreIsolated:
         assert settings.AWS_SES_SECRET_ACCESS_KEY != settings.AWS_SECRET_ACCESS_KEY
 
 
+class TestMediaDeliveryCheck:
+    """Der System-Check muss genau die zwei stillen Fehlkonfigurationen melden."""
+
+    def _run(self, **overrides):
+        from django.test import override_settings
+
+        from apps.common.checks import media_delivery_check
+
+        with override_settings(**overrides):
+            return media_delivery_check(None)
+
+    def test_local_backend_in_production_is_flagged(self):
+        """Der Zustand vor der Reparatur: keine Route für /media/."""
+        issues = self._run(STORAGE_BACKEND="local", DEBUG=False)
+        assert [i.id for i in issues] == ["media.W002"]
+
+    def test_local_backend_in_debug_is_fine(self):
+        """Unter DEBUG haengt config/urls.py den static()-Helfer ein."""
+        assert self._run(STORAGE_BACKEND="local", DEBUG=True) == []
+
+    def test_s3_without_custom_domain_is_flagged(self):
+        """Ohne eigene Domain entstehen signierte URLs mit Ablaufzeit."""
+        issues = self._run(STORAGE_BACKEND="s3", AWS_S3_CUSTOM_DOMAIN="", DEBUG=False)
+        assert [i.id for i in issues] == ["media.W001"]
+
+    def test_s3_with_custom_domain_is_fine(self):
+        """Die jetzt ausgerollte Konfiguration muss sauber durchgehen."""
+        assert self._run(
+            STORAGE_BACKEND="s3",
+            AWS_S3_CUSTOM_DOMAIN="social-cdn.orbita-media.de",
+            DEBUG=False,
+        ) == []
+
+
 class TestPublicMediaUrl:
     """Die an Meta übergebene URL muss absolut und ohne Signatur sein."""
 

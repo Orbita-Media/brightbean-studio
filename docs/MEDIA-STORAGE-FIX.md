@@ -325,6 +325,47 @@ Die Anmeldung für den Browser-Test lief über eine eigens erzeugte, auf eine
 Stunde befristete Sitzung – **kein Passwort geändert, kein Benutzer angelegt,
 keine Bestandsdaten angefasst**.
 
+## Schritt 6 – Damit der Fehler nicht stillschweigend zurückkommt
+
+Der eigentliche Schaden dieses Fehlers war nicht seine Schwere, sondern seine
+**Unsichtbarkeit**: Die Anwendung lief einwandfrei, nur Meta hätte sich
+beschwert – mit einer Meldung, die nach fehlender Berechtigung aussieht.
+Genau das kann bei einer geänderten Umgebungsvariable jederzeit
+wiederkehren.
+
+Deshalb prüft `apps/common/checks.py` (registriert in `apps/common/apps.py`)
+beim Start die zwei stillen Fehlkonfigurationen:
+
+| Kennung | Wann sie feuert | Warum das gefährlich ist |
+|---|---|---|
+| `media.W002` | `STORAGE_BACKEND=local` bei `DEBUG=False` | genau der Zustand vor dieser Reparatur: keine Route für `/media/…` |
+| `media.W001` | `STORAGE_BACKEND=s3` **ohne** `S3_CUSTOM_DOMAIN` | dann baut django-storages signierte URLs mit einer Stunde Gültigkeit – geplante Beiträge schlagen fehl, sofortige nicht, also ein sporadischer Fehler |
+
+Beide sind bewusst `Warning` und kein `Error`: Sie erscheinen im Deploy-Log und
+in `manage.py check`, verhindern aber keinen Start. Weder CI noch Dockerfile
+rufen `check --fail-level` auf, der Betrieb kann daran also nicht scheitern.
+
+Im Container gegengeprüft:
+
+```
+# mit der jetzt ausgerollten Konfiguration
+$ python manage.py check
+System check identified no issues (0 silenced).
+
+# mit der Konfiguration von vorher
+$ STORAGE_BACKEND=local python manage.py check
+WARNINGS:
+?: (media.W002) STORAGE_BACKEND=local bei DEBUG=False: für MEDIA_URL existiert
+   keine HTTP-Route …
+```
+
+Der Check hätte den ursprünglichen Fehler also bei jedem Deploy angezeigt.
+
+| Prüfung | Ergebnis |
+|---|---|
+| Tests zu den Checks | 4 neue, alle grün |
+| Komplette Testsuite | **1074 Tests, alle grün** |
+
 ## Rollback
 
 Drei Ebenen, je nach Dringlichkeit:
