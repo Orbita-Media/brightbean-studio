@@ -257,3 +257,123 @@ Accept-Ranges: bytes
 | Authentifizierung | keine nötig, kein Signatur-Parameter in der URL |
 | `Accept-Ranges: bytes` | Meta holt Videos in Teilstücken – R2 beantwortet Range-Anfragen nativ |
 | URL absolut | ja, `https://…` mit Domain, kein `/media/…` |
+
+### 5c – Der vollständige Weg durch die echte Anwendung
+
+Nicht nur der Speicher wurde geprüft, sondern der ganze Pfad: Anmeldung,
+Medienbibliothek im Browser öffnen, Datei über das Formular hochladen,
+Vorschaubild erzeugen lassen, und die URL abrufen, die der Publisher daraus
+baut.
+
+Hochgeladen wurde eine klar markierte Testdatei (`E2E-MEDIA-CHECK-…jpg`,
+800×600, 8 229 Bytes) über `/workspace/42f5b8c3-…/media/`.
+
+Danach im Container **exakt der Code-Pfad aus `apps/publisher/engine.py:353`
+und `369-373`** nachgebildet – also genau die Zeilen, deren Ergebnis in
+`content.media_urls` landet und von `providers/instagram.py` in `image_url`
+geschrieben wird:
+
+```
+MEDIA_URLS[0]: https://social-cdn.orbita-media.de/media_library/2026/07/E2E-MEDIA-CHECK-….jpg
+ABSOLUT      : True
+MIT SIGNATUR : False
+THUMBNAIL    : https://social-cdn.orbita-media.de/media_library/thumbs/2026/07/thumb_4e26d0b0-….jpg
+```
+
+Abrufe von aussen, ohne jede Anmeldung:
+
+| Abruf | Ergebnis |
+|---|---|
+| Originaldatei | **HTTP 200**, `image/jpeg`, **8 229 Bytes** (exakt die hochgeladene Grösse) |
+| Vorschaubild | **HTTP 200**, `image/jpeg`, 2 529 Bytes |
+| Range-Anfrage `bytes=0-99` | **HTTP 206**, 100 Bytes – der Weg, auf dem Meta Videos holt |
+| **Alte Adresse** `https://social.orbita-media.de/media/media_library/…` | **HTTP 404** |
+
+Die letzte Zeile ist der eigentliche Beweis für die Diagnose: genau diese
+Adresse hätte der Publisher vor der Umstellung an Instagram übergeben, und sie
+liefert weiterhin 404. Der Fehler war real, nicht nur theoretisch hergeleitet.
+
+### 5d – Oberfläche auf Desktop und Mobil
+
+Geprüft mit echten Viewports, jeweils gemessen statt geschätzt:
+
+| Viewport | Horizontaler Überlauf | Vorschaubild geladen | Konsole | Antworten ab 400 |
+|---|---|---|---|---|
+| Desktop 1280×800 | keiner (`scrollWidth == clientWidth`) | ja (400×300 von `social-cdn…`) | sauber | keine |
+| iPhone 390×844 | keiner | ja | sauber | keine |
+| Android 360×780 | keiner | ja | sauber | keine |
+
+Wichtig daran: Das Vorschaubild wird tatsächlich von der neuen Domain geladen
+(`naturalWidth > 0`) und die Konsole meldet **keine CSP-Verstösse** – die
+automatische Ergänzung aus `base.py:310-318` greift also in der Praxis.
+Screenshots wurden angesehen, nicht nur erzeugt.
+
+### 5e – Aufgeräumt
+
+Alle Testdaten wurden entfernt, ausschliesslich über die IDs und Namen, die
+dieser Durchlauf selbst erzeugt hat (zusätzlich Namens-Guard `E2E-MEDIA-CHECK`).
+Gegenprobe danach:
+
+| Prüfung | Ergebnis |
+|---|---|
+| Objekte im Bucket | **0** |
+| `media_library_media_asset` | **0 Zeilen** |
+| Browser-Sitzung des Tests | gelöscht |
+| Hilfsskripte im Container | entfernt |
+
+Die Anmeldung für den Browser-Test lief über eine eigens erzeugte, auf eine
+Stunde befristete Sitzung – **kein Passwort geändert, kein Benutzer angelegt,
+keine Bestandsdaten angefasst**.
+
+## Rollback
+
+Drei Ebenen, je nach Dringlichkeit:
+
+1. **Sofort, ohne Deploy:** In Coolify `STORAGE_BACKEND` zurück auf `local`
+   setzen und die App neu starten. Damit gilt wieder der alte Zustand –
+   inklusive des alten Fehlers, aber ohne jeden Codeeingriff:
+   ```
+   curl -X PATCH "http://localhost:8000/api/v1/applications/xos84sccocw488o8kccow88g/envs" \
+     -H "Authorization: Bearer <Coolify-Token>" -H "Content-Type: application/json" \
+     -d '{"key":"STORAGE_BACKEND","value":"local","is_preview":false}'
+   ```
+   Der Code-Zweig für lokalen Speicher ist unverändert vorhanden
+   (`base.py:204-211`), das Volume `media_data` ebenfalls.
+2. **Code zurücknehmen:** `git revert d569899` und pushen. Betrifft nur die
+   SES-Entkopplung und die Tests. Achtung: Das ist **nur zusammen mit Punkt 1**
+   sinnvoll – bleibt `STORAGE_BACKEND=s3` ohne diesen Commit bestehen, versucht
+   django-ses mit dem R2-Token bei Amazon zu authentifizieren.
+3. **Speicher entfernen:** Bucket `orbita-social-media`, Custom Domain
+   `social-cdn.orbita-media.de` und der Cloudflare-Token `orbita-social-media-rw`
+   können im Cloudflare-Dashboard gelöscht werden. Solange keine Medien
+   hochgeladen wurden, geht dabei nichts verloren.
+
+Der Stand vor dieser Änderung ist Commit **`861aa3d`**.
+
+## Was das für Instagram und Facebook bedeutet
+
+Die technische Voraussetzung ist damit erfüllt: Bilder und Videos liegen unter
+einer **öffentlich und ohne Anmeldung abrufbaren, absoluten** Adresse mit
+korrektem Content-Type, und der Publisher übergibt genau diese Adresse.
+Der Fehlerfall aus Upstream-Issue #130 kann auf unserer Instanz nicht mehr
+auftreten.
+
+Was noch aussteht, liegt ausserhalb dieser Reparatur: die Kanäle müssen
+verbunden werden (Meta-App, OAuth). Erst danach lässt sich ein echter Beitrag
+veröffentlichen.
+
+## Nebenbefund: der API-Key-401 (nur dokumentiert, nicht behoben)
+
+Wie in `UPSTREAM-MERGE-LOG.md` beschrieben, ist der alte Schlüssel des
+Content-Tools seit dem Merge ungültig (die Tabelle `api_workspace_api_key` wird
+von keinem Code mehr gelesen; die neue Tabelle `api_keys_api_key` ist leer).
+
+Das lässt sich **weiterhin nicht vorab lösen**: `issue_api_key` verlangt laut
+`apps/api_keys/models.py`, dass ein Schlüssel mindestens einen **verbundenen**
+Social-Account freigibt („size >= 1"). Bei null verbundenen Konten ist kein
+Schlüssel erzeugbar – weder über die Oberfläche noch programmatisch. Sobald je
+Marke ein Kanal verbunden ist (am schnellsten Bluesky oder Mastodon), sind die
+Schlüssel zwei Klicks (Organisation → API Keys → „Issue new key") und gehören
+sofort in den Vault. Absichtlich nicht mit einer Wegwerf-Fixtur erzwungen: das
+hiesse, in Noahs echtem Arbeitsbereich ein Konto anzulegen und wieder zu
+löschen.
