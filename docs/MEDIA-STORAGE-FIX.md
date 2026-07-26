@@ -377,3 +377,49 @@ Schlüssel zwei Klicks (Organisation → API Keys → „Issue new key") und geh
 sofort in den Vault. Absichtlich nicht mit einer Wegwerf-Fixtur erzwungen: das
 hiesse, in Noahs echtem Arbeitsbereich ein Konto anzulegen und wieder zu
 löschen.
+
+## Nebenbefund: 24 px werden links abgeschnitten (diagnostiziert, bewusst nicht gefixt)
+
+Bei der visuellen Prüfung fiel auf, dass in der Medienbibliothek sichtbar
+„olders" statt „Folders" steht und der linke Rand des Suchfelds fehlt.
+
+**Gemessen, nicht vermutet:** Der Text beginnt bei `left = 267`, sein
+Inhaltsrahmen bei `left = 251` – der nächste Vorfahre mit `overflow-x: hidden`
+aber erst bei `left = 275`. Es werden also 24 px links weggeschnitten, davon
+8 px vom Text selbst.
+
+**Ursache:**
+
+| Fundstelle | Inhalt |
+|---|---|
+| `templates/base.html:879` | `<main … p-3 sm:p-4 lg:p-6 …>` – der Innenabstand |
+| `templates/base.html:890` | `<div class="flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden">` – der Rahmen um `{% block content %}` |
+| `templates/media_library/library_index.html:102` | `-m-3 sm:-m-4 lg:-m-6` – hebt den Innenabstand auf, um randlos zu füllen |
+
+Der negative Rand zieht den Block um 24 px nach links aus dem Rahmen heraus,
+und `overflow-x-hidden` schneidet genau diesen Streifen ab.
+
+**Warum das hier nicht miterledigt wurde:** Es ist kein Einzelfall. Dasselbe
+Muster nutzen mindestens `calendar/partials/publish_calendar_shell.html:6`,
+`calendar/partials/publish_list_shell.html:9` und
+`composer/create_landing.html:394` – die Ansichten sind also alle betroffen.
+Der wirksame Fix wäre eine Änderung an `base.html:890`, dem Rahmen um **jede**
+Inhaltsseite der Anwendung. Genau dieses `overflow-x-hidden` ist zugleich der
+Schutz gegen horizontalen Überlauf auf Mobilgeräten. Ein Eingriff dort ist ein
+eigener, abzunehmender Schritt mit Prüfung aller Ansichten auf drei Viewports –
+nicht etwas, das man einer Speicher-Umstellung anhängt.
+
+**Zwei mögliche Wege, wenn es angegangen wird:**
+
+1. Den Innenabstand von `<main>` in einen überschreibbaren Block legen
+   (`{% block main_padding %}p-3 sm:p-4 lg:p-6{% endblock %}`) und die vier
+   Templates von negativen Rändern auf einen leeren Block umstellen. Sauber,
+   erhält das Design exakt, berührt aber fünf Dateien.
+2. `overflow-x-hidden` an `base.html:890` entfernen und den Überlaufschutz
+   gezielt dort setzen, wo er gebraucht wird. Eine Zeile, aber jede Ansicht
+   muss auf Mobilgeräten nachgemessen werden.
+
+Der Fehler stammt aus dem Upstream und bestand vor dieser Umstellung genauso –
+er hat mit dem Medien-Speicher nichts zu tun. Sinnvollerweise gehört er als
+Issue an `brightbeanxyz/brightbean-studio` gemeldet, damit ihn der Fork nicht
+dauerhaft selbst pflegen muss.
