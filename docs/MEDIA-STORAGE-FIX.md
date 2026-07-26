@@ -211,4 +211,49 @@ Danach über die API gegengelesen: alle sieben Variablen stehen mit
 Die Zugangsdaten liegen im Vault unter
 **`Orbita Social R2 (orbita-social-media)`** – im Repo steht kein Geheimnis.
 
-Nächster Schritt: deployen und von aussen nachweisen.
+## Schritt 4 – Deploy (ERLEDIGT)
+
+| Punkt | Wert |
+|---|---|
+| Auslöser | `git push origin main` (`861aa3d..57ab862`), Webhook wie bei allen anderen Apps |
+| Commits | `91f3063` (Doku), `d569899` (SES-Entkopplung + Tests), `57ab862` (Doku) |
+| Status | **finished** nach 151 s – mit dem Deploy-Watcher verfolgt, nicht geraten |
+| Container | neu gestartet, `SOURCE_COMMIT=57ab862f…` |
+| Variablen im Container | `STORAGE_BACKEND=s3`, `S3_BUCKET_NAME=orbita-social-media`, `S3_CUSTOM_DOMAIN=social-cdn.orbita-media.de`, `S3_REGION_NAME=auto`, Schlüssel mit 32 bzw. 64 Zeichen |
+
+## Schritt 5 – Verifikation (ERLEDIGT)
+
+### 5a – Im laufenden Produktions-Container
+
+```
+STORAGE_BACKEND      : s3
+default_storage      : django.core.files.storage.DefaultStorage
+AWS_STORAGE_BUCKET   : orbita-social-media
+AWS_S3_CUSTOM_DOMAIN : social-cdn.orbita-media.de
+EMAIL_BACKEND        : django_ses.SESBackend
+SES-Key != S3-Key    : True
+GESPEICHERT          : E2E-MEDIA-CHECK/probe.jpg
+URL                  : https://social-cdn.orbita-media.de/E2E-MEDIA-CHECK/probe.jpg
+```
+
+Die Zeile `SES-Key != S3-Key: True` belegt, dass die Entkopplung aus Schritt 2
+in der Produktion greift – der Mailversand läuft weiter über den SES-Schlüssel.
+
+### 5b – Abruf von aussen, ohne Anmeldung (das, was Meta tut)
+
+```
+$ curl -I https://social-cdn.orbita-media.de/E2E-MEDIA-CHECK/probe.jpg
+HTTP/1.1 200 OK
+Content-Type: image/jpeg
+Content-Length: 160
+Cache-Control: max-age=86400
+Accept-Ranges: bytes
+```
+
+| Kriterium | Ergebnis |
+|---|---|
+| HTTP-Status | **200** |
+| Content-Type | **`image/jpeg`** – aus der Dateiendung abgeleitet, Meta lehnt falsche Typen ab |
+| Authentifizierung | keine nötig, kein Signatur-Parameter in der URL |
+| `Accept-Ranges: bytes` | Meta holt Videos in Teilstücken – R2 beantwortet Range-Anfragen nativ |
+| URL absolut | ja, `https://…` mit Domain, kein `/media/…` |
