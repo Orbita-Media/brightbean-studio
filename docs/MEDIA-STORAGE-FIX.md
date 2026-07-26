@@ -188,4 +188,27 @@ Gelaufen in einem Wegwerf-Container aus dem aktuell deployten Image
 (`861aa3d…`) gegen eine eigene Postgres-Instanz – die Produktionsdatenbank
 wurde dafür nicht angefasst.
 
-Nächster Schritt: Umgebungsvariablen über die Coolify-API setzen und deployen.
+## Schritt 3 – Umgebungsvariablen gesetzt (ERLEDIGT)
+
+Gesetzt über die **Coolify-REST-API** (`POST`/`PATCH
+/api/v1/applications/xos84sccocw488o8kccow88g/envs`), nicht in der Datenbank –
+Coolify verschlüsselt die Werte, direkte Schreibzugriffe führen beim Build zu
+`DecryptException`.
+
+| Variable | Wert |
+|---|---|
+| `STORAGE_BACKEND` | `local` → **`s3`** (aktualisiert) |
+| `S3_ENDPOINT_URL` | `https://<account>.r2.cloudflarestorage.com` |
+| `S3_ACCESS_KEY_ID` | Token-ID (32 Zeichen) |
+| `S3_SECRET_ACCESS_KEY` | SHA-256 des Token-Werts (64 Zeichen) |
+| `S3_BUCKET_NAME` | `orbita-social-media` |
+| `S3_CUSTOM_DOMAIN` | `social-cdn.orbita-media.de` |
+| `S3_REGION_NAME` | `auto` |
+
+Danach über die API gegengelesen: alle sieben Variablen stehen mit
+`is_preview: false` an der Anwendung, `STORAGE_BACKEND` steht auf `s3`.
+
+Die Zugangsdaten liegen im Vault unter
+**`Orbita Social R2 (orbita-social-media)`** – im Repo steht kein Geheimnis.
+
+Nächster Schritt: deployen und von aussen nachweisen.
