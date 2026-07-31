@@ -65,6 +65,11 @@ class DevtoProvider(SocialProvider):
         return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.WEBP]
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # An article carries one cover image; further attachments are ignored.
+        return 1
+
+    @property
     def required_scopes(self) -> list[str]:
         return []  # API-key based, no scopes
 

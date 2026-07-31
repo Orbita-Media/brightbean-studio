@@ -106,6 +106,12 @@ class FacebookProvider(SocialProvider):
         return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.MP4, MediaType.MOV]
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # A feed post's ``attached_media`` array is capped at 10; larger sets
+        # need the album flow, which this provider does not implement.
+        return FACEBOOK_MAX_ATTACHED_MEDIA
+
+    @property
     def required_scopes(self) -> list[str]:
         scopes = [
             "business_management",

@@ -92,6 +92,12 @@ class XProvider(SocialProvider):
         return []
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # Media upload needs the paid tier and is deliberately off, so a post
+        # with any attachment fails loudly in publish_post().
+        return 0
+
+    @property
     def required_scopes(self) -> list[str]:
         return ["tweet.read", "tweet.write", "users.read", "offline.access"]
 

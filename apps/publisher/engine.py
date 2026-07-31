@@ -262,12 +262,20 @@ class PublishEngine:
                         exc_info=True,
                     )
 
-                # Log success
+                # Log success. A provider may report a partial result on an
+                # otherwise successful publish (Bluesky: the root post is live
+                # but a continuation reply failed). That belongs in the log
+                # even though the post counts as published, because nothing
+                # else in the app would ever mention it.
+                warning = response_extra.get("publish_warning", "") if isinstance(response_extra, dict) else ""
+                if warning:
+                    logger.warning("PlatformPost %s published with a warning: %s", platform_post.id, warning)
                 PublishLog.objects.create(
                     platform_post=platform_post,
                     attempt_number=platform_post.retry_count + 1,
                     status_code=result.get("status_code", 200),
                     response_body=str(result.get("response", ""))[:1000],
+                    error_message=warning,
                     duration_ms=duration_ms,
                 )
 
@@ -480,6 +488,7 @@ class PublishEngine:
                 post_type.value,
                 len(media_files),
             )
+            self._warn_on_dropped_media(provider, platform_post, len(media_files))
             result = provider.publish_post(access_token, content)
             return {
                 "success": True,
@@ -492,6 +501,30 @@ class PublishEngine:
             for path in temp_files:
                 with contextlib.suppress(OSError):
                     os.unlink(path)
+
+    @staticmethod
+    def _warn_on_dropped_media(provider, platform_post, media_count: int) -> None:
+        """Log before publishing when the channel cannot show every attachment.
+
+        Bluesky lost slides 5 and 6 of every six-slide carousel for weeks
+        without a single line in the log, and slide 6 is the one carrying the
+        book. Providers that spread the overflow over further posts
+        (``chains_overflow_media``) are exempt; everyone else gets named here,
+        so the same gap can never go unnoticed on Instagram or Pinterest.
+        """
+        limit = provider.max_media_per_post
+        # ``isinstance`` rather than ``is not None``: a provider that does not
+        # declare a real number must not be able to break a publish here.
+        if not isinstance(limit, int) or media_count <= limit or provider.chains_overflow_media:
+            return
+        logger.warning(
+            "%s shows at most %d of %d attachments on PlatformPost %s, %d will not be published",
+            provider.platform_name,
+            limit,
+            media_count,
+            platform_post.id,
+            media_count - limit,
+        )
 
     @staticmethod
     def _resolve_post_type(

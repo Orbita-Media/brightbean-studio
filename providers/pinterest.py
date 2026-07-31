@@ -68,6 +68,13 @@ class PinterestProvider(SocialProvider):
         return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.MP4]
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # A pin carries exactly one image or one video. Pinterest's multi-image
+        # pin schema is not implemented here, so anything beyond the first
+        # attachment is dropped (with a warning at publish time).
+        return 1
+
+    @property
     def required_scopes(self) -> list[str]:
         return ["user_accounts:read", "boards:read", "pins:read", "pins:write"]
 
@@ -214,6 +221,13 @@ class PinterestProvider(SocialProvider):
 
         # Image pin
         if content.media_urls:
+            if len(content.media_urls) > 1:
+                # Say it out loud instead of quietly pinning slide 1 of six.
+                logger.warning(
+                    "Pinterest carries one image per pin: %d of %d attachments are dropped",
+                    len(content.media_urls) - 1,
+                    len(content.media_urls),
+                )
             payload["media_source"] = {
                 "source_type": "image_url",
                 "url": content.media_urls[0],

@@ -73,6 +73,12 @@ CONTAINER_POLL_MAX_ATTEMPTS = 60
 # not on the parent CAROUSEL container.
 MAX_ALT_TEXT_LENGTH = 1000
 
+# A Graph API carousel holds 2 to 10 children. Sending more is rejected by the
+# API; we stop earlier and say which slides would not have made it, because a
+# six-slide carousel silently losing its closing slide is the exact failure
+# this project already had on Bluesky.
+MAX_CAROUSEL_ITEMS = 10
+
 
 class InstagramProvider(SocialProvider):
     """Instagram Graph API provider (via Facebook Graph API v25.0)."""
@@ -109,6 +115,11 @@ class InstagramProvider(SocialProvider):
     @property
     def supported_media_types(self) -> list[MediaType]:
         return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.MP4, MediaType.MOV]
+
+    @property
+    def max_media_per_post(self) -> int | None:
+        # Graph API: a carousel holds 2 to 10 children, images and videos mixed.
+        return MAX_CAROUSEL_ITEMS
 
     @property
     def required_scopes(self) -> list[str]:
@@ -329,6 +340,13 @@ class InstagramProvider(SocialProvider):
 
     def _publish_carousel(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
         """Publish a carousel post with multiple media items."""
+        if len(content.media_urls) > MAX_CAROUSEL_ITEMS:
+            raise PublishError(
+                f"Instagram carousels hold at most {MAX_CAROUSEL_ITEMS} items "
+                f"(got {len(content.media_urls)}); split the post instead of losing slides",
+                platform=self.platform_name,
+            )
+
         child_ids: list[str] = []
 
         for index, url in enumerate(content.media_urls):

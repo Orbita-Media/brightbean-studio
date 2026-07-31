@@ -131,6 +131,11 @@ class TikTokProvider(SocialProvider):
     account_metrics_supports_date_range: bool = False
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # One video per post.
+        return 1
+
+    @property
     def required_scopes(self) -> list[str]:
         scopes = [
             "user.info.basic",

@@ -66,6 +66,12 @@ class GoogleBusinessProvider(SocialProvider):
         return [MediaType.JPEG, MediaType.PNG]
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # localPosts documents "only one media item is supported"; a second
+        # entry is rejected by the API rather than shown.
+        return 1
+
+    @property
     def required_scopes(self) -> list[str]:
         return ["https://www.googleapis.com/auth/business.manage"]
 
@@ -262,7 +268,15 @@ class GoogleBusinessProvider(SocialProvider):
         # LocalPost media item "sourceUrl is the only supported data field",
         # so there is nowhere to put an accessibility description.
         if content.media_urls:
-            body["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": url} for url in content.media_urls]
+            if len(content.media_urls) > 1:
+                # localPosts takes exactly one media item; sending the whole
+                # carousel would have the API reject the post outright.
+                logger.warning(
+                    "Google Business local posts carry one image: %d of %d attachments are dropped",
+                    len(content.media_urls) - 1,
+                    len(content.media_urls),
+                )
+            body["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": content.media_urls[0]}]
 
         # EVENT type extras
         if topic_type == "EVENT" and content.extra.get("event"):

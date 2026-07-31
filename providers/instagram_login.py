@@ -80,6 +80,9 @@ CONTAINER_POLL_MAX_ATTEMPTS = 60  # ~2 minutes max
 # characters. Reels and stories reject it.
 MAX_ALT_TEXT_LENGTH = 1000
 
+# Same carousel cap as the Graph API path: 2 to 10 children.
+MAX_CAROUSEL_ITEMS = 10
+
 
 class InstagramLoginProvider(SocialProvider):
     """Instagram API provider using Instagram Login (OAuth 2.0).
@@ -120,6 +123,11 @@ class InstagramLoginProvider(SocialProvider):
     @property
     def supported_media_types(self) -> list[MediaType]:
         return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.MP4, MediaType.MOV]
+
+    @property
+    def max_media_per_post(self) -> int | None:
+        # Instagram API with Instagram Login uses the same carousel cap as Graph.
+        return MAX_CAROUSEL_ITEMS
 
     @property
     def required_scopes(self) -> list[str]:
@@ -327,6 +335,13 @@ class InstagramLoginProvider(SocialProvider):
         return self._publish_container(access_token, container_id)
 
     def _publish_carousel(self, access_token: str, content: PublishContent) -> PublishResult:
+        if len(content.media_urls) > MAX_CAROUSEL_ITEMS:
+            raise PublishError(
+                f"Instagram carousels hold at most {MAX_CAROUSEL_ITEMS} items "
+                f"(got {len(content.media_urls)}); split the post instead of losing slides",
+                platform=self.platform_name,
+            )
+
         child_ids: list[str] = []
 
         for index, url in enumerate(content.media_urls):

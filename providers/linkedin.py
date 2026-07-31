@@ -96,6 +96,13 @@ class LinkedInProvider(SocialProvider):
         return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.MP4]
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # This provider posts a single image or a single video. LinkedIn's
+        # multi-image post is not implemented, so extra attachments are
+        # dropped (with a warning at publish time).
+        return 1
+
+    @property
     def required_scopes(self) -> list[str]:
         return [
             "w_member_social",
@@ -295,6 +302,15 @@ class LinkedInProvider(SocialProvider):
             )
 
         # Step 2: upload image binary (prefer local file to avoid extra network hop)
+        attachments = content.media_files or content.media_urls
+        if len(attachments) > 1:
+            # This provider posts a single image; LinkedIn's multi-image post
+            # is not implemented. Say so rather than quietly posting slide 1.
+            logger.warning(
+                "LinkedIn image posts carry one image: %d of %d attachments are dropped",
+                len(attachments) - 1,
+                len(attachments),
+            )
         image_source = content.media_files[0] if content.media_files else content.media_urls[0]
         self._upload_binary(access_token, upload_url, image_source)
 

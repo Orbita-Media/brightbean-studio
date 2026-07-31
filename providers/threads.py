@@ -40,6 +40,9 @@ CONTAINER_POLL_MAX_ATTEMPTS = 40  # up to ~2 min for video processing
 # is where Instagram's identical API takes it.
 MAX_ALT_TEXT_LENGTH = 1000
 
+# A Threads carousel holds 2 to 20 items.
+MAX_CAROUSEL_ITEMS = 20
+
 
 class ThreadsProvider(SocialProvider):
     """Threads API provider using OAuth 2.0."""
@@ -76,6 +79,11 @@ class ThreadsProvider(SocialProvider):
     @property
     def supported_media_types(self) -> list[MediaType]:
         return [MediaType.JPEG, MediaType.PNG, MediaType.MP4, MediaType.MOV]
+
+    @property
+    def max_media_per_post(self) -> int | None:
+        # Threads carousels hold 2 to 20 items.
+        return MAX_CAROUSEL_ITEMS
 
     @property
     def required_scopes(self) -> list[str]:
@@ -341,6 +349,13 @@ class ThreadsProvider(SocialProvider):
         content: PublishContent,
     ) -> PublishResult:
         """Create and publish a carousel thread."""
+        if len(content.media_urls) > MAX_CAROUSEL_ITEMS:
+            raise PublishError(
+                f"Threads carousels hold at most {MAX_CAROUSEL_ITEMS} items "
+                f"(got {len(content.media_urls)}); split the post instead of losing slides",
+                platform=self.platform_name,
+            )
+
         # Step 1: Create individual item containers
         children_ids: list[str] = []
 

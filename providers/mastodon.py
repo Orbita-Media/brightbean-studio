@@ -33,6 +33,12 @@ DEFAULT_MAX_CHARS = 500
 # safe fallback when that endpoint is unreachable or predates the field.
 DEFAULT_MAX_ALT_TEXT_LENGTH = 1500
 
+# Attachments per status. Mastodon ships with 4 but the instance may raise it;
+# the real value is ``configuration.statuses.max_media_attachments``. Going
+# over it makes the API reject the status with a 422, so we check first and say
+# which attachments would be the problem.
+DEFAULT_MAX_MEDIA_ATTACHMENTS = 4
+
 
 class MastodonProvider(SocialProvider):
     """Mastodon API v1 provider.
@@ -79,6 +85,12 @@ class MastodonProvider(SocialProvider):
             MediaType.MOV,
             MediaType.WEBP,
         ]
+
+    @property
+    def max_media_per_post(self) -> int | None:
+        # Instance-configurable; the shipped default is 4. publish_post() asks
+        # the instance for the real value before it uploads anything.
+        return DEFAULT_MAX_MEDIA_ATTACHMENTS
 
     @property
     def required_scopes(self) -> list[str]:
@@ -216,6 +228,20 @@ class MastodonProvider(SocialProvider):
         except Exception:
             return DEFAULT_MAX_ALT_TEXT_LENGTH
 
+    def get_instance_max_media_attachments(self, access_token: str) -> int:
+        """Retrieve how many attachments this instance allows on one status."""
+        try:
+            resp = self._request(
+                "GET",
+                f"{self.instance_url}/api/v2/instance",
+                access_token=access_token,
+            )
+            data = resp.json()
+            limit = data.get("configuration", {}).get("statuses", {}).get("max_media_attachments")
+            return int(limit) if limit else DEFAULT_MAX_MEDIA_ATTACHMENTS
+        except Exception:
+            return DEFAULT_MAX_MEDIA_ATTACHMENTS
+
     # ------------------------------------------------------------------
     # Profile
     # ------------------------------------------------------------------
@@ -247,6 +273,17 @@ class MastodonProvider(SocialProvider):
         # accessibility description, matched to the file by position.
         media_ids: list[str] = []
         media_files = content.media_files or []
+        # Only ask the instance once the shipped default is exceeded — an
+        # instance may have raised the cap, but below it there is nothing to
+        # check and no reason to spend a round trip on every publish.
+        if len(media_files) > DEFAULT_MAX_MEDIA_ATTACHMENTS:
+            max_attachments = self.get_instance_max_media_attachments(access_token)
+            if len(media_files) > max_attachments:
+                raise PublishError(
+                    f"{self.instance_url} accepts at most {max_attachments} attachments per status "
+                    f"(got {len(media_files)}); split the post instead of losing slides",
+                    platform=self.platform_name,
+                )
         alt_text_limit = self.get_instance_max_alt_text_length(access_token) if media_files else 0
         for index, media_path in enumerate(media_files):
             media_id = self._upload_media(

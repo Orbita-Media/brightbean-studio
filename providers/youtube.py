@@ -67,6 +67,11 @@ class YouTubeProvider(SocialProvider):
         return [MediaType.MP4, MediaType.MOV]
 
     @property
+    def max_media_per_post(self) -> int | None:
+        # One video per upload.
+        return 1
+
+    @property
     def required_scopes(self) -> list[str]:
         scopes = [
             "https://www.googleapis.com/auth/youtube.upload",
