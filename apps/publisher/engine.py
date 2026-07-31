@@ -340,6 +340,7 @@ class PublishEngine:
         # that require fetchable URLs (Instagram, Threads, Google Business, etc.)
         media_files = []
         media_urls = []
+        media_alt_texts = []
         temp_files = []
         attachments = list(platform_post.post.media_attachments.select_related("media_asset").order_by("position"))
 
@@ -371,6 +372,15 @@ class PublishEngine:
                     # Local storage: make absolute using APP_URL
                     url = f"{app_url}{url}"
                 media_urls.append(url)
+
+                # Carry the accessibility description along, positionally
+                # aligned with media_urls/media_files so every carousel slide
+                # keeps its own alt text (attachments are ordered by
+                # ``position`` above). The per-attachment override wins; the
+                # asset's own alt text is the fallback, and an attachment
+                # without any alt text contributes an empty string rather than
+                # shifting the following entries out of alignment.
+                media_alt_texts.append((pm.alt_text or asset.alt_text or "").strip())
 
                 # Download to a temp file (works with any storage backend)
                 suffix = os.path.splitext(asset.filename)[1] or ".tmp"
@@ -456,6 +466,7 @@ class PublishEngine:
                 first_comment=platform_post.effective_first_comment,
                 media_files=media_files,
                 media_urls=media_urls,
+                media_alt_texts=media_alt_texts,
                 post_type=post_type,
                 extra=extra,
                 link_url=link_url,

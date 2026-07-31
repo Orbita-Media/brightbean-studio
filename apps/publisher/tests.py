@@ -1,5 +1,6 @@
 """Tests for the Publishing Engine (T-1A.3)."""
 
+import io
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -95,7 +96,42 @@ class PublishLogModelTest(TestCase):
         self.assertIn("200", s)
 
 
-def _build_dispatch_mocks(platform: str, account_platform_id: str, platform_extra: dict | None = None):
+class _FakeStoredFile:
+    """Stand-in for a Django FileField value backed by in-memory bytes."""
+
+    def __init__(self, url: str, data: bytes = b"fake-image-bytes"):
+        self.url = url
+        self._data = data
+
+    def open(self, mode: str = "rb"):
+        return io.BytesIO(self._data)
+
+
+def _fake_attachment(filename: str, alt_text: str = "", asset_alt_text: str = "", media_type: str = "image"):
+    """Build a PostMedia-shaped stub whose asset streams real bytes.
+
+    ``alt_text`` is the per-attachment override, ``asset_alt_text`` the alt
+    text stored on the shared media asset.
+    """
+    asset = MagicMock()
+    asset.file = _FakeStoredFile(f"https://cdn.example.com/{filename}")
+    asset.filename = filename
+    asset.media_type = media_type
+    asset.alt_text = asset_alt_text
+    asset.duration = 0
+
+    attachment = MagicMock()
+    attachment.media_asset = asset
+    attachment.alt_text = alt_text
+    return attachment
+
+
+def _build_dispatch_mocks(
+    platform: str,
+    account_platform_id: str,
+    platform_extra: dict | None = None,
+    attachments: list | None = None,
+):
     """Build the minimal mocks needed to exercise _dispatch_to_provider's
     extras-assembly without DB or filesystem side effects.
 
@@ -112,7 +148,7 @@ def _build_dispatch_mocks(platform: str, account_platform_id: str, platform_extr
 
     platform_post = MagicMock()
     platform_post.social_account = account
-    platform_post.post.media_attachments.select_related.return_value.order_by.return_value = []
+    platform_post.post.media_attachments.select_related.return_value.order_by.return_value = attachments or []
     platform_post.post.tags = []
     platform_post.effective_caption = "hello"
     platform_post.effective_title = None
@@ -194,6 +230,95 @@ class DispatchExtraInjectionTest(SimpleTestCase):
 
         _access_token, content = mock_provider.publish_post.call_args.args
         self.assertNotIn("author", content.extra)
+
+
+class DispatchAltTextTest(SimpleTestCase):
+    """Verify _dispatch_to_provider hands one alt text per media item down.
+
+    Regression guard: the engine used to build media_files/media_urls without
+    ever collecting the attachments' alt text, so every provider published
+    images with no accessibility description at all.
+    """
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_passes_one_alt_text_per_attachment_in_order(self, _mock_creds, mock_get_provider):
+        engine, platform_post, mock_provider = _build_dispatch_mocks(
+            platform="bluesky",
+            account_platform_id="did:plc:test",
+            attachments=[
+                _fake_attachment("slide-1.png", asset_alt_text="Folie 1: Überschrift"),
+                _fake_attachment("slide-2.png", asset_alt_text="Folie 2: Zahlen"),
+                _fake_attachment("slide-3.png", asset_alt_text="Folie 3: Fazit"),
+            ],
+        )
+        mock_get_provider.return_value = mock_provider
+
+        engine._dispatch_to_provider(platform_post)
+
+        _access_token, content = mock_provider.publish_post.call_args.args
+        self.assertEqual(
+            content.media_alt_texts,
+            ["Folie 1: Überschrift", "Folie 2: Zahlen", "Folie 3: Fazit"],
+        )
+        # Positional alignment with the media lists is what keeps a slide's
+        # description on that slide.
+        self.assertEqual(len(content.media_alt_texts), len(content.media_files))
+        self.assertEqual(len(content.media_alt_texts), len(content.media_urls))
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_attachment_override_wins_over_asset_alt_text(self, _mock_creds, mock_get_provider):
+        engine, platform_post, mock_provider = _build_dispatch_mocks(
+            platform="bluesky",
+            account_platform_id="did:plc:test",
+            attachments=[
+                _fake_attachment("a.png", alt_text="Für diesen Beitrag angepasst", asset_alt_text="Standardtext"),
+                _fake_attachment("b.png", asset_alt_text="Standardtext B"),
+            ],
+        )
+        mock_get_provider.return_value = mock_provider
+
+        engine._dispatch_to_provider(platform_post)
+
+        _access_token, content = mock_provider.publish_post.call_args.args
+        self.assertEqual(content.media_alt_texts, ["Für diesen Beitrag angepasst", "Standardtext B"])
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_missing_alt_text_keeps_position_and_does_not_fail(self, _mock_creds, mock_get_provider):
+        # A gap must stay a gap: shifting entries up would move slide 3's
+        # description onto slide 2, which is worse than no alt text at all.
+        engine, platform_post, mock_provider = _build_dispatch_mocks(
+            platform="bluesky",
+            account_platform_id="did:plc:test",
+            attachments=[
+                _fake_attachment("a.png", asset_alt_text="Erste Folie"),
+                _fake_attachment("b.png"),
+                _fake_attachment("c.png", asset_alt_text="Dritte Folie"),
+            ],
+        )
+        mock_get_provider.return_value = mock_provider
+
+        result = engine._dispatch_to_provider(platform_post)
+
+        self.assertTrue(result["success"])
+        _access_token, content = mock_provider.publish_post.call_args.args
+        self.assertEqual(content.media_alt_texts, ["Erste Folie", "", "Dritte Folie"])
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_no_attachments_yields_empty_alt_text_list(self, _mock_creds, mock_get_provider):
+        engine, platform_post, mock_provider = _build_dispatch_mocks(
+            platform="bluesky",
+            account_platform_id="did:plc:test",
+        )
+        mock_get_provider.return_value = mock_provider
+
+        engine._dispatch_to_provider(platform_post)
+
+        _access_token, content = mock_provider.publish_post.call_args.args
+        self.assertEqual(content.media_alt_texts, [])
 
 
 class ResolvePublishCredentialsTest(SimpleTestCase):

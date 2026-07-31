@@ -141,6 +141,31 @@ class PublishContent:
     description: str | None = None
     first_comment: str | None = None
     extra: dict = field(default_factory=dict)
+    # Accessibility description per media item, positionally aligned with
+    # ``media_urls`` / ``media_files`` — index 0 describes the first carousel
+    # slide, index 1 the second, and so on. Entries may be empty strings when
+    # an attachment carries no alt text; providers must degrade gracefully
+    # rather than fail. Read it through ``alt_text_for()``, never by raw index.
+    media_alt_texts: list[str] = field(default_factory=list)
     # Duration of the primary video in seconds, when known. Lets providers
     # enforce platform limits (e.g. TikTok's max_video_post_duration_sec).
     video_duration_sec: float | None = None
+
+    def alt_text_for(self, index: int, max_length: int | None = None) -> str:
+        """Return the alt text describing the media item at ``index``.
+
+        Falls back to ``extra["alt_text"]`` (the legacy single-value key that
+        per-account platform extras still set, e.g. the Pinterest composer
+        field) and finally to an empty string, so a post with missing or
+        partial alt text publishes without alt text instead of failing.
+
+        ``max_length`` truncates to the platform's documented limit.
+        """
+        value = ""
+        if 0 <= index < len(self.media_alt_texts):
+            value = (self.media_alt_texts[index] or "").strip()
+        if not value:
+            value = str(self.extra.get("alt_text") or "").strip()
+        if max_length is not None:
+            value = value[:max_length]
+        return value

@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PDS_URL = "https://bsky.social"
 
+# app.bsky.embed.images allows at most 4 images per post.
+MAX_EMBED_IMAGES = 4
+
+# The lexicon puts no hard cap on the ``alt`` field, but the official client
+# stops accepting input at 2000 characters — stay inside what the apps render.
+MAX_ALT_TEXT_LENGTH = 2000
+
 
 def _access_jwt_expires_in(access_jwt: str) -> int | None:
     """Return seconds until an AT Protocol access JWT expires, or None if unknown.
@@ -362,17 +369,28 @@ class BlueskyProvider(SocialProvider):
 
         if content.post_type == PostType.VIDEO:
             blob_ref = self._upload_blob(access_token, media_files[0])
-            return {
+            embed = {
                 "$type": "app.bsky.embed.video",
                 "video": blob_ref,
             }
+            alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
+            if alt_text:
+                embed["alt"] = alt_text
+            return embed
 
         if content.post_type == PostType.IMAGE:
             images = []
-            for path in media_files[:4]:  # max 4 images
+            for index, path in enumerate(media_files[:MAX_EMBED_IMAGES]):
                 blob_ref = self._upload_blob(access_token, path)
-                alt_text = content.extra.get("alt_text", "")
-                images.append({"alt": alt_text, "image": blob_ref})
+                # ``alt`` is required by the lexicon, so an attachment without
+                # alt text still ships an empty string. The index keeps each
+                # description on its own slide.
+                images.append(
+                    {
+                        "alt": content.alt_text_for(index, MAX_ALT_TEXT_LENGTH),
+                        "image": blob_ref,
+                    }
+                )
             return {
                 "$type": "app.bsky.embed.images",
                 "images": images,
