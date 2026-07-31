@@ -906,6 +906,65 @@
     <!-- Vendored JS -->
     <script src="{% static 'js/htmx.min.js' %}"></script>
     <script nonce="{{ request.csp_nonce }}">
+        /* Media library tag editor - Alpine.js component.
+           Defined here, not in templates/media_library/_tag_input.html: that
+           partial is swapped in by htmx, and an inline script arriving that way
+           carries the nonce of its own request instead of the document's. The
+           browser blocks it. The endpoints come from the partial's data
+           attributes so this stays free of Django URL tags. */
+        function tagInput(initialTags) {
+            return {
+                tags: initialTags || [],
+                inputValue: '',
+                suggestions: [],
+
+                addTag(value) {
+                    const tag = (value || '').trim();
+                    if (tag && !this.tags.includes(tag)) {
+                        this.tags.push(tag);
+                        this.saveTags();
+                    }
+                    this.inputValue = '';
+                    this.suggestions = [];
+                },
+
+                removeTag(index) {
+                    if (index >= 0 && index < this.tags.length) {
+                        this.tags.splice(index, 1);
+                        this.saveTags();
+                    }
+                },
+
+                saveTags() {
+                    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+                    fetch(this.$el.dataset.tagsUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken,
+                        },
+                        body: JSON.stringify(this.tags),
+                    });
+                },
+
+                async fetchSuggestions() {
+                    if (this.inputValue.length < 1) {
+                        this.suggestions = [];
+                        return;
+                    }
+                    try {
+                        const resp = await fetch(
+                            this.$el.dataset.autocompleteUrl + '?q=' + encodeURIComponent(this.inputValue)
+                        );
+                        const data = await resp.json();
+                        this.suggestions = data.filter(s => !this.tags.includes(s)).slice(0, 8);
+                    } catch {
+                        this.suggestions = [];
+                    }
+                }
+            }
+        }
+
         /* Notification bell - Alpine.js component */
         function notificationBell() {
             return {

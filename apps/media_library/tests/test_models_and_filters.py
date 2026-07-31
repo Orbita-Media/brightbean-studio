@@ -108,6 +108,20 @@ class TagInputTemplateTest(SimpleTestCase):
             },
         )
 
+    def test_partial_carries_no_inline_script(self):
+        """The component belongs in base.html, not in an htmx-swapped partial.
+
+        A ``<script nonce="…">`` rendered here gets the nonce of the partial's
+        own request. The document's Content-Security-Policy header names a
+        different nonce, so the browser refuses the script and the tag editor
+        is dead in the asset detail panel.
+        """
+        rendered = self._render(["alpha"])
+
+        self.assertNotIn("<script", rendered)
+        self.assertIn("data-tags-url=", rendered)
+        self.assertIn("data-autocomplete-url=", rendered)
+
     def test_malicious_tag_is_escaped_in_x_data(self):
         rendered = self._render(['"><script>alert(1)</script>'])
         match = re.search(r'x-data="tagInput\(([^"]*)\)"', rendered)

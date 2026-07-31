@@ -1,7 +1,18 @@
 {% load common_extras %}
-{% comment %}Tag editor with autocomplete. Expects: asset, workspace, is_shared_library, is_admin{% endcomment %}
+{% comment %}
+Tag editor with autocomplete. Expects: asset, workspace, is_shared_library, is_admin.
 
-<div x-data="tagInput({{ asset.tags|json_attr }})" class="space-y-2">
+The component itself lives in base.html and reads its endpoints from the data
+attributes below. It cannot be defined here: this partial is delivered by htmx
+into the asset detail panel, and an inline script arriving that way carries the
+nonce of ITS OWN request, not the one in the document's Content-Security-Policy
+header. The browser refuses it, and the tag editor stays dead.
+{% endcomment %}
+
+<div x-data="tagInput({{ asset.tags|json_attr }})"
+     data-tags-url="{% if is_shared_library %}{% url 'media_library_org:shared_asset_tags' asset_id=asset.id %}{% else %}{% url 'media_library:asset_tags' workspace_id=workspace.id asset_id=asset.id %}{% endif %}"
+     data-autocomplete-url="{% if is_shared_library %}{% url 'media_library_org:shared_tag_autocomplete' %}{% else %}{% url 'media_library:tag_autocomplete' workspace_id=workspace.id %}{% endif %}"
+     class="space-y-2">
   <!-- Current tags -->
   <div class="flex flex-wrap gap-1.5">
     <template x-for="(tag, i) in tags" :key="i">
@@ -44,58 +55,3 @@
   </div>
   {% endif %}
 </div>
-
-<script nonce="{{ request.csp_nonce }}">
-function tagInput(initialTags) {
-  return {
-    tags: initialTags || [],
-    inputValue: '',
-    suggestions: [],
-
-    addTag(value) {
-      const tag = (value || '').trim();
-      if (tag && !this.tags.includes(tag)) {
-        this.tags.push(tag);
-        this.saveTags();
-      }
-      this.inputValue = '';
-      this.suggestions = [];
-    },
-
-    removeTag(index) {
-      if (index >= 0 && index < this.tags.length) {
-        this.tags.splice(index, 1);
-        this.saveTags();
-      }
-    },
-
-    saveTags() {
-      const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
-      fetch('{% if is_shared_library %}{% url "media_library_org:shared_asset_tags" asset_id=asset.id %}{% else %}{% url "media_library:asset_tags" workspace_id=workspace.id asset_id=asset.id %}{% endif %}', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRFToken': csrfToken,
-        },
-        body: JSON.stringify(this.tags),
-      });
-    },
-
-    async fetchSuggestions() {
-      if (this.inputValue.length < 1) {
-        this.suggestions = [];
-        return;
-      }
-      try {
-        const resp = await fetch(
-          '{% if is_shared_library %}{% url "media_library_org:shared_tag_autocomplete" %}{% else %}{% url "media_library:tag_autocomplete" workspace_id=workspace.id %}{% endif %}?q=' + encodeURIComponent(this.inputValue)
-        );
-        const data = await resp.json();
-        this.suggestions = data.filter(s => !this.tags.includes(s)).slice(0, 8);
-      } catch {
-        this.suggestions = [];
-      }
-    }
-  }
-}
-</script>
