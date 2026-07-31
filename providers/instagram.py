@@ -67,6 +67,12 @@ INSTAGRAM_MEDIA_FIELDS = [
 CONTAINER_POLL_INTERVAL = 2  # seconds
 CONTAINER_POLL_MAX_ATTEMPTS = 60
 
+# ``alt_text`` on POST /{ig-user-id}/media: "up to 1000 character, for an
+# image. Only supported on a single image or image media in a carousel. Reels
+# and stories are not supported." It belongs on each carousel child container,
+# not on the parent CAROUSEL container.
+MAX_ALT_TEXT_LENGTH = 1000
+
 
 class InstagramProvider(SocialProvider):
     """Instagram Graph API provider (via Facebook Graph API v25.0)."""
@@ -306,6 +312,11 @@ class InstagramProvider(SocialProvider):
         else:
             # Default IMAGE
             payload["image_url"] = content.media_urls[0]
+            # Alt text is image-only on Instagram — reels and stories reject it,
+            # so it is set on this branch alone.
+            alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
+            if alt_text:
+                payload["alt_text"] = alt_text
 
         # Step 1: create container
         container_id = self._create_container(access_token, ig_user_id, payload)
@@ -320,7 +331,7 @@ class InstagramProvider(SocialProvider):
         """Publish a carousel post with multiple media items."""
         child_ids: list[str] = []
 
-        for url in content.media_urls:
+        for index, url in enumerate(content.media_urls):
             is_video = url.lower().endswith((".mp4", ".mov"))
             child_payload: dict = {
                 "is_carousel_item": True,
@@ -330,6 +341,11 @@ class InstagramProvider(SocialProvider):
                 child_payload["video_url"] = url
             else:
                 child_payload["image_url"] = url
+                # One description per slide — the index keeps it on the image
+                # it belongs to. Video children don't accept alt_text.
+                alt_text = content.alt_text_for(index, MAX_ALT_TEXT_LENGTH)
+                if alt_text:
+                    child_payload["alt_text"] = alt_text
 
             child_id = self._create_container(access_token, ig_user_id, child_payload)
             self._wait_for_container(access_token, child_id)

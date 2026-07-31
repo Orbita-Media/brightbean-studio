@@ -258,7 +258,9 @@ class GoogleBusinessProvider(SocialProvider):
             "topicType": topic_type,
         }
 
-        # Attach media
+        # Attach media. Alt text is deliberately not forwarded here: for a
+        # LocalPost media item "sourceUrl is the only supported data field",
+        # so there is nowhere to put an accessibility description.
         if content.media_urls:
             body["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": url} for url in content.media_urls]
 

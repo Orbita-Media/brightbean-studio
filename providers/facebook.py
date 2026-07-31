@@ -58,6 +58,12 @@ FACEBOOK_POST_FIELDS = [
 # Facebook caps the ``attached_media`` array on a single feed post. Larger sets
 # must use the album-creation flow, which this provider does not implement.
 FACEBOOK_MAX_ATTACHED_MEDIA = 10
+
+# ``alt_text_custom`` on POST /{page-id}/photos is the writable accessibility
+# description (the read-only ``alt_text`` field holds Facebook's own generated
+# text). Graph documents no length limit, so we bound it at the value Meta uses
+# elsewhere rather than sending an unbounded string.
+FACEBOOK_MAX_ALT_TEXT_LENGTH = 1000
 # Extension heuristic for spotting video URLs, mirroring the per-item checks in
 # the Instagram / Threads carousel providers.
 VIDEO_URL_SUFFIXES = (".mp4", ".mov")
@@ -308,6 +314,9 @@ class FacebookProvider(SocialProvider):
         payload: dict = {"url": content.media_urls[0]}
         if content.text:
             payload["message"] = content.text
+        alt_text = content.alt_text_for(0, FACEBOOK_MAX_ALT_TEXT_LENGTH)
+        if alt_text:
+            payload["alt_text_custom"] = alt_text
         resp = self._request(
             "POST",
             f"{BASE_URL}/{page_id}/photos",
@@ -341,12 +350,20 @@ class FacebookProvider(SocialProvider):
 
         photo_ids: list[str] = []
         try:
-            for url in urls:
+            for index, url in enumerate(urls):
+                # The description travels with the photo upload, so each staged
+                # photo keeps its own — ``attached_media`` later only carries
+                # the resulting IDs and has no place for alt text.
+                photo_payload: dict = {"url": url, "published": False}
+                alt_text = content.alt_text_for(index, FACEBOOK_MAX_ALT_TEXT_LENGTH)
+                if alt_text:
+                    photo_payload["alt_text_custom"] = alt_text
+
                 data = self._request(
                     "POST",
                     f"{BASE_URL}/{page_id}/photos",
                     access_token=access_token,
-                    json={"url": url, "published": False},
+                    json=photo_payload,
                 ).json()
                 photo_id = data.get("id")
                 if not photo_id:

@@ -29,9 +29,13 @@ DEFAULT_PDS_URL = "https://bsky.social"
 # app.bsky.embed.images allows at most 4 images per post.
 MAX_EMBED_IMAGES = 4
 
-# The lexicon puts no hard cap on the ``alt`` field, but the official client
-# stops accepting input at 2000 characters — stay inside what the apps render.
+# app.bsky.embed.images#image declares ``alt`` as required with no length
+# constraint; we still bound it so one runaway description can't blow the
+# record size. app.bsky.embed.video#main caps ``alt`` at 1000 graphemes —
+# len() counts code points and a grapheme is never fewer than one code point,
+# so truncating to 1000 characters always stays inside that limit.
 MAX_ALT_TEXT_LENGTH = 2000
+MAX_VIDEO_ALT_TEXT_LENGTH = 1000
 
 
 def _access_jwt_expires_in(access_jwt: str) -> int | None:
@@ -373,7 +377,7 @@ class BlueskyProvider(SocialProvider):
                 "$type": "app.bsky.embed.video",
                 "video": blob_ref,
             }
-            alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
+            alt_text = content.alt_text_for(0, MAX_VIDEO_ALT_TEXT_LENGTH)
             if alt_text:
                 embed["alt"] = alt_text
             return embed

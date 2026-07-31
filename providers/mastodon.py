@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CHARS = 500
 
+# Mastodon's alt text limit is per instance, not per API version: 1500 up to
+# v4.5.x, 10000 from v4.6.0. The instance advertises the real value as
+# ``configuration.media_attachments.description_limit``; the old ceiling is the
+# safe fallback when that endpoint is unreachable or predates the field.
+DEFAULT_MAX_ALT_TEXT_LENGTH = 1500
+
 
 class MastodonProvider(SocialProvider):
     """Mastodon API v1 provider.
@@ -196,6 +202,20 @@ class MastodonProvider(SocialProvider):
         except Exception:
             return DEFAULT_MAX_CHARS
 
+    def get_instance_max_alt_text_length(self, access_token: str) -> int:
+        """Retrieve the instance's maximum alt text length for media."""
+        try:
+            resp = self._request(
+                "GET",
+                f"{self.instance_url}/api/v2/instance",
+                access_token=access_token,
+            )
+            data = resp.json()
+            limit = data.get("configuration", {}).get("media_attachments", {}).get("description_limit")
+            return int(limit) if limit else DEFAULT_MAX_ALT_TEXT_LENGTH
+        except Exception:
+            return DEFAULT_MAX_ALT_TEXT_LENGTH
+
     # ------------------------------------------------------------------
     # Profile
     # ------------------------------------------------------------------
@@ -223,10 +243,17 @@ class MastodonProvider(SocialProvider):
 
     def publish_post(self, access_token: str, content: PublishContent) -> PublishResult:
         """Publish a status to Mastodon."""
-        # Upload media first if present
+        # Upload media first if present. Each attachment carries its own
+        # accessibility description, matched to the file by position.
         media_ids: list[str] = []
-        for media_path in content.media_files or []:
-            media_id = self._upload_media(access_token, media_path)
+        media_files = content.media_files or []
+        alt_text_limit = self.get_instance_max_alt_text_length(access_token) if media_files else 0
+        for index, media_path in enumerate(media_files):
+            media_id = self._upload_media(
+                access_token,
+                media_path,
+                description=content.alt_text_for(index, alt_text_limit),
+            )
             media_ids.append(media_id)
 
         # Build status params
@@ -294,14 +321,19 @@ class MastodonProvider(SocialProvider):
     # Media upload
     # ------------------------------------------------------------------
 
-    def _upload_media(self, access_token: str, file_path: str) -> str:
-        """Upload a media file and return its media ID."""
+    def _upload_media(self, access_token: str, file_path: str, description: str = "") -> str:
+        """Upload a media file and return its media ID.
+
+        ``description`` is Mastodon's alt text field. It is omitted when empty
+        so an attachment without alt text uploads normally.
+        """
         with open(file_path, "rb") as f:
             resp = self._request(
                 "POST",
                 f"{self.instance_url}/api/v2/media",
                 access_token=access_token,
                 files={"file": f},
+                data={"description": description} if description else None,
             )
         data = resp.json()
         return data["id"]

@@ -27,6 +27,9 @@ AUTH_URL = "https://www.pinterest.com/oauth/"
 API_BASE = os.environ.get("PINTEREST_API_BASE", "https://api.pinterest.com/v5")
 TOKEN_URL = f"{API_BASE}/oauth/token"
 
+# ``alt_text`` on POST /v5/pins is capped at 500 characters by the OpenAPI spec.
+MAX_ALT_TEXT_LENGTH = 500
+
 
 class PinterestProvider(SocialProvider):
     """Pinterest API v5 provider using OAuth 2.0."""
@@ -195,9 +198,13 @@ class PinterestProvider(SocialProvider):
         if content.link_url:
             payload["link"] = content.link_url
 
-        alt_text = content.extra.get("alt_text")
+        # Pinterest carries exactly one alt text per pin — the multi-image
+        # item schema has no per-image field. An explicit per-account value
+        # from the composer wins; otherwise the first attachment's description
+        # stands in for the pin.
+        alt_text = str(content.extra.get("alt_text") or "").strip() or content.alt_text_for(0)
         if alt_text:
-            payload["alt_text"] = alt_text[:500]
+            payload["alt_text"] = alt_text[:MAX_ALT_TEXT_LENGTH]
 
         # Determine media source
         is_video = content.extra.get("is_video", False)

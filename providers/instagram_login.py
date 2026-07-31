@@ -75,6 +75,11 @@ INSTAGRAM_MEDIA_FIELDS = [
 CONTAINER_POLL_INTERVAL = 2  # seconds
 CONTAINER_POLL_MAX_ATTEMPTS = 60  # ~2 minutes max
 
+# Same rule as the Graph-API provider: ``alt_text`` is accepted on image
+# containers only (single image or image child of a carousel), max 1000
+# characters. Reels and stories reject it.
+MAX_ALT_TEXT_LENGTH = 1000
+
 
 class InstagramLoginProvider(SocialProvider):
     """Instagram API provider using Instagram Login (OAuth 2.0).
@@ -313,6 +318,9 @@ class InstagramLoginProvider(SocialProvider):
         else:
             # Default IMAGE
             payload["image_url"] = content.media_urls[0]
+            alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
+            if alt_text:
+                payload["alt_text"] = alt_text
 
         container_id = self._create_container(access_token, payload)
         self._wait_for_container(access_token, container_id)
@@ -321,7 +329,7 @@ class InstagramLoginProvider(SocialProvider):
     def _publish_carousel(self, access_token: str, content: PublishContent) -> PublishResult:
         child_ids: list[str] = []
 
-        for url in content.media_urls:
+        for index, url in enumerate(content.media_urls):
             is_video = url.lower().endswith((".mp4", ".mov"))
             child_payload: dict = {"is_carousel_item": True}
             if is_video:
@@ -329,6 +337,10 @@ class InstagramLoginProvider(SocialProvider):
                 child_payload["video_url"] = url
             else:
                 child_payload["image_url"] = url
+                # One description per slide, kept on its own image by index.
+                alt_text = content.alt_text_for(index, MAX_ALT_TEXT_LENGTH)
+                if alt_text:
+                    child_payload["alt_text"] = alt_text
 
             child_id = self._create_container(access_token, child_payload)
             self._wait_for_container(access_token, child_id)

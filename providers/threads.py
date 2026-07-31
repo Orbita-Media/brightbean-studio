@@ -33,6 +33,13 @@ API_BASE = "https://graph.threads.net/v1.0"
 CONTAINER_POLL_INTERVAL = 3  # seconds
 CONTAINER_POLL_MAX_ATTEMPTS = 40  # up to ~2 min for video processing
 
+# "The accessibility text label or description for an image or video in a
+# Threads post. Note: The maximum length of alt_text is 1,000 characters."
+# Threads documents alt_text for image, video and carousel posts but never
+# shows where it goes on a carousel; we set it on each item container, which
+# is where Instagram's identical API takes it.
+MAX_ALT_TEXT_LENGTH = 1000
+
 
 class ThreadsProvider(SocialProvider):
     """Threads API provider using OAuth 2.0."""
@@ -245,6 +252,12 @@ class ThreadsProvider(SocialProvider):
         else:
             container_payload["media_type"] = "TEXT"
 
+        # Text-only threads have nothing to describe.
+        if container_payload["media_type"] != "TEXT":
+            alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
+            if alt_text:
+                container_payload["alt_text"] = alt_text
+
         # Add reply_to_id if this is a reply
         reply_to = content.extra.get("reply_to_id")
         if reply_to:
@@ -331,7 +344,7 @@ class ThreadsProvider(SocialProvider):
         # Step 1: Create individual item containers
         children_ids: list[str] = []
 
-        for url in content.media_urls:
+        for index, url in enumerate(content.media_urls):
             # Determine media type by extension heuristic
             lower_url = url.lower()
             if any(lower_url.endswith(ext) for ext in (".mp4", ".mov")):
@@ -341,15 +354,21 @@ class ThreadsProvider(SocialProvider):
                 media_type = "IMAGE"
                 key = "image_url"
 
+            item_payload: dict = {
+                "media_type": media_type,
+                key: url,
+                "is_carousel_item": "true",
+            }
+            # One description per slide, matched by position.
+            alt_text = content.alt_text_for(index, MAX_ALT_TEXT_LENGTH)
+            if alt_text:
+                item_payload["alt_text"] = alt_text
+
             item_resp = self._request(
                 "POST",
                 f"{API_BASE}/{user_id}/threads",
                 access_token=access_token,
-                data={
-                    "media_type": media_type,
-                    key: url,
-                    "is_carousel_item": "true",
-                },
+                data=item_payload,
             )
             item_body = item_resp.json()
             item_id = item_body.get("id")

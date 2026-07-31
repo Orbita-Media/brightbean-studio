@@ -45,6 +45,11 @@ LINKEDIN_HEADERS = {
     "X-Restli-Protocol-Version": "2.0.0",
 }
 
+# ``altText`` on the Posts API media object. The MultiImage schema documents a
+# 4086 character ceiling with "under 120 recommended"; the single-media schema
+# names no limit, so we reuse the documented one as the safe bound.
+MAX_ALT_TEXT_LENGTH = 4086
+
 
 def _encode_urn(urn: str) -> str:
     """Percent-encode a LinkedIn URN for use as a URL path segment.
@@ -295,11 +300,11 @@ class LinkedInProvider(SocialProvider):
 
         # Step 3: create post with image
         body = self._build_post_body(author, content.text)
-        body["content"] = {
-            "media": {
-                "id": image_urn,
-            }
-        }
+        media: dict = {"id": image_urn}
+        alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
+        if alt_text:
+            media["altText"] = alt_text
+        body["content"] = {"media": media}
 
         resp = self._request(
             "POST",
@@ -396,11 +401,11 @@ class LinkedInProvider(SocialProvider):
 
         # Step 5: create post with video
         body = self._build_post_body(author, content.text)
-        body["content"] = {
-            "media": {
-                "id": video_urn,
-            }
-        }
+        media = {"id": video_urn}
+        alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
+        if alt_text:
+            media["altText"] = alt_text
+        body["content"] = {"media": media}
 
         resp = self._request(
             "POST",
