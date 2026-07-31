@@ -107,6 +107,22 @@ class SocialProvider(ABC):
     account_metrics_supports_date_range: bool = True
 
     @property
+    def max_media_per_post(self) -> int | None:
+        """Most media items the platform accepts on ONE post, or None if unbounded.
+
+        Declared so the publisher can warn *before* a post goes out that some
+        attachments will not make it. Silently truncating a six-slide carousel
+        to the platform maximum is the failure mode this exists to prevent: the
+        closing slide is usually the one carrying the call to action.
+        """
+        return None
+
+    # True when the provider distributes media beyond ``max_media_per_post``
+    # over additional posts (Bluesky's reply chain) instead of dropping the
+    # overflow. Providers that set this need no publisher warning.
+    chains_overflow_media: bool = False
+
+    @property
     def rate_limits(self) -> RateLimitConfig:
         """Platform rate limit configuration."""
         return RateLimitConfig()

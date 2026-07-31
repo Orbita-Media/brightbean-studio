@@ -26,8 +26,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PDS_URL = "https://bsky.social"
 
-# app.bsky.embed.images allows at most 4 images per post.
+# app.bsky.embed.images allows at most 4 images per post. Anything beyond that
+# is not dropped — it continues in a reply chain (see _build_embeds).
 MAX_EMBED_IMAGES = 4
+
+# Text of the continuation replies. Deliberately short: the 300 grapheme cap
+# applies to every post in the chain, replies included. ``{start}``, ``{end}``
+# and ``{total}`` are filled in; a caller-supplied override in
+# ``extra["thread_continuation_text"]`` may use the same placeholders or none.
+THREAD_CONTINUATION_TEXT = "Fortsetzung – Bild {start} bis {end} von {total}"
+THREAD_CONTINUATION_TEXT_SINGLE = "Fortsetzung – Bild {start} von {total}"
 
 # app.bsky.embed.images#image declares ``alt`` as required with no length
 # constraint; we still bound it so one runaway description can't blow the
@@ -92,6 +100,13 @@ class BlueskyProvider(SocialProvider):
     @property
     def supported_media_types(self) -> list[MediaType]:
         return [MediaType.JPEG, MediaType.PNG, MediaType.MP4]
+
+    @property
+    def max_media_per_post(self) -> int | None:
+        return MAX_EMBED_IMAGES
+
+    # Overflow images continue as replies to our own post, so nothing is lost.
+    chains_overflow_media = True
 
     @property
     def required_scopes(self) -> list[str]:
@@ -224,7 +239,14 @@ class BlueskyProvider(SocialProvider):
     # ------------------------------------------------------------------
 
     def publish_post(self, access_token: str, content: PublishContent) -> PublishResult:
-        """Publish a post to Bluesky via com.atproto.repo.createRecord."""
+        """Publish a post to Bluesky via com.atproto.repo.createRecord.
+
+        A carousel with more than ``MAX_EMBED_IMAGES`` slides becomes a reply
+        chain: the first four images ride the root post, every further group of
+        four follows as a reply to the previous post. Reply chains are ordinary
+        reading on Bluesky, and the alternative — cutting the carousel off at
+        four — throws away the closing slide.
+        """
         # Validate grapheme length
         grapheme_count = len(content.text) if content.text else 0
         if grapheme_count > self.max_caption_length:
@@ -240,24 +262,123 @@ class BlueskyProvider(SocialProvider):
             access_token=access_token,
         ).json()
         did = session["did"]
+        handle = session.get("handle", "")
 
-        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        # Upload every blob BEFORE the first record is created. Uploading is by
+        # far the likeliest step to fail (size, network, PDS hiccup) and while
+        # nothing is posted yet a failure costs nothing — the publisher just
+        # retries. Once the root post exists, a retry would post the whole
+        # carousel a second time, so from here on we must not raise.
+        embeds = self._build_embeds(access_token, content)
+        # A text-only post still needs exactly one record.
+        embeds = embeds or [None]
+        total_images = sum(len(e.get("images", [])) for e in embeds if e)
 
+        root_ref: dict | None = None
+        parent_ref: dict | None = None
+        first_data: dict = {}
+        chain: list[dict] = []
+        images_before = 0
+        warning = ""
+
+        for index, embed in enumerate(embeds):
+            image_count = len(embed.get("images", [])) if embed else 0
+            if index == 0:
+                text = content.text or ""
+            else:
+                text = self._continuation_text(
+                    content,
+                    start=images_before + 1,
+                    end=images_before + image_count,
+                    total=total_images,
+                )
+
+            try:
+                data = self._create_post_record(
+                    access_token,
+                    did=did,
+                    text=text,
+                    embed=embed,
+                    root_ref=root_ref,
+                    parent_ref=parent_ref,
+                )
+            except Exception as exc:
+                if index == 0:
+                    raise
+                # The root is already live. Raising here would hand the
+                # publisher a retryable failure and it would post the whole
+                # carousel again, so we report the gap instead.
+                warning = (
+                    f"Bluesky-Kette unvollständig: {len(chain)} von {len(embeds)} Beiträgen "
+                    f"veröffentlicht, ab Bild {images_before + 1} fehlt der Rest ({exc})"
+                )
+                logger.error(warning)
+                break
+
+            ref = {"uri": data.get("uri", ""), "cid": data.get("cid", "")}
+            if index == 0:
+                root_ref = ref
+                first_data = data
+            parent_ref = ref
+            chain.append({**ref, "image_count": image_count})
+            images_before += image_count
+
+        # Build the web URL from the handle and rkey of the ROOT post — that is
+        # the entry point of the thread and the id analytics/inbox work with.
+        uri = first_data.get("uri", "")
+        rkey = uri.split("/")[-1] if uri else ""
+        post_url = f"https://bsky.app/profile/{handle}/post/{rkey}" if rkey else None
+
+        extra = dict(first_data)
+        if len(embeds) > 1:
+            extra["thread"] = {
+                "posts": chain,
+                "expected_posts": len(embeds),
+                "image_count": images_before,
+                "expected_image_count": total_images,
+                "incomplete": len(chain) < len(embeds),
+            }
+        if warning:
+            extra["publish_warning"] = warning
+
+        return PublishResult(
+            platform_post_id=uri,
+            url=post_url,
+            extra=extra,
+        )
+
+    def _create_post_record(
+        self,
+        access_token: str,
+        *,
+        did: str,
+        text: str,
+        embed: dict | None,
+        root_ref: dict | None,
+        parent_ref: dict | None,
+    ) -> dict:
+        """Write a single app.bsky.feed.post record and return the API response.
+
+        ``root_ref`` / ``parent_ref`` turn the record into a reply. Both are
+        required by the lexicon — a reply that names only the parent is not
+        threaded by the AppView and ends up hanging in nowhere.
+        """
         record: dict = {
             "$type": "app.bsky.feed.post",
-            "text": content.text or "",
-            "createdAt": now,
+            "text": text,
+            "createdAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
 
         # Parse facets (links, mentions, hashtags)
-        facets = self._parse_facets(content.text or "", access_token)
+        facets = self._parse_facets(text, access_token)
         if facets:
             record["facets"] = facets
 
-        # Handle media uploads
-        embed = self._build_embed(access_token, content)
         if embed:
             record["embed"] = embed
+
+        if root_ref and parent_ref:
+            record["reply"] = {"root": root_ref, "parent": parent_ref}
 
         resp = self._request(
             "POST",
@@ -269,19 +390,26 @@ class BlueskyProvider(SocialProvider):
                 "record": record,
             },
         )
-        data = resp.json()
+        return resp.json()
 
-        # Build the web URL from the handle and rkey
-        uri = data.get("uri", "")
-        rkey = uri.split("/")[-1] if uri else ""
-        handle = session.get("handle", "")
-        post_url = f"https://bsky.app/profile/{handle}/post/{rkey}" if rkey else None
+    def _continuation_text(self, content: PublishContent, *, start: int, end: int, total: int) -> str:
+        """Build the short text of a continuation reply.
 
-        return PublishResult(
-            platform_post_id=uri,
-            url=post_url,
-            extra=data,
-        )
+        Callers may override the wording via ``extra["thread_continuation_text"]``;
+        the placeholders are optional there. Whatever comes out is capped at the
+        platform limit, because a reply that is too long fails the same way a
+        post does.
+        """
+        template = str(content.extra.get("thread_continuation_text") or "").strip()
+        if not template:
+            template = THREAD_CONTINUATION_TEXT_SINGLE if start == end else THREAD_CONTINUATION_TEXT
+        try:
+            text = template.format(start=start, end=end, total=total)
+        except (IndexError, KeyError):
+            # A custom template with unknown placeholders is used verbatim
+            # rather than failing the publish over a formatting detail.
+            text = template
+        return text[: self.max_caption_length]
 
     # ------------------------------------------------------------------
     # Rich text facet parsing
@@ -365,11 +493,16 @@ class BlueskyProvider(SocialProvider):
         data = resp.json()
         return data.get("blob", data)
 
-    def _build_embed(self, access_token: str, content: PublishContent) -> dict | None:
-        """Build the embed object for images or video."""
+    def _build_embeds(self, access_token: str, content: PublishContent) -> list[dict]:
+        """Build one embed per post of the chain, uploading every blob up front.
+
+        Returns an empty list for a text-only post, a single-element list for a
+        video or for up to ``MAX_EMBED_IMAGES`` images, and one further element
+        per group of four overflowing images.
+        """
         media_files = content.media_files or []
         if not media_files:
-            return None
+            return []
 
         if content.post_type == PostType.VIDEO:
             blob_ref = self._upload_blob(access_token, media_files[0])
@@ -380,11 +513,16 @@ class BlueskyProvider(SocialProvider):
             alt_text = content.alt_text_for(0, MAX_VIDEO_ALT_TEXT_LENGTH)
             if alt_text:
                 embed["alt"] = alt_text
-            return embed
+            return [embed]
 
         if content.post_type == PostType.IMAGE:
-            images = []
-            for index, path in enumerate(media_files[:MAX_EMBED_IMAGES]):
+            embeds: list[dict] = []
+            images: list[dict] = []
+            # ``index`` is the position in the ORIGINAL attachment list and the
+            # only thing alt_text_for() is ever asked for. Chunking must not
+            # restart it, otherwise slide 5 would inherit the description of
+            # slide 1 — a wrong alt text is worse than a missing one.
+            for index, path in enumerate(media_files):
                 blob_ref = self._upload_blob(access_token, path)
                 # ``alt`` is required by the lexicon, so an attachment without
                 # alt text still ships an empty string. The index keeps each
@@ -395,9 +533,11 @@ class BlueskyProvider(SocialProvider):
                         "image": blob_ref,
                     }
                 )
-            return {
-                "$type": "app.bsky.embed.images",
-                "images": images,
-            }
+                if len(images) == MAX_EMBED_IMAGES:
+                    embeds.append({"$type": "app.bsky.embed.images", "images": images})
+                    images = []
+            if images:
+                embeds.append({"$type": "app.bsky.embed.images", "images": images})
+            return embeds
 
-        return None
+        return []
