@@ -28,10 +28,10 @@ def media_delivery_check(app_configs, **kwargs):
             issues.append(
                 Warning(
                     "S3_CUSTOM_DOMAIN ist nicht gesetzt: Medien-URLs werden signiert "
-                    "und laufen nach %s Sekunden ab. Geplante Beiträge schlagen dann "
-                    "bei Instagram/Facebook fehl, weil Meta die Datei erst zum "
-                    "Veröffentlichungszeitpunkt abholt."
-                    % getattr(settings, "AWS_QUERYSTRING_EXPIRE", 3600),
+                    f"und laufen nach {getattr(settings, 'AWS_QUERYSTRING_EXPIRE', 3600)} "
+                    "Sekunden ab. Geplante Beiträge schlagen dann bei "
+                    "Instagram/Facebook fehl, weil Meta die Datei erst zum "
+                    "Veröffentlichungszeitpunkt abholt.",
                     hint="Eine öffentliche R2-Custom-Domain setzen, z. B. "
                     "S3_CUSTOM_DOMAIN=social-cdn.orbita-media.de",
                     id="media.W001",

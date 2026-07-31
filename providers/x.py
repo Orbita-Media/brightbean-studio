@@ -23,7 +23,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-from datetime import datetime
 from urllib.parse import urlencode
 
 from .base import SocialProvider
@@ -280,7 +279,9 @@ class XProvider(SocialProvider):
         username = data.get("edit_history_tweet_ids") and self.credentials.get("_handle_hint") or "i/web"
         return PublishResult(
             platform_post_id=tweet_id,
-            url=f"https://x.com/{username}/status/{tweet_id}" if username != "i/web" else f"https://x.com/i/web/status/{tweet_id}",
+            url=f"https://x.com/{username}/status/{tweet_id}"
+            if username != "i/web"
+            else f"https://x.com/i/web/status/{tweet_id}",
             extra=data,
         )
 
