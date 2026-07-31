@@ -151,16 +151,21 @@ Anhänge. Bild 1 und Bild 4 wurden zusätzlich heruntergeladen und mit ihrem
 Alternativtext verglichen: der Text auf der Folie stimmt wörtlich mit der
 Beschreibung überein, es gibt keine Verschiebung um eine Position.
 
-## Offen
+## Erledigt (01.08.2026)
 
-- **Bluesky zeigt höchstens vier Bilder.** Unsere Karussells haben sechs
-  Folien; die Folien 5 und 6 fallen still weg (`media_files[:4]`, so vom
-  Lexicon vorgegeben). Das ist in den internen Notizen der Beiträge bereits
-  vermerkt, aber die Anwendung weist beim Veröffentlichen nicht darauf hin.
-  Ob die Restfolien als Antwort-Kette angehängt werden sollen, ist eine
-  inhaltliche Entscheidung und deshalb hier nicht umgesetzt.
-- **Alternativtexte sind im Web-Oberflächen-Betrieb nicht pflegbar.** Sie
-  können nur über die Agent-API oder MCP beim Upload gesetzt werden; die
-  Mediathek zeigt und bearbeitet das Feld nicht, und der Composer bietet
-  ausser dem Pinterest-Feld keine Eingabe. Für den heutigen Ablauf (Content-Tool
-  liefert die Texte mit) reicht das, für die Pflege von Hand nicht.
+Beide hier festgehaltenen offenen Punkte sind behoben:
+
+- **Bluesky zeigt höchstens vier Bilder.** Die Restfolien werden jetzt als
+  Antwort auf den eigenen Beitrag angehängt, die Alternativtexte wandern
+  positionstreu mit. Ausserdem deklariert jeder Kanal seine Bildgrenze und
+  der Publisher warnt vor dem Veröffentlichen, wenn Anhänge nicht sichtbar
+  würden. Siehe `docs/BLUESKY-ANTWORT-KETTE.md`.
+- **Alternativtexte sind nicht pflegbar.** Der Detailbereich der Mediathek
+  hat jetzt ein Feld dafür, direkt über den Schlagwörtern. Der Text hängt am
+  Medium, eine Korrektur wirkt deshalb für jeden Beitrag, der das Bild
+  benutzt.
+
+Neu hinzugekommen ist eine Prüfung auf Fremdzeichen in Texten und
+Alternativtexten (`docs/FREMDZEICHEN-PRUEFUNG.md`) – Anlass war ein
+veröffentlichungsreifer Beitragstext mit kyrillischen Buchstaben mitten im
+deutschen Wort.
