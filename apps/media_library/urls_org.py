@@ -12,6 +12,7 @@ urlpatterns = [
     path("shared/<uuid:asset_id>/edit/", views.shared_asset_edit, name="shared_asset_edit"),
     path("shared/<uuid:asset_id>/delete/", views.shared_asset_delete, name="shared_asset_delete"),
     path("shared/<uuid:asset_id>/tags/", views.shared_asset_update_tags, name="shared_asset_tags"),
+    path("shared/<uuid:asset_id>/alt-text/", views.shared_asset_update_alt_text, name="shared_asset_alt_text"),
     path("shared/<uuid:asset_id>/download/", views.shared_asset_download, name="shared_asset_download"),
     path("shared/<uuid:asset_id>/versions/", views.shared_version_list, name="shared_version_list"),
 ]

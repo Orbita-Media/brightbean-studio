@@ -19,6 +19,7 @@ urlpatterns = [
     path("<uuid:asset_id>/edit/", views.asset_edit, name="asset_edit"),
     path("<uuid:asset_id>/star/", views.asset_star_toggle, name="asset_star"),
     path("<uuid:asset_id>/tags/", views.asset_update_tags, name="asset_tags"),
+    path("<uuid:asset_id>/alt-text/", views.asset_update_alt_text, name="asset_alt_text"),
     path("<uuid:asset_id>/move/", views.asset_move, name="asset_move"),
     path("<uuid:asset_id>/delete/", views.asset_delete, name="asset_delete"),
     path("<uuid:asset_id>/download/", views.asset_download, name="asset_download"),

@@ -10,10 +10,11 @@ from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
+from apps.common.homoglyphs import beanstandungen
 from apps.common.validators import normalize_tags
 from apps.members.decorators import require_org_role, require_permission
 
-from .models import MediaAsset, MediaFolder
+from .models import MAX_ALT_TEXT_LENGTH, MediaAsset, MediaFolder
 from .services import (
     ProtectedAssetError,
     create_asset,
@@ -31,6 +32,30 @@ def _get_workspace_or_404(request, workspace_id):
     if not request.workspace or str(request.workspace.id) != str(workspace_id):
         raise Http404
     return request.workspace
+
+
+def _clean_alt_text(request) -> str:
+    """Read the submitted alt text, trimmed and bounded.
+
+    ``MediaAsset.alt_text`` is a TextField, so nothing stops a paste of a whole
+    chapter. Bluesky truncates at 2000 and Instagram at 1000; anything past
+    that is dead weight on every publish.
+    """
+    return (request.POST.get("alt_text") or "").strip()[:MAX_ALT_TEXT_LENGTH]
+
+
+def _alt_text_context(asset, *, gespeichert: bool = False) -> dict:
+    """Context the alt text editor needs, wherever it is rendered.
+
+    ``alt_text_funde`` are the characters the publisher would refuse (see
+    ``apps.common.homoglyphs``). Showing them at the field is the cheapest
+    possible moment to notice them.
+    """
+    return {
+        "alt_text_max_length": MAX_ALT_TEXT_LENGTH,
+        "alt_text_funde": beanstandungen(asset.alt_text or ""),
+        "alt_text_gespeichert": gespeichert,
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -239,6 +264,7 @@ def asset_detail(request, workspace_id, asset_id):
         "asset": asset,
         "workspace": workspace,
         "versions": versions,
+        **_alt_text_context(asset),
     }
 
     if request.htmx:
@@ -413,6 +439,42 @@ def asset_update_tags(request, workspace_id, asset_id):
             },
         )
     return JsonResponse({"tags": asset.tags})
+
+
+@login_required
+@require_permission("edit_media")
+@require_POST
+def asset_update_alt_text(request, workspace_id, asset_id):
+    """Edit the accessibility description of an asset.
+
+    The alt texts of our carousels are written by the content tool at upload
+    time, through the agent API. Until now there was no way to touch them
+    afterwards: neither the library nor the composer showed the field, so a
+    typo in a description was simply permanent. The description belongs to the
+    asset, so correcting it here fixes every post that uses the image.
+    """
+    workspace = _get_workspace_or_404(request, workspace_id)
+    asset = get_object_or_404(
+        MediaAsset.objects.for_workspace(workspace.id),
+        pk=asset_id,
+    )
+    if asset.is_shared:
+        raise Http404
+
+    asset.alt_text = _clean_alt_text(request)
+    asset.save(update_fields=["alt_text", "updated_at"])
+
+    if request.htmx:
+        return render(
+            request,
+            "media_library/_alt_text_input.html",
+            {
+                "asset": asset,
+                "workspace": workspace,
+                **_alt_text_context(asset, gespeichert=True),
+            },
+        )
+    return JsonResponse({"alt_text": asset.alt_text})
 
 
 @login_required
@@ -903,6 +965,7 @@ def shared_asset_detail(request, asset_id):
         "versions": versions,
         "is_shared_library": True,
         "is_admin": is_admin,
+        **_alt_text_context(asset),
     }
 
     if request.htmx:
@@ -1077,6 +1140,34 @@ def shared_asset_update_tags(request, asset_id):
             },
         )
     return JsonResponse({"tags": asset.tags})
+
+
+@login_required
+@require_org_role("admin")
+@require_POST
+def shared_asset_update_alt_text(request, asset_id):
+    """Edit the accessibility description of a shared asset (admins only)."""
+    org = request.org
+    if not org:
+        raise Http404
+    asset = get_object_or_404(MediaAsset.objects.shared_only(org.id), pk=asset_id)
+
+    asset.alt_text = _clean_alt_text(request)
+    asset.save(update_fields=["alt_text", "updated_at"])
+
+    if request.htmx:
+        return render(
+            request,
+            "media_library/_alt_text_input.html",
+            {
+                "asset": asset,
+                "workspace": None,
+                "is_shared_library": True,
+                "is_admin": True,
+                **_alt_text_context(asset, gespeichert=True),
+            },
+        )
+    return JsonResponse({"alt_text": asset.alt_text})
 
 
 @login_required

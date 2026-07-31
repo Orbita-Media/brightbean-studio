@@ -8,6 +8,12 @@ from django.db import models
 
 from .managers import MediaAssetManager
 
+# Obergrenze für ``MediaAsset.alt_text``. Der grosszügigste Kanal, den wir
+# bedienen, ist Bluesky mit 2000 Zeichen; Instagram, Threads und Facebook
+# kürzen schon bei 1000. Alles darüber wird bei jeder Veröffentlichung
+# abgeschnitten und ist deshalb nur Ballast.
+MAX_ALT_TEXT_LENGTH = 2000
+
 
 class MediaFolder(models.Model):
     """Folder for organizing media assets. Max 3 levels of nesting."""

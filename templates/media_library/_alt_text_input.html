@@ -1,0 +1,61 @@
+{% comment %}
+Alt text editor. Expects: asset, workspace, is_shared_library, is_admin,
+alt_text_max_length, alt_text_funde, optionally alt_text_gespeichert.
+
+The description lives on the asset, so an edit here fixes every post that
+uses the image. Shared assets are admin-only, mirroring the tag editor.
+{% endcomment %}
+
+{% if is_shared_library and is_admin or not is_shared_library and not asset.is_shared %}
+<form id="alt-text-editor-{{ asset.id }}"
+      hx-post="{% if is_shared_library %}{% url 'media_library_org:shared_asset_alt_text' asset_id=asset.id %}{% else %}{% url 'media_library:asset_alt_text' workspace_id=workspace.id asset_id=asset.id %}{% endif %}"
+      hx-target="#alt-text-editor-{{ asset.id }}"
+      hx-swap="outerHTML"
+      x-data="{ text: '' }"
+      x-init="text = $refs.feld.value"
+      class="space-y-2">
+  {% csrf_token %}
+  <textarea name="alt_text"
+            x-ref="feld"
+            @input="text = $event.target.value"
+            rows="3"
+            maxlength="{{ alt_text_max_length }}"
+            placeholder="Describe what is on the image, in one sentence."
+            class="input-focus w-full text-xs px-3 py-2 border rounded-lg outline-none resize-y"
+            style="border-color: var(--border, #E7E5E4); color: var(--text-primary, #1C1917);">{{ asset.alt_text }}</textarea>
+
+  <div class="flex items-center justify-between gap-2">
+    <span class="text-[11px] tabular-nums" style="color: var(--text-ghost, #A8A29E);"
+          x-text="text.length + ' / {{ alt_text_max_length }}'"></span>
+
+    <div class="flex items-center gap-2">
+      {% if alt_text_gespeichert %}
+      <span class="text-[11px] font-semibold animate-in fade-in" style="color: var(--success-700, #15803D);">Saved</span>
+      {% endif %}
+      <button type="submit"
+              class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full border transition-colors cursor-pointer btn-surface-1"
+              style="border-color: var(--border, #E7E5E4); color: var(--text-secondary, #57534E);">
+        Save description
+      </button>
+    </div>
+  </div>
+
+  {% if alt_text_funde %}
+  {% comment %}Characters that are not Latin script. The publisher refuses
+  these, so saying it here saves a failed publish later.{% endcomment %}
+  <div class="rounded-lg px-3 py-2 text-[11px] animate-in fade-in"
+       style="background: var(--error-50, #FEF2F2); color: var(--error-700, #B91C1C);">
+    <p class="font-semibold mb-1">This description will not publish.</p>
+    <ul class="space-y-0.5">
+      {% for fund in alt_text_funde %}
+      <li>Position {{ fund.position }}: &laquo;{{ fund.zeichen }}&raquo; ({{ fund.codepoint }} {{ fund.zeichenname }}){% if fund.vorschlag %} &rarr; {{ fund.vorschlag }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</form>
+{% else %}
+<p class="text-xs" style="color: var(--text-secondary, #57534E);">
+  {{ asset.alt_text|default:"No description yet." }}
+</p>
+{% endif %}
