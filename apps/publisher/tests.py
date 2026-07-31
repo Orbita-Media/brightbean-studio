@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from apps.publisher.engine import MAX_RETRIES, RETRY_BACKOFF, PublishEngine, _resolve_publish_credentials
 from apps.publisher.models import PublishLog, RateLimitState
+from providers.exceptions import PublishError
 from providers.types import AuthType, PostType, PublishResult
 
 
@@ -518,3 +519,86 @@ class PublishedPostLeavesQueueTest(TestCase):
         self.assertEqual(self.pp.status, PlatformPost.Status.PUBLISHED)
         self.assertEqual(self.pp.retry_count, 0)
         self.assertIsNone(self.pp.next_retry_at)
+
+
+class DispatchFremdzeichenSperreTest(SimpleTestCase):
+    """Die letzte Sperre vor dem Veröffentlichen (siehe apps.common.homoglyphs).
+
+    Anlass: In einem fertigen Beitrag stand „überspringst" mit kyrillischem
+    и, н und г. Der Text war fehlerfrei zu lesen und wäre so live gegangen.
+    """
+
+    @staticmethod
+    def _mocks(caption="hallo", alt_texts=None):
+        engine, platform_post, mock_provider = _build_dispatch_mocks(
+            platform="bluesky",
+            account_platform_id="did:plc:abc",
+            attachments=[
+                _fake_attachment(f"{i}.jpg", asset_alt_text=alt) for i, alt in enumerate(alt_texts or [], start=1)
+            ],
+        )
+        platform_post.effective_caption = caption
+        return engine, platform_post, mock_provider
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_sauberer_text_geht_durch(self, _creds, mock_get_provider):
+        engine, platform_post, mock_provider = self._mocks(
+            caption="Wenn du das überspringst, verlierst du den Anschluss. 🚀",
+            alt_texts=["Folie 1: Größe zählt", "Folie 2: Übung macht den Meister"],
+        )
+        mock_get_provider.return_value = mock_provider
+
+        result = engine._dispatch_to_provider(platform_post)
+
+        self.assertTrue(result["success"])
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_kyrillische_zeichen_im_beitragstext_verhindern_das_posten(self, _creds, mock_get_provider):
+        engine, platform_post, mock_provider = self._mocks(caption="Wenn du das übersprингst")
+        mock_get_provider.return_value = mock_provider
+
+        with self.assertRaises(PublishError) as ctx:
+            engine._dispatch_to_provider(platform_post)
+
+        self.assertFalse(ctx.exception.retryable)
+        self.assertIn("Beitragstext", str(ctx.exception))
+        self.assertIn("U+0438", str(ctx.exception))
+        mock_provider.publish_post.assert_not_called()
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_auch_ein_alternativtext_haelt_den_beitrag_auf(self, _creds, mock_get_provider):
+        engine, platform_post, mock_provider = self._mocks(
+            caption="alles sauber",
+            alt_texts=["Folie 1: sauber", "Folie 2: сauber geschrieben"],
+        )
+        mock_get_provider.return_value = mock_provider
+
+        with self.assertRaises(PublishError) as ctx:
+            engine._dispatch_to_provider(platform_post)
+
+        self.assertIn("Alternativtext Bild 2", str(ctx.exception))
+        mock_provider.publish_post.assert_not_called()
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_unsichtbares_zeichen_haelt_den_beitrag_auf(self, _creds, mock_get_provider):
+        engine, platform_post, mock_provider = self._mocks(caption="Zero​Width im Text")
+        mock_get_provider.return_value = mock_provider
+
+        with self.assertRaises(PublishError) as ctx:
+            engine._dispatch_to_provider(platform_post)
+
+        self.assertIn("U+200B", str(ctx.exception))
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_fremdsprachiges_zitat_geht_durch(self, _creds, mock_get_provider):
+        engine, platform_post, mock_provider = self._mocks(caption="Ein Zitat: καλημέρα")
+        mock_get_provider.return_value = mock_provider
+
+        result = engine._dispatch_to_provider(platform_post)
+
+        self.assertTrue(result["success"])

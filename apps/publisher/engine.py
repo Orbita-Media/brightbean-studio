@@ -27,9 +27,11 @@ from django.db import transaction
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from apps.common.homoglyphs import beanstandungen
 from apps.composer.models import PlatformPost
 from apps.credentials.models import resolve_platform_credentials
 from providers import get_provider
+from providers.exceptions import PublishError
 from providers.types import PostType, PublishContent
 
 from .models import PublishLog, RateLimitState
@@ -481,6 +483,8 @@ class PublishEngine:
                 video_duration_sec=primary_video_duration,
             )
 
+            self._block_on_foreign_characters(content)
+
             logger.info(
                 "Publishing to %s (account: %s, type: %s, media: %d)",
                 platform,
@@ -501,6 +505,41 @@ class PublishEngine:
             for path in temp_files:
                 with contextlib.suppress(OSError):
                     os.unlink(path)
+
+    @staticmethod
+    def _block_on_foreign_characters(content) -> None:
+        """Letzte Sperre vor dem Veröffentlichen: Fremdzeichen im Text.
+
+        In einem fertigen Beitrag stand „übersprингst" – и, н und г sind
+        kyrillisch. Im Fliesstext sieht man das nicht, und veröffentlicht ist
+        veröffentlicht. Beanstandet wird nur, was nicht anders erklärbar ist:
+        ein Wort mit lateinischen UND fremden Buchstaben sowie unsichtbare
+        Steuerzeichen. Ein Zitat, das ganz in einer anderen Schrift steht,
+        geht durch.
+
+        Hier wird bewusst NICHT repariert. Der Text in der Datenbank bliebe
+        sonst falsch und der Fehler käme beim nächsten Beitrag wieder; ausserdem
+        ist die richtige Ersetzung eine redaktionelle Entscheidung. Der Beitrag
+        scheitert endgültig (kein Wiederholen) mit den konkreten Stellen im
+        Fehlertext, damit die Korrektur an der Quelle passiert.
+        """
+        felder: list[tuple[str, str]] = [
+            ("Beitragstext", content.text or ""),
+            ("Titel", content.title or ""),
+            ("Erster Kommentar", content.first_comment or ""),
+        ]
+        felder += [(f"Alternativtext Bild {i + 1}", alt) for i, alt in enumerate(content.media_alt_texts or [])]
+
+        meldungen = [f"{feld}, {fund}" for feld, text in felder for fund in beanstandungen(text)]
+        if not meldungen:
+            return
+
+        raise PublishError(
+            "Fremdzeichen im Text (kyrillische oder griechische Homoglyphen, "
+            "unsichtbare Steuerzeichen). Vor dem Veröffentlichen an der Quelle "
+            "korrigieren: " + " | ".join(meldungen[:20]),
+            retryable=False,
+        )
 
     @staticmethod
     def _warn_on_dropped_media(provider, platform_post, media_count: int) -> None:
