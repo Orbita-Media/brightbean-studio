@@ -1,5 +1,12 @@
 # Nachweis am lebenden Kanal: sechs Folien auf Bluesky
 
+> **Chronik.** Der hier belegte Zustand gilt seit dem 05.08.2026 nicht mehr:
+> die Antwort-Kette ist ausgebaut, sechs Folien gehen als **ein** Beitrag über
+> `app.bsky.embed.gallery` raus. Begründung in
+> `docs/BLUESKY-ANTWORT-KETTE.md`, Grenzen mit Quellen in
+> `docs/PLATTFORM-GRENZEN.md`. Der veröffentlichte Beitrag von damals bleibt
+> unangetastet.
+
 **01.08.2026** – Beleg dafür, dass die Antwort-Kette aus
 `docs/BLUESKY-ANTWORT-KETTE.md` in Produktion tut, was sie soll.
 

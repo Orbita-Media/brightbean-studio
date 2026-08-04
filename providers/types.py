@@ -19,6 +19,10 @@ class PostType(enum.Enum):
     POLL = "poll"
     PIN = "pin"
     SHORT = "short"
+    # LinkedIn document post: a PDF (or PPT/DOC) the feed shows as a page
+    # reader. The strongest carousel format LinkedIn has, and the only
+    # document post any of our channels offers.
+    DOCUMENT = "document"
 
 
 class MediaType(enum.Enum):
@@ -142,7 +146,7 @@ class PublishContent:
     first_comment: str | None = None
     extra: dict = field(default_factory=dict)
     # Accessibility description per media item, positionally aligned with
-    # ``media_urls`` / ``media_files`` — index 0 describes the first carousel
+    # ``media_urls`` / ``media_files`` – index 0 describes the first carousel
     # slide, index 1 the second, and so on. Entries may be empty strings when
     # an attachment carries no alt text; providers must degrade gracefully
     # rather than fail. Read it through ``alt_text_for()``, never by raw index.

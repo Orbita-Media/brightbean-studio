@@ -1,10 +1,18 @@
 """Every provider declares how many attachments one post can actually show.
 
-Background: Bluesky shows four images per post. Our carousels have six, so
+Background: Bluesky showed four images per post. Our carousels have six, so
 slides 5 and 6 were dropped on every publish for weeks without a warning, a log
-line or an error. Bluesky now chains the overflow into replies; for the other
-channels the point of these tests is that the limit is *declared* and that
-going over it is loud, never silent.
+line or an error. Two answers were tried and dropped again: a warning (which
+still published an amputated post) and a reply chain (which turned one post
+into two records, and the second one gets read out of context or not at all).
+
+What holds now: every channel gets a self-contained version with as many slides
+as the platform really shows, and a post that brings more attachments than fit
+is REFUSED instead of trimmed. These tests pin down both halves – the declared
+number per channel, and that going over it fails.
+
+The numbers themselves are argued in docs/PLATTFORM-GRENZEN.md, each with the
+manufacturer source it came from.
 """
 
 import logging
@@ -14,7 +22,7 @@ import pytest
 
 from apps.publisher.engine import PublishEngine
 from providers import PROVIDER_REGISTRY, get_provider
-from providers.bluesky import BlueskyProvider
+from providers.bluesky import MAX_GALLERY_IMAGES
 from providers.exceptions import PublishError
 from providers.google_business import GoogleBusinessProvider
 from providers.instagram import MAX_CAROUSEL_ITEMS as IG_MAX_ITEMS
@@ -27,22 +35,33 @@ from providers.threads import ThreadsProvider
 from providers.types import PostType, PublishContent
 
 # The documented per-post media capacity of every channel we can publish to.
-# A change here is a change of a platform limit and must be argued, not typed.
+# A change here is a change of a platform limit and must be argued in
+# docs/PLATTFORM-GRENZEN.md with the source, not typed.
 ERWARTETE_GRENZEN = {
-    "bluesky": 4,
+    "bluesky": 10,
     "facebook": 10,
     "instagram": 10,
     "instagram_login": 10,
     "threads": 20,
     "mastodon": 4,
-    "pinterest": 1,
-    "linkedin_personal": 1,
-    "linkedin_company": 1,
+    "pinterest": 5,
+    "linkedin_personal": 20,
+    "linkedin_company": 20,
     "google_business": 1,
-    "tiktok": 1,
+    "tiktok": 35,
     "youtube": 1,
     "devto": 1,
     "x": 0,
+}
+
+# Channels whose number came from our own code instead of the platform docs.
+# All four were corrected on 05.08.2026; the test keeps them from sliding back.
+FRUEHER_FALSCH = {
+    "bluesky": 4,
+    "pinterest": 1,
+    "linkedin_personal": 1,
+    "linkedin_company": 1,
+    "tiktok": 1,
 }
 
 
@@ -58,9 +77,24 @@ class TestDeclaredLimits:
     def test_limit_matches_the_documented_platform_value(self, platform, grenze):
         assert get_provider(platform, {}).max_media_per_post == grenze
 
-    def test_only_bluesky_spreads_the_overflow_over_further_posts(self):
-        chaining = {p for p in PROVIDER_REGISTRY if get_provider(p, {}).chains_overflow_media}
-        assert chaining == {"bluesky"}
+    def test_a_six_slide_carousel_fits_bluesky_in_one_post(self):
+        # The case that started all of this: the gallery embed holds it.
+        assert get_provider("bluesky", {}).max_media_per_post >= 6
+        assert MAX_GALLERY_IMAGES == 10
+
+    @pytest.mark.parametrize(("platform", "alte_zahl"), sorted(FRUEHER_FALSCH.items()))
+    def test_the_numbers_taken_from_our_own_code_stay_corrected(self, platform, alte_zahl):
+        # "LinkedIn: 1 image" and "Pinterest: 1 image" were never platform
+        # limits, they were what our provider happened to do.
+        assert get_provider(platform, {}).max_media_per_post > alte_zahl
+
+    def test_the_six_slide_carousel_fits_every_carousel_channel(self):
+        passt = {
+            p
+            for p in ("bluesky", "instagram", "threads", "linkedin_personal", "linkedin_company", "tiktok", "facebook")
+            if get_provider(p, {}).max_media_per_post >= 6
+        }
+        assert len(passt) == 7
 
 
 class TestCarouselGuards:
@@ -164,7 +198,7 @@ class TestMastodonAttachmentLimit:
 
 
 class TestSingleMediaChannelsSayWhatTheyDrop:
-    def test_pinterest_pins_the_first_image_and_logs_the_rest(self, caplog):
+    def test_pinterest_refuses_more_than_five_images(self):
         provider = PinterestProvider()
         provider._request = MagicMock(return_value=MagicMock(json=MagicMock(return_value={"id": "pin1"})))
         content = PublishContent(
@@ -174,12 +208,10 @@ class TestSingleMediaChannelsSayWhatTheyDrop:
             extra={"board_id": "b1"},
         )
 
-        with caplog.at_level(logging.WARNING, logger="providers.pinterest"):
+        with pytest.raises(PublishError, match="höchstens 5 Bilder"):
             provider.publish_post("token", content)
 
-        payload = provider._request.call_args.kwargs["json"]
-        assert payload["media_source"]["url"] == "https://example.test/0.jpg"
-        assert "5 of 6 attachments are dropped" in caplog.text
+        provider._request.assert_not_called()
 
     def test_google_business_sends_exactly_one_media_entry(self, caplog):
         provider = GoogleBusinessProvider()
@@ -201,29 +233,41 @@ class TestSingleMediaChannelsSayWhatTheyDrop:
         assert "5 of 6 attachments are dropped" in caplog.text
 
 
-class TestPublisherWarning:
-    """The publisher names the gap before the post goes out."""
+class TestPublisherRefusesInsteadOfTrimming:
+    """A post that does not fit is refused, not shortened."""
 
     @staticmethod
     def _platform_post():
         return MagicMock(id="pp-1")
 
-    def test_warns_when_a_channel_cannot_show_every_attachment(self, caplog):
+    def test_refuses_when_a_channel_cannot_show_every_attachment(self):
+        with pytest.raises(PublishError, match="höchstens 1 Anhänge"):
+            PublishEngine._block_on_dropped_media(GoogleBusinessProvider(), self._platform_post(), 6)
+
+    def test_refuses_a_six_slide_carousel_on_pinterest(self):
+        with pytest.raises(PublishError, match="höchstens 5 Anhänge"):
+            PublishEngine._block_on_dropped_media(PinterestProvider(), self._platform_post(), 6)
+
+    def test_the_refusal_names_the_way_out(self):
+        with pytest.raises(PublishError) as fehler:
+            PublishEngine._block_on_dropped_media(PinterestProvider(), self._platform_post(), 6)
+
+        # The reader has to learn what to do, not just that something broke.
+        assert "eigene, in sich geschlossene Fassung" in str(fehler.value)
+
+    def test_the_refusal_is_permanent(self):
+        # Retrying sends the same attachments and fails the same way.
+        with pytest.raises(PublishError) as fehler:
+            PublishEngine._block_on_dropped_media(PinterestProvider(), self._platform_post(), 6)
+
+        assert fehler.value.retryable is False
+
+    def test_a_six_slide_carousel_passes_on_bluesky(self):
+        PublishEngine._block_on_dropped_media(get_provider("bluesky", {}), self._platform_post(), 6)
+
+    def test_stays_out_of_the_way_when_everything_fits(self, caplog):
         with caplog.at_level(logging.WARNING, logger="apps.publisher.engine"):
-            PublishEngine._warn_on_dropped_media(PinterestProvider(), self._platform_post(), 6)
-
-        assert "at most 1 of 6 attachments" in caplog.text
-        assert "5 will not be published" in caplog.text
-
-    def test_stays_silent_for_bluesky_because_the_rest_becomes_a_reply(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="apps.publisher.engine"):
-            PublishEngine._warn_on_dropped_media(BlueskyProvider(), self._platform_post(), 6)
-
-        assert caplog.text == ""
-
-    def test_stays_silent_when_everything_fits(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="apps.publisher.engine"):
-            PublishEngine._warn_on_dropped_media(ThreadsProvider(), self._platform_post(), 6)
+            PublishEngine._block_on_dropped_media(ThreadsProvider(), self._platform_post(), 6)
 
         assert caplog.text == ""
 
@@ -232,6 +276,6 @@ class TestPublisherWarning:
         provider.max_media_per_post = MagicMock()  # kein echter Zahlenwert
 
         with caplog.at_level(logging.WARNING, logger="apps.publisher.engine"):
-            PublishEngine._warn_on_dropped_media(provider, self._platform_post(), 6)
+            PublishEngine._block_on_dropped_media(provider, self._platform_post(), 6)
 
         assert caplog.text == ""

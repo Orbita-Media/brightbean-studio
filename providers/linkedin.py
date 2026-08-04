@@ -50,6 +50,42 @@ LINKEDIN_HEADERS = {
 # names no limit, so we reuse the documented one as the safe bound.
 MAX_ALT_TEXT_LENGTH = 4086
 
+# MultiImage Post API: "A MultiImage post is a post containing multiple images
+# (minimum of 2 images and maximum of 20 images)."
+# https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/multiimage-post-api
+MIN_MULTI_IMAGE = 2
+MAX_MULTI_IMAGE = 20
+
+# Documents API: "The file size can't exceed 100MB and 300 pages. The following
+# file types are supported: PPT, PPTX, DOC, DOCX, and PDF."
+# https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/documents-api
+DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".ppt", ".pptx")
+MAX_DOCUMENT_BYTES = 100 * 1024 * 1024
+
+# ``commentary`` is not plain text but LinkedIn's "little" format: "All reserved
+# characters need to be escaped with a backslash, even if those characters are
+# not used in one of the supported elements or templates."
+# https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/little-text-format
+# Without escaping, brackets, asterisks and underscores out of ordinary prose
+# are parsed as markup and the sentence comes out mangled.
+LITTLE_RESERVED_CHARACTERS = "|{}@[]()<>#\\*_~"
+
+
+def _escape_commentary(text: str) -> str:
+    """Escape every reserved character of LinkedIn's little text format.
+
+    The backslash is escaped first; doing it later would double-escape the
+    backslashes this function just added.
+    """
+    if not text:
+        return text
+    out = text.replace("\\", "\\\\")
+    for character in LITTLE_RESERVED_CHARACTERS:
+        if character == "\\":
+            continue
+        out = out.replace(character, f"\\{character}")
+    return out
+
 
 def _encode_urn(urn: str) -> str:
     """Percent-encode a LinkedIn URN for use as a URL path segment.
@@ -85,22 +121,25 @@ class LinkedInProvider(SocialProvider):
         return [
             PostType.TEXT,
             PostType.IMAGE,
+            PostType.CAROUSEL,
             PostType.VIDEO,
             PostType.LINK,
             PostType.ARTICLE,
             PostType.POLL,
+            PostType.DOCUMENT,
         ]
 
     @property
     def supported_media_types(self) -> list[MediaType]:
-        return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.MP4]
+        return [MediaType.JPEG, MediaType.PNG, MediaType.GIF, MediaType.MP4, MediaType.PDF]
 
     @property
     def max_media_per_post(self) -> int | None:
-        # This provider posts a single image or a single video. LinkedIn's
-        # multi-image post is not implemented, so extra attachments are
-        # dropped (with a warning at publish time).
-        return 1
+        # MultiImage carries 2 to 20 images in ONE post. Until 05.08.2026 this
+        # provider claimed 1 and dropped the rest of a carousel with nothing
+        # but a log line – the number came from our own code, not from the
+        # platform. Sources in docs/PLATTFORM-GRENZEN.md.
+        return MAX_MULTI_IMAGE
 
     @property
     def required_scopes(self) -> list[str]:
@@ -227,9 +266,14 @@ class LinkedInProvider(SocialProvider):
             profile = self.get_profile(access_token)
             author = f"urn:li:person:{profile.platform_id}"
 
-        if content.post_type == PostType.IMAGE and (content.media_files or content.media_urls):
+        attachments = content.media_files or content.media_urls
+        if content.post_type == PostType.DOCUMENT or (attachments and self._is_document(attachments[0])):
+            return self._publish_document_post(access_token, author, content)
+        if content.post_type in (PostType.IMAGE, PostType.CAROUSEL) and attachments:
+            if len(attachments) >= MIN_MULTI_IMAGE:
+                return self._publish_multi_image_post(access_token, author, content)
             return self._publish_image_post(access_token, author, content)
-        if content.post_type == PostType.VIDEO and (content.media_files or content.media_urls):
+        if content.post_type == PostType.VIDEO and attachments:
             return self._publish_video_post(access_token, author, content)
         if content.post_type == PostType.ARTICLE:
             return self._publish_article_post(access_token, author, content)
@@ -237,10 +281,15 @@ class LinkedInProvider(SocialProvider):
             return self._publish_poll_post(access_token, author, content)
         return self._publish_text_post(access_token, author, content)
 
+    @staticmethod
+    def _is_document(source: str) -> bool:
+        """True when the attachment is one of the document formats LinkedIn takes."""
+        return source.split("?")[0].lower().endswith(DOCUMENT_EXTENSIONS)
+
     def _build_post_body(self, author: str, commentary: str) -> dict:
         return {
             "author": author,
-            "commentary": commentary,
+            "commentary": _escape_commentary(commentary),
             "visibility": "PUBLIC",
             "distribution": {
                 "feedDistribution": "MAIN_FEED",
@@ -276,8 +325,12 @@ class LinkedInProvider(SocialProvider):
             extra={"urn": post_urn},
         )
 
-    def _publish_image_post(self, access_token: str, author: str, content: PublishContent) -> PublishResult:
-        # Step 1: initialize upload
+    def _upload_image(self, access_token: str, author: str, source: str) -> str:
+        """Upload one image and return its ``urn:li:image:...``.
+
+        Two steps per image: ``initializeUpload`` hands back an upload URL and
+        the URN, then the bytes go to that URL.
+        """
         init_resp = self._request(
             "POST",
             f"{API_BASE}/rest/images",
@@ -301,20 +354,14 @@ class LinkedInProvider(SocialProvider):
                 raw_response=init_data,
             )
 
-        # Step 2: upload image binary (prefer local file to avoid extra network hop)
-        attachments = content.media_files or content.media_urls
-        if len(attachments) > 1:
-            # This provider posts a single image; LinkedIn's multi-image post
-            # is not implemented. Say so rather than quietly posting slide 1.
-            logger.warning(
-                "LinkedIn image posts carry one image: %d of %d attachments are dropped",
-                len(attachments) - 1,
-                len(attachments),
-            )
-        image_source = content.media_files[0] if content.media_files else content.media_urls[0]
-        self._upload_binary(access_token, upload_url, image_source)
+        self._upload_binary(access_token, upload_url, source)
+        return image_urn
 
-        # Step 3: create post with image
+    def _publish_image_post(self, access_token: str, author: str, content: PublishContent) -> PublishResult:
+        """Publish a post with exactly ONE image (``content.media``)."""
+        image_source = content.media_files[0] if content.media_files else content.media_urls[0]
+        image_urn = self._upload_image(access_token, author, image_source)
+
         body = self._build_post_body(author, content.text)
         media: dict = {"id": image_urn}
         alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
@@ -335,6 +382,164 @@ class LinkedInProvider(SocialProvider):
             url=self._post_urn_to_url(post_urn),
             extra={"urn": post_urn, "image_urn": image_urn},
         )
+
+    def _publish_multi_image_post(self, access_token: str, author: str, content: PublishContent) -> PublishResult:
+        """Publish a carousel as ONE MultiImage post (``content.multiImage``).
+
+        Two to twenty images per the MultiImage Post API. Everything is
+        uploaded before the post is created: while no post exists, a failed
+        upload costs nothing and the publisher can retry safely.
+        """
+        attachments = content.media_files or content.media_urls
+        if len(attachments) > MAX_MULTI_IMAGE:
+            raise PublishError(
+                f"LinkedIn zeigt höchstens {MAX_MULTI_IMAGE} Bilder je Beitrag, dieser Beitrag "
+                f"bringt {len(attachments)} mit. Es wird weder gekürzt noch verteilt: für "
+                f"LinkedIn wird eine eigene, in sich geschlossene Fassung gebraucht.",
+                platform=self.platform_name,
+                retryable=False,
+            )
+
+        images: list[dict] = []
+        for index, source in enumerate(attachments):
+            image_urn = self._upload_image(access_token, author, source)
+            image: dict = {"id": image_urn}
+            # ``index`` is the position in the ORIGINAL attachment list, so a
+            # description always stays on its own slide.
+            alt_text = content.alt_text_for(index, MAX_ALT_TEXT_LENGTH)
+            if alt_text:
+                image["altText"] = alt_text
+            images.append(image)
+
+        body = self._build_post_body(author, content.text)
+        body["content"] = {"multiImage": {"images": images}}
+
+        resp = self._request(
+            "POST",
+            f"{API_BASE}/rest/posts",
+            access_token=access_token,
+            headers=LINKEDIN_HEADERS,
+            json=body,
+        )
+        post_urn = resp.headers.get("x-restli-id", "")
+        return PublishResult(
+            platform_post_id=post_urn,
+            url=self._post_urn_to_url(post_urn),
+            extra={"urn": post_urn, "image_urns": [image["id"] for image in images]},
+        )
+
+    def _publish_document_post(self, access_token: str, author: str, content: PublishContent) -> PublishResult:
+        """Publish a document post (the PDF carousel LinkedIn shows as a reader).
+
+        Four steps: ``initializeUpload`` on ``/rest/documents``, PUT the file,
+        wait for ``status: AVAILABLE`` (there is no synchronous upload), then
+        create the post. ``title`` is required for documents.
+        """
+        source = content.media_files[0] if content.media_files else content.media_urls[0]
+        if not self._is_document(source):
+            raise PublishError(
+                f"LinkedIn nimmt als Dokument nur {', '.join(DOCUMENT_EXTENSIONS)} an, "
+                f"nicht {source}",
+                platform=self.platform_name,
+                retryable=False,
+            )
+        # Checked here rather than after the upload: LinkedIn answers an
+        # oversized file with a bare 400, which reads like a broken token. A
+        # missing file is deliberately NOT reported here – the upload says that
+        # far more precisely than a size check could.
+        if os.path.isfile(source):
+            groesse = os.path.getsize(source)
+            if groesse > MAX_DOCUMENT_BYTES:
+                raise PublishError(
+                    f"LinkedIn nimmt Dokumente bis 100 MB, {source} ist "
+                    f"{groesse / 1024 / 1024:.1f} MB gross",
+                    platform=self.platform_name,
+                    retryable=False,
+                )
+
+        init_resp = self._request(
+            "POST",
+            f"{API_BASE}/rest/documents",
+            access_token=access_token,
+            headers=LINKEDIN_HEADERS,
+            params={"action": "initializeUpload"},
+            json={"initializeUploadRequest": {"owner": author}},
+        )
+        init_data = init_resp.json().get("value", {})
+        upload_url = init_data.get("uploadUrl", "")
+        document_urn = init_data.get("document", "")
+
+        if not upload_url or not document_urn:
+            raise PublishError(
+                "Failed to initialize LinkedIn document upload",
+                platform=self.platform_name,
+                raw_response=init_data,
+            )
+
+        self._upload_binary(access_token, upload_url, source)
+        self._wait_for_document_available(access_token, document_urn)
+
+        body = self._build_post_body(author, content.text)
+        # A document post without a title is rejected: "The media title
+        # (Required field for Documents API)". The file name is the honest
+        # fallback – it is what the reader shows above the pages.
+        title = (content.title or os.path.basename(source.split("?")[0]) or "Dokument")[:400]
+        body["content"] = {"media": {"title": title, "id": document_urn}}
+
+        resp = self._request(
+            "POST",
+            f"{API_BASE}/rest/posts",
+            access_token=access_token,
+            headers=LINKEDIN_HEADERS,
+            json=body,
+        )
+        post_urn = resp.headers.get("x-restli-id", "")
+        return PublishResult(
+            platform_post_id=post_urn,
+            url=self._post_urn_to_url(post_urn),
+            extra={"urn": post_urn, "document_urn": document_urn},
+        )
+
+    def _wait_for_document_available(
+        self,
+        access_token: str,
+        document_urn: str,
+        *,
+        timeout_seconds: float = 180.0,
+        poll_interval: float = 3.0,
+    ) -> None:
+        """Poll until the document is processed.
+
+        States per the Documents API: WAITING_UPLOAD, PROCESSING, AVAILABLE,
+        PROCESSING_FAILED. Posting earlier is rejected the same way a video is.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        last_status: str | None = None
+        while True:
+            resp = self._request(
+                "GET",
+                f"{API_BASE}/rest/documents/{_encode_urn(document_urn)}",
+                access_token=access_token,
+                headers=LINKEDIN_HEADERS,
+            )
+            data = resp.json()
+            status = data.get("status")
+            if status == "AVAILABLE":
+                return
+            if status == "PROCESSING_FAILED":
+                raise PublishError(
+                    "LinkedIn hat das Dokument bei der Verarbeitung abgelehnt",
+                    platform=self.platform_name,
+                    raw_response=data,
+                )
+            last_status = status
+            if time.monotonic() >= deadline:
+                raise PublishError(
+                    f"Zeitüberschreitung beim Warten auf das LinkedIn-Dokument "
+                    f"(letzter Zustand: {last_status})",
+                    platform=self.platform_name,
+                )
+            time.sleep(poll_interval)
 
     def _publish_video_post(self, access_token: str, author: str, content: PublishContent) -> PublishResult:
         # LinkedIn's Videos REST API: init with fileSizeBytes -> PUT each chunk from
@@ -391,7 +596,7 @@ class LinkedInProvider(SocialProvider):
                     etag = self._upload_video_chunk(chunk_url, chunk)
                     uploaded_part_ids.append(etag)
 
-            # Step 3: finalize — LinkedIn assembles chunks and starts processing
+            # Step 3: finalize – LinkedIn assembles chunks and starts processing
             self._request(
                 "POST",
                 f"{API_BASE}/rest/videos",
@@ -407,7 +612,7 @@ class LinkedInProvider(SocialProvider):
                 },
             )
 
-            # Step 4: wait for processing — posting before status=AVAILABLE returns
+            # Step 4: wait for processing – posting before status=AVAILABLE returns
             # 400 MEDIA_ASSET_WAITING_UPLOAD / MEDIA_ASSET_PROCESSING_FAILED.
             self._wait_for_video_available(access_token, video_urn)
         finally:
@@ -725,7 +930,7 @@ class LinkedInProvider(SocialProvider):
         """PUT a single video chunk and return its ETag for finalizeUpload.
 
         Per LinkedIn's Videos API docs, the chunk upload URL is pre-authenticated
-        via the `?sau=...` query param — only Content-Type should be sent. Adding
+        via the `?sau=...` query param – only Content-Type should be sent. Adding
         an Authorization header or LinkedIn-Version can confuse the upload edge.
         """
         with httpx.Client(timeout=120.0) as client:
@@ -796,7 +1001,7 @@ class LinkedInProvider(SocialProvider):
         """Poll until the video reaches AVAILABLE status (or fail fast on terminal errors).
 
         Posting against a video that is still WAITING_UPLOAD / PROCESSING returns
-        400 MEDIA_ASSET_WAITING_UPLOAD or MEDIA_ASSET_PROCESSING_FAILED — see
+        400 MEDIA_ASSET_WAITING_UPLOAD or MEDIA_ASSET_PROCESSING_FAILED – see
         https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/videos-api#api-error-details
         """
         deadline = time.monotonic() + timeout_seconds

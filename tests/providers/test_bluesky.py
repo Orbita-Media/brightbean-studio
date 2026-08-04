@@ -7,12 +7,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from providers.bluesky import MAX_ALT_TEXT_LENGTH, MAX_EMBED_IMAGES, BlueskyProvider, _access_jwt_expires_in
+from providers.bluesky import (
+    MAX_ALT_TEXT_LENGTH,
+    MAX_EMBED_IMAGES,
+    MAX_GALLERY_IMAGES,
+    BlueskyProvider,
+    _access_jwt_expires_in,
+)
+from providers.exceptions import PublishError
 from providers.types import PostType, PublishContent
 
 
 def _make_jwt(payload: dict) -> str:
-    """Build a JWT-shaped string (header.payload.signature) — signature is unchecked."""
+    """Build a JWT-shaped string (header.payload.signature) – signature is unchecked."""
 
     def encode(obj: dict) -> str:
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
@@ -100,7 +107,7 @@ class TestBuildEmbedAltText:
             media_alt_texts=["Folie 1", "Folie 2", "Folie 3"],
         )
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
         assert embed["$type"] == "app.bsky.embed.images"
         assert [image["alt"] for image in embed["images"]] == ["Folie 1", "Folie 2", "Folie 3"]
@@ -115,7 +122,7 @@ class TestBuildEmbedAltText:
             media_alt_texts=["Nur die erste"],
         )
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
         assert [image["alt"] for image in embed["images"]] == ["Nur die erste", ""]
 
@@ -123,20 +130,21 @@ class TestBuildEmbedAltText:
         provider = self._provider_with_blobs()
         content = PublishContent(post_type=PostType.IMAGE, media_files=["/tmp/1.png"])
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
         assert embed["images"] == [{"alt": "", "image": {"$type": "blob", "ref": "/tmp/1.png"}}]
 
-    def test_first_post_carries_at_most_four_images(self):
+    def test_four_images_fill_the_images_embed(self):
         provider = self._provider_with_blobs()
         content = PublishContent(
             post_type=PostType.IMAGE,
-            media_files=[f"/tmp/{i}.png" for i in range(6)],
-            media_alt_texts=[f"Folie {i}" for i in range(6)],
+            media_files=[f"/tmp/{i}.png" for i in range(MAX_EMBED_IMAGES)],
+            media_alt_texts=[f"Folie {i}" for i in range(MAX_EMBED_IMAGES)],
         )
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
+        assert embed["$type"] == "app.bsky.embed.images"
         assert len(embed["images"]) == MAX_EMBED_IMAGES
         assert [image["alt"] for image in embed["images"]] == ["Folie 0", "Folie 1", "Folie 2", "Folie 3"]
 
@@ -148,7 +156,7 @@ class TestBuildEmbedAltText:
             media_alt_texts=["ü" * (MAX_ALT_TEXT_LENGTH + 500)],
         )
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
         assert len(embed["images"][0]["alt"]) == MAX_ALT_TEXT_LENGTH
 
@@ -160,7 +168,7 @@ class TestBuildEmbedAltText:
             media_alt_texts=["Kurzes Erklärvideo"],
         )
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
         assert embed["$type"] == "app.bsky.embed.video"
         assert embed["alt"] == "Kurzes Erklärvideo"
@@ -169,7 +177,7 @@ class TestBuildEmbedAltText:
         provider = self._provider_with_blobs()
         content = PublishContent(post_type=PostType.VIDEO, media_files=["/tmp/clip.mp4"])
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
         assert "alt" not in embed
 
@@ -182,112 +190,156 @@ class TestBuildEmbedAltText:
             extra={"alt_text": "Gilt für alle"},
         )
 
-        embed = provider._build_embeds("token", content)[0]
+        embed = provider._build_embed("token", content)
 
         assert [image["alt"] for image in embed["images"]] == ["Gilt für alle", "Gilt für alle"]
 
 
-class TestBuildEmbedsChunking:
-    """More than four images become several embeds; alt texts stay in place."""
+def _png(pfad, breite: int, hoehe: int) -> str:
+    """Write a real PNG so the aspect ratio can be measured, not mocked."""
+    from PIL import Image
+
+    Image.new("RGB", (breite, hoehe), (30, 30, 40)).save(pfad)
+    return str(pfad)
+
+
+class TestGalleryEmbed:
+    """From the fifth slide on, app.bsky.embed.gallery carries the whole post.
+
+    Until 05.08.2026 slide five started a reply to our own post. It does not
+    any more: the gallery embed holds up to ten images in ONE record.
+    """
 
     @staticmethod
-    def _provider_with_blobs():
+    def _provider():
         provider = BlueskyProvider()
         provider._upload_blob = MagicMock(side_effect=lambda _token, path: {"$type": "blob", "ref": path})
         return provider
 
-    def test_six_images_become_two_embeds_of_four_and_two(self):
-        provider = self._provider_with_blobs()
-        content = PublishContent(
+    @staticmethod
+    def _content(tmp_path, anzahl: int, breite: int = 1080, hoehe: int = 1350) -> PublishContent:
+        return PublishContent(
             post_type=PostType.IMAGE,
-            media_files=[f"/tmp/{i}.png" for i in range(1, 7)],
-            media_alt_texts=[f"Folie {i}" for i in range(1, 7)],
+            media_files=[_png(tmp_path / f"{i}.png", breite, hoehe) for i in range(1, anzahl + 1)],
+            media_alt_texts=[f"Folie {i}" for i in range(1, anzahl + 1)],
         )
 
-        embeds = provider._build_embeds("token", content)
+    def test_four_slides_stay_on_the_long_standing_images_embed(self, tmp_path):
+        # Below five nothing changes: every client has understood this embed
+        # for years, and the official app renders it exactly as before.
+        embed = self._provider()._build_embed("token", self._content(tmp_path, 4))
 
-        assert len(embeds) == 2
-        assert [len(e["images"]) for e in embeds] == [4, 2]
+        assert embed["$type"] == "app.bsky.embed.images"
+        assert len(embed["images"]) == 4
 
-    def test_alt_texts_do_not_shift_across_the_chunk_boundary(self):
-        # The actual trap: the index must NOT restart per group, otherwise
-        # slide 5 would carry the description of slide 1.
-        provider = self._provider_with_blobs()
+    def test_five_slides_switch_to_the_gallery_embed(self, tmp_path):
+        embed = self._provider()._build_embed("token", self._content(tmp_path, 5))
+
+        assert embed["$type"] == "app.bsky.embed.gallery"
+        assert len(embed["items"]) == 5
+
+    def test_the_whole_six_slide_carousel_fits_into_one_embed(self, tmp_path):
+        # The case that started all of this.
+        embed = self._provider()._build_embed("token", self._content(tmp_path, 6))
+
+        assert len(embed["items"]) == 6
+        assert [item["alt"] for item in embed["items"]] == [f"Folie {i}" for i in range(1, 7)]
+
+    def test_ten_slides_still_fit(self, tmp_path):
+        embed = self._provider()._build_embed("token", self._content(tmp_path, MAX_GALLERY_IMAGES))
+
+        assert len(embed["items"]) == MAX_GALLERY_IMAGES
+
+    def test_every_gallery_item_carries_the_measured_aspect_ratio(self, tmp_path):
+        # aspectRatio is REQUIRED on gallery#image, unlike images#image.
+        embed = self._provider()._build_embed("token", self._content(tmp_path, 5, breite=1080, hoehe=1350))
+
+        assert all(item["aspectRatio"] == {"width": 1080, "height": 1350} for item in embed["items"])
+
+    def test_aspect_ratio_is_read_per_file_not_from_the_first(self, tmp_path):
         content = PublishContent(
             post_type=PostType.IMAGE,
-            media_files=[f"/tmp/{i}.png" for i in range(1, 7)],
-            media_alt_texts=[f"Folie {i}" for i in range(1, 7)],
+            media_files=[
+                _png(tmp_path / "hoch.png", 1080, 1350),
+                _png(tmp_path / "quer.png", 1200, 630),
+                _png(tmp_path / "quadrat.png", 1080, 1080),
+                _png(tmp_path / "story.png", 1080, 1920),
+                _png(tmp_path / "pin.png", 1000, 1500),
+            ],
         )
 
-        embeds = provider._build_embeds("token", content)
+        embed = self._provider()._build_embed("token", content)
 
-        assert [i["alt"] for i in embeds[1]["images"]] == ["Folie 5", "Folie 6"]
-        assert [i["image"]["ref"] for i in embeds[1]["images"]] == ["/tmp/5.png", "/tmp/6.png"]
+        assert [item["aspectRatio"] for item in embed["items"]] == [
+            {"width": 1080, "height": 1350},
+            {"width": 1200, "height": 630},
+            {"width": 1080, "height": 1080},
+            {"width": 1080, "height": 1920},
+            {"width": 1000, "height": 1500},
+        ]
 
-    def test_every_image_keeps_its_own_alt_text_across_the_whole_chain(self):
-        provider = self._provider_with_blobs()
+    def test_images_embed_carries_no_aspect_ratio(self, tmp_path):
+        # Optional there, and we have never sent it – no silent format change.
+        embed = self._provider()._build_embed("token", self._content(tmp_path, 3))
+
+        assert all("aspectRatio" not in image for image in embed["images"])
+
+    def test_alt_texts_stay_on_their_own_slide(self, tmp_path):
+        content = self._content(tmp_path, 6)
+        content.media_alt_texts = ["Folie 1", "", "Folie 3", "Folie 4", "", "Folie 6"]
+
+        embed = self._provider()._build_embed("token", content)
+
+        # A gap stays a gap. A shifted description is worse than none.
+        assert [item["alt"] for item in embed["items"]] == ["Folie 1", "", "Folie 3", "Folie 4", "", "Folie 6"]
+
+    def test_unreadable_file_fails_instead_of_posting_without_dimensions(self, tmp_path):
+        kaputt = tmp_path / "kaputt.png"
+        kaputt.write_bytes(b"kein PNG")
         content = PublishContent(
             post_type=PostType.IMAGE,
-            media_files=[f"/tmp/{i}.png" for i in range(1, 10)],
-            media_alt_texts=[f"Folie {i}" for i in range(1, 10)],
+            media_files=[_png(tmp_path / f"{i}.png", 1080, 1350) for i in range(4)] + [str(kaputt)],
         )
 
-        embeds = provider._build_embeds("token", content)
-        paare = [(i["image"]["ref"], i["alt"]) for e in embeds for i in e["images"]]
+        with pytest.raises(PublishError, match="Bildmasse"):
+            self._provider()._build_embed("token", content)
 
-        assert len(embeds) == 3
-        assert paare == [(f"/tmp/{i}.png", f"Folie {i}") for i in range(1, 10)]
-
-    def test_gap_in_the_alt_texts_does_not_shift_the_rest(self):
-        provider = self._provider_with_blobs()
+    def test_no_blob_is_uploaded_when_a_dimension_cannot_be_read(self, tmp_path):
+        # A gallery post that cannot be finished should not cost an upload.
+        kaputt = tmp_path / "kaputt.png"
+        kaputt.write_bytes(b"kein PNG")
+        provider = self._provider()
         content = PublishContent(
             post_type=PostType.IMAGE,
-            media_files=[f"/tmp/{i}.png" for i in range(1, 7)],
-            media_alt_texts=["Folie 1", "", "Folie 3", "Folie 4", "", "Folie 6"],
+            media_files=[_png(tmp_path / f"{i}.png", 1080, 1350) for i in range(4)] + [str(kaputt)],
         )
 
-        embeds = provider._build_embeds("token", content)
-        alts = [i["alt"] for e in embeds for i in e["images"]]
+        with pytest.raises(PublishError):
+            provider._build_embed("token", content)
 
-        assert alts == ["Folie 1", "", "Folie 3", "Folie 4", "", "Folie 6"]
-
-    def test_exactly_four_images_stay_one_post(self):
-        provider = self._provider_with_blobs()
-        content = PublishContent(
-            post_type=PostType.IMAGE,
-            media_files=[f"/tmp/{i}.png" for i in range(1, 5)],
-        )
-
-        assert len(provider._build_embeds("token", content)) == 1
+        provider._upload_blob.assert_not_called()
 
     def test_text_only_post_has_no_embed(self):
-        provider = self._provider_with_blobs()
+        assert self._provider()._build_embed("token", PublishContent(text="nur Text")) is None
 
-        assert provider._build_embeds("token", PublishContent(text="nur Text")) == []
+    def test_video_ignores_further_attachments(self):
+        provider = self._provider()
+        content = PublishContent(post_type=PostType.VIDEO, media_files=["/tmp/clip.mp4", "/tmp/zweit.mp4"])
 
-    def test_video_stays_a_single_embed(self):
-        provider = self._provider_with_blobs()
-        content = PublishContent(
-            post_type=PostType.VIDEO,
-            media_files=["/tmp/clip.mp4", "/tmp/zweit.mp4"],
-        )
+        embed = provider._build_embed("token", content)
 
-        embeds = provider._build_embeds("token", content)
-
-        assert len(embeds) == 1
-        assert embeds[0]["$type"] == "app.bsky.embed.video"
+        assert embed["$type"] == "app.bsky.embed.video"
+        assert provider._upload_blob.call_count == 1
 
 
-class TestPublishPostThread:
-    """publish_post writes a reply chain when the carousel exceeds four slides."""
+class TestPublishPostIsAlwaysOneRecord:
+    """One post, always. The reply chain is gone."""
 
     @staticmethod
     def _provider(records: list[dict]):
         """Provider whose HTTP layer records every createRecord payload."""
         provider = BlueskyProvider()
         provider._upload_blob = MagicMock(side_effect=lambda _token, path: {"$type": "blob", "ref": path})
-
-        counter = {"n": 0}
 
         def fake_request(method, url, **kwargs):
             if url.endswith("com.atproto.server.getSession"):
@@ -296,13 +348,11 @@ class TestPublishPostThread:
                 )
             if url.endswith("com.atproto.repo.createRecord"):
                 records.append(kwargs["json"]["record"])
-                counter["n"] += 1
-                n = counter["n"]
                 return MagicMock(
                     json=MagicMock(
                         return_value={
-                            "uri": f"at://did:plc:abc/app.bsky.feed.post/rkey{n}",
-                            "cid": f"cid{n}",
+                            "uri": "at://did:plc:abc/app.bsky.feed.post/rkey1",
+                            "cid": "cid1",
                         }
                     )
                 )
@@ -312,116 +362,73 @@ class TestPublishPostThread:
         return provider
 
     @staticmethod
-    def _carousel(count=6):
+    def _carousel(tmp_path, anzahl=6) -> PublishContent:
         return PublishContent(
-            text="Sechs Folien, vier passen rein.",
+            text="Sechs Folien, ein Beitrag.",
             post_type=PostType.IMAGE,
-            media_files=[f"/tmp/{i}.png" for i in range(1, count + 1)],
-            media_alt_texts=[f"Folie {i}" for i in range(1, count + 1)],
+            media_files=[_png(tmp_path / f"{i}.png", 1080, 1350) for i in range(1, anzahl + 1)],
+            media_alt_texts=[f"Folie {i}" for i in range(1, anzahl + 1)],
         )
 
-    def test_six_slides_produce_two_records(self):
+    def test_six_slides_produce_exactly_one_record(self, tmp_path):
         records: list[dict] = []
-        provider = self._provider(records)
 
-        provider.publish_post("token", self._carousel())
+        self._provider(records).publish_post("token", self._carousel(tmp_path))
 
-        assert len(records) == 2
-        assert [len(r["embed"]["images"]) for r in records] == [4, 2]
+        assert len(records) == 1
+        assert len(records[0]["embed"]["items"]) == 6
 
-    def test_reply_points_at_root_and_parent(self):
+    def test_no_record_is_a_reply(self, tmp_path):
         records: list[dict] = []
-        provider = self._provider(records)
 
-        provider.publish_post("token", self._carousel())
+        self._provider(records).publish_post("token", self._carousel(tmp_path))
 
-        assert "reply" not in records[0]
-        reply = records[1]["reply"]
-        assert reply["root"] == {"uri": "at://did:plc:abc/app.bsky.feed.post/rkey1", "cid": "cid1"}
-        assert reply["parent"] == {"uri": "at://did:plc:abc/app.bsky.feed.post/rkey1", "cid": "cid1"}
+        assert all("reply" not in record for record in records)
 
-    def test_third_post_replies_to_the_second_but_roots_at_the_first(self):
+    def test_the_caption_stays_on_the_one_post(self, tmp_path):
         records: list[dict] = []
-        provider = self._provider(records)
 
-        provider.publish_post("token", self._carousel(count=9))
+        self._provider(records).publish_post("token", self._carousel(tmp_path))
 
-        assert len(records) == 3
-        assert records[2]["reply"]["root"]["cid"] == "cid1"
-        assert records[2]["reply"]["parent"]["cid"] == "cid2"
+        assert records[0]["text"] == "Sechs Folien, ein Beitrag."
 
-    def test_alt_texts_survive_the_split(self):
+    def test_result_carries_no_thread_metadata(self, tmp_path):
         records: list[dict] = []
-        provider = self._provider(records)
 
-        provider.publish_post("token", self._carousel())
-
-        alle = [img["alt"] for r in records for img in r["embed"]["images"]]
-        assert alle == [f"Folie {i}" for i in range(1, 7)]
-
-    def test_root_text_is_the_caption_and_the_reply_gets_a_short_hint(self):
-        records: list[dict] = []
-        provider = self._provider(records)
-
-        provider.publish_post("token", self._carousel())
-
-        assert records[0]["text"] == "Sechs Folien, vier passen rein."
-        assert records[1]["text"] == "Fortsetzung – Bild 5 bis 6 von 6"
-        assert len(records[1]["text"]) <= provider.max_caption_length
-
-    def test_single_overflow_image_gets_the_singular_wording(self):
-        records: list[dict] = []
-        provider = self._provider(records)
-
-        provider.publish_post("token", self._carousel(count=5))
-
-        assert records[1]["text"] == "Fortsetzung – Bild 5 von 5"
-
-    def test_continuation_text_can_be_overridden(self):
-        records: list[dict] = []
-        provider = self._provider(records)
-        content = self._carousel()
-        content.extra["thread_continuation_text"] = "Weiter geht es ({start}/{total})"
-
-        provider.publish_post("token", content)
-
-        assert records[1]["text"] == "Weiter geht es (5/6)"
-
-    def test_overlong_continuation_text_is_cut_to_the_limit(self):
-        records: list[dict] = []
-        provider = self._provider(records)
-        content = self._carousel()
-        content.extra["thread_continuation_text"] = "ü" * 500
-
-        provider.publish_post("token", content)
-
-        assert len(records[1]["text"]) == provider.max_caption_length
-
-    def test_result_reports_the_root_post_and_the_chain(self):
-        records: list[dict] = []
-        provider = self._provider(records)
-
-        result = provider.publish_post("token", self._carousel())
+        result = self._provider(records).publish_post("token", self._carousel(tmp_path))
 
         assert result.platform_post_id == "at://did:plc:abc/app.bsky.feed.post/rkey1"
         assert result.url == "https://bsky.app/profile/orbitamedia.bsky.social/post/rkey1"
-        assert result.extra["thread"]["expected_posts"] == 2
-        assert result.extra["thread"]["image_count"] == 6
-        assert result.extra["thread"]["incomplete"] is False
-        assert [p["image_count"] for p in result.extra["thread"]["posts"]] == [4, 2]
+        assert "thread" not in result.extra
+        assert "publish_warning" not in result.extra
 
-    def test_four_slides_stay_a_plain_post_without_thread_metadata(self):
+    def test_ten_slides_are_still_one_post(self, tmp_path):
+        records: list[dict] = []
+
+        self._provider(records).publish_post("token", self._carousel(tmp_path, anzahl=MAX_GALLERY_IMAGES))
+
+        assert len(records) == 1
+
+    def test_eleven_slides_fail_before_anything_is_posted(self, tmp_path):
         records: list[dict] = []
         provider = self._provider(records)
 
-        result = provider.publish_post("token", self._carousel(count=4))
+        with pytest.raises(PublishError, match="höchstens 10 Bilder"):
+            provider.publish_post("token", self._carousel(tmp_path, anzahl=MAX_GALLERY_IMAGES + 1))
 
-        assert len(records) == 1
-        assert "thread" not in result.extra
+        assert records == []
+        provider._upload_blob.assert_not_called()
 
-    def test_blobs_are_uploaded_before_the_first_record_is_written(self):
-        # Otherwise half a thread hangs in the timeline that no retry can
-        # repair without posting the whole carousel a second time.
+    def test_the_overflow_error_is_permanent(self, tmp_path):
+        # Retrying sends the same attachments; the fix belongs upstream.
+        provider = self._provider([])
+
+        with pytest.raises(PublishError) as fehler:
+            provider.publish_post("token", self._carousel(tmp_path, anzahl=12))
+
+        assert fehler.value.retryable is False
+
+    def test_blobs_are_uploaded_before_the_record_is_written(self, tmp_path):
         records: list[dict] = []
         provider = self._provider(records)
         reihenfolge: list[str] = []
@@ -432,37 +439,16 @@ class TestPublishPostThread:
         echt = provider._create_post_record
         provider._create_post_record = lambda *a, **kw: (reihenfolge.append("record"), echt(*a, **kw))[1]
 
-        provider.publish_post("token", self._carousel())
+        provider.publish_post("token", self._carousel(tmp_path))
 
         letzter_blob = max(i for i, s in enumerate(reihenfolge) if s.startswith("blob"))
         assert reihenfolge.index("record") > letzter_blob
 
-    def test_failing_reply_keeps_the_root_and_reports_the_gap(self):
-        records: list[dict] = []
-        provider = self._provider(records)
-        echt = provider._create_post_record
-        rufe = {"n": 0}
-
-        def flaky(*args, **kwargs):
-            rufe["n"] += 1
-            if rufe["n"] > 1:
-                raise RuntimeError("PDS weg")
-            return echt(*args, **kwargs)
-
-        provider._create_post_record = flaky
-
-        result = provider.publish_post("token", self._carousel())
-
-        # No exception outwards: the publisher would otherwise retry and post
-        # the whole carousel a second time.
-        assert result.platform_post_id.endswith("rkey1")
-        assert result.extra["thread"]["incomplete"] is True
-        assert "unvollständig" in result.extra["publish_warning"]
-
-    def test_failing_root_still_raises(self):
-        records: list[dict] = []
-        provider = self._provider(records)
+    def test_a_failing_record_raises(self, tmp_path):
+        provider = self._provider([])
         provider._create_post_record = MagicMock(side_effect=RuntimeError("PDS weg"))
 
         with pytest.raises(RuntimeError):
-            provider.publish_post("token", self._carousel())
+            provider.publish_post("token", self._carousel(tmp_path))
+
+

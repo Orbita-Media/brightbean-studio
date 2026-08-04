@@ -81,7 +81,7 @@ class SocialProvider(ABC):
         """OAuth scopes that are ONLY needed for the analytics feature.
 
         These are conditionally excluded from the OAuth init flow when the
-        platform's analytics is disabled in ``AnalyticsPlatformConfig`` — so
+        platform's analytics is disabled in ``AnalyticsPlatformConfig`` – so
         a self-hoster whose Meta / TikTok app hasn't yet been approved for
         the analytics scope can still connect accounts for publishing.
 
@@ -110,17 +110,14 @@ class SocialProvider(ABC):
     def max_media_per_post(self) -> int | None:
         """Most media items the platform accepts on ONE post, or None if unbounded.
 
-        Declared so the publisher can warn *before* a post goes out that some
-        attachments will not make it. Silently truncating a six-slide carousel
-        to the platform maximum is the failure mode this exists to prevent: the
-        closing slide is usually the one carrying the call to action.
+        The publisher refuses to send a post whose attachments exceed this
+        number (``PublishEngine._block_on_dropped_media``). Silently truncating
+        a six-slide carousel is the failure mode this exists to prevent: the
+        closing slide is the one carrying the book. Splitting the overflow over
+        further posts is not an option either – a post has to stand on its own.
+        The fitting version is produced per channel, before publishing.
         """
         return None
-
-    # True when the provider distributes media beyond ``max_media_per_post``
-    # over additional posts (Bluesky's reply chain) instead of dropping the
-    # overflow. Providers that set this need no publisher warning.
-    chains_overflow_media: bool = False
 
     @property
     def rate_limits(self) -> RateLimitConfig:

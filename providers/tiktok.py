@@ -55,6 +55,13 @@ PERMANENT_PUBLISH_ERROR_CODES = frozenset(
     }
 )
 
+# Photo Post reference: "An array containing up to 35 photo content URLs."
+# Title 90 and description 4000 UTF-16 runes, both photo-specific.
+# https://developers.tiktok.com/doc/content-posting-api-reference-photo-post
+MAX_PHOTO_IMAGES = 35
+MAX_PHOTO_TITLE_LENGTH = 90
+MAX_PHOTO_DESCRIPTION_LENGTH = 4000
+
 UNAUDITED_CLIENT_HINT = (
     "The TikTok app has not passed TikTok's content-posting audit yet. "
     "Until TikTok approves the audit (developer portal → Content Posting API "
@@ -119,21 +126,23 @@ class TikTokProvider(SocialProvider):
 
     @property
     def supported_post_types(self) -> list[PostType]:
-        return [PostType.VIDEO]
+        return [PostType.VIDEO, PostType.IMAGE, PostType.CAROUSEL]
 
     @property
     def supported_media_types(self) -> list[MediaType]:
-        return [MediaType.MP4, MediaType.MOV]
+        return [MediaType.MP4, MediaType.MOV, MediaType.JPEG, MediaType.WEBP]
 
     # /v2/user/info/ returns lifetime cumulative counters with no date filter.
-    # See ``get_account_metrics`` below — the sync layer uses this flag to
+    # See ``get_account_metrics`` below – the sync layer uses this flag to
     # skip backfilling identical values into historical date rows.
     account_metrics_supports_date_range: bool = False
 
     @property
     def max_media_per_post(self) -> int | None:
-        # One video per post.
-        return 1
+        # One video per post, but up to 35 photos: TikTok's Photo Mode is a
+        # carousel and it is the strongest format on BookTok. Until 05.08.2026
+        # this provider only knew videos.
+        return MAX_PHOTO_IMAGES
 
     @property
     def required_scopes(self) -> list[str]:
@@ -276,9 +285,10 @@ class TikTokProvider(SocialProvider):
         return resp.json().get("data", {}) or {}
 
     def publish_post(self, access_token: str, content: PublishContent) -> PublishResult:
-        if content.post_type != PostType.VIDEO:
+        is_photo = content.post_type in (PostType.IMAGE, PostType.CAROUSEL)
+        if content.post_type != PostType.VIDEO and not is_photo:
             raise PublishError(
-                "TikTok only supports VIDEO posts",
+                "TikTok only supports VIDEO and PHOTO posts",
                 platform=self.platform_name,
             )
 
@@ -297,6 +307,9 @@ class TikTokProvider(SocialProvider):
             content,
             privacy_level_is_explicit=privacy_level_is_explicit,
         )
+
+        if is_photo:
+            return self._publish_photo_post(access_token, content, privacy_level)
 
         # Prefer FILE_UPLOAD: PULL_FROM_URL requires the source domain to be
         # verified with TikTok, which presigned S3/R2 URLs can't satisfy.
@@ -320,7 +333,7 @@ class TikTokProvider(SocialProvider):
     ) -> str:
         """Validate privacy level and video duration against creator_info.
 
-        A creator_info failure is logged and ignored — a transient outage of
+        A creator_info failure is logged and ignored – a transient outage of
         that endpoint must not block publishing; the video init call surfaces
         any real error and :meth:`_raise_classified_publish_error` handles it.
         """
@@ -411,6 +424,89 @@ class TikTokProvider(SocialProvider):
             raw_response=exc.raw_response,
             retryable=False,
         ) from exc
+
+    def _publish_photo_post(
+        self,
+        access_token: str,
+        content: PublishContent,
+        privacy_level: str,
+    ) -> PublishResult:
+        """Publish a photo post (TikTok's carousel, called Photo Mode).
+
+        One request to ``/post/publish/content/init/`` with ``media_type:
+        PHOTO``. Photos have no file-upload path: ``source`` may only be
+        ``PULL_FROM_URL``, so the images must be publicly reachable – TikTok
+        fetches them itself.
+
+        That has a consequence worth knowing before the first photo post: unlike
+        videos, photos cannot dodge TikTok's domain verification. The host
+        serving the images must be verified in the developer portal, otherwise
+        the init call answers ``url_ownership_unverified`` (already listed among
+        the permanent error codes, so it fails fast instead of retrying).
+        """
+        urls = content.media_urls
+        if not urls:
+            raise PublishError(
+                "TikTok holt Fotos nur über öffentliche URLs (PULL_FROM_URL); für einen "
+                "Foto-Beitrag werden media_urls gebraucht, keine Dateien.",
+                platform=self.platform_name,
+                retryable=False,
+            )
+        if len(urls) > MAX_PHOTO_IMAGES:
+            raise PublishError(
+                f"TikTok zeigt höchstens {MAX_PHOTO_IMAGES} Bilder je Beitrag, dieser Beitrag "
+                f"bringt {len(urls)} mit.",
+                platform=self.platform_name,
+                retryable=False,
+            )
+
+        # Photo posts have their own two text fields with their own limits:
+        # title 90, description 4000 (UTF-16 runes). The video path only knows
+        # ``title``, so the caption would be cut at 90 characters if it went
+        # there – on TikTok the caption IS the description.
+        post_info: dict[str, str | bool] = {"privacy_level": privacy_level}
+        if content.title:
+            post_info["title"] = content.title[:MAX_PHOTO_TITLE_LENGTH]
+        beschreibung = content.text or content.description or ""
+        if beschreibung:
+            post_info["description"] = beschreibung[:MAX_PHOTO_DESCRIPTION_LENGTH]
+        for field in OPTIONAL_POST_INFO_FIELDS:
+            if field in content.extra:
+                post_info[field] = bool(content.extra[field])
+
+        cover_index = content.extra.get("photo_cover_index", 0)
+        with contextlib.suppress(TypeError, ValueError):
+            cover_index = int(cover_index)
+        if not isinstance(cover_index, int) or not 0 <= cover_index < len(urls):
+            cover_index = 0
+
+        payload = {
+            "post_info": post_info,
+            "source_info": {
+                "source": "PULL_FROM_URL",
+                "photo_cover_index": cover_index,
+                "photo_images": list(urls),
+            },
+            "post_mode": content.extra.get("post_mode", "DIRECT_POST"),
+            "media_type": "PHOTO",
+        }
+
+        try:
+            resp = self._request(
+                "POST",
+                f"{API_BASE}/post/publish/content/init/",
+                access_token=access_token,
+                json=payload,
+            )
+        except APIError as exc:
+            self._raise_classified_publish_error(exc)
+
+        body = resp.json()
+        publish_id = body.get("data", {}).get("publish_id", "")
+        return PublishResult(
+            platform_post_id=publish_id,
+            extra=body.get("data", {}),
+        )
 
     def _publish_pull_from_url(
         self,
@@ -503,7 +599,7 @@ class TikTokProvider(SocialProvider):
 
         Returns the ``data`` block of ``/v2/post/publish/status/fetch/``.
         Once ``status == 'PUBLISH_COMPLETE'``, the payload contains
-        ``publicaly_available_post_id`` — TikTok's official video ID list
+        ``publicaly_available_post_id`` – TikTok's official video ID list
         (the typo in the field name is part of TikTok's API contract).
         """
         resp = self._request(
@@ -518,8 +614,8 @@ class TikTokProvider(SocialProvider):
         """Resolve a stored ``platform_post_id`` to a TikTok video ID.
 
         :meth:`publish_post` stores the Content Posting API ``publish_id``
-        (``v_pub_url~…``, ``v_pub_file~…``, or — if the direct-post audit
-        downgrades the request — ``v_inbox_url~…`` / ``v_inbox_file~…``)
+        (``v_pub_url~…``, ``v_pub_file~…``, or – if the direct-post audit
+        downgrades the request – ``v_inbox_url~…`` / ``v_inbox_file~…``)
         as ``platform_post_id``. The analytics endpoint
         ``/v2/video/query/`` only accepts the final 19-digit numeric video
         ID, so anything that isn't already a bare numeric is treated as a
@@ -544,7 +640,7 @@ class TikTokProvider(SocialProvider):
 
         status_data = self._fetch_publish_status(access_token, post_id)
         if status_data.get("status") != "PUBLISH_COMPLETE":
-            # PROCESSING_UPLOAD / SEND_TO_USER_INBOX / FAILED / EXPIRED —
+            # PROCESSING_UPLOAD / SEND_TO_USER_INBOX / FAILED / EXPIRED –
             # no video ID to query (yet, or ever). The sync layer will keep
             # polling until the post falls out of the 90-day cadence window.
             return None
@@ -558,7 +654,7 @@ class TikTokProvider(SocialProvider):
         """Per-video stats from the ``/v2/video/query/`` endpoint.
 
         Requires the ``video.list`` scope. TikTok returns lifetime totals
-        (view/like/comment/share counts) — the sync layer snapshots them
+        (view/like/comment/share counts) – the sync layer snapshots them
         per day, so the chart series is built from successive captures.
 
         ``post_id`` may be either a TikTok video ID or a Content Posting
@@ -572,7 +668,7 @@ class TikTokProvider(SocialProvider):
         """
         video_id = self._resolve_video_id(access_token, post_id)
         if not video_id:
-            # Publish still processing or failed — nothing to snapshot yet.
+            # Publish still processing or failed – nothing to snapshot yet.
             return PostMetrics()
 
         resp = self._request(
@@ -592,7 +688,7 @@ class TikTokProvider(SocialProvider):
         # ``"engagement"`` metric is a derived rate computed by
         # :func:`apps.analytics.derive.engagement_rate` from the raw parts
         # (likes/comments/shares + a denom), so populating the dataclass
-        # field would be dead computation — the snapshot mapper has no
+        # field would be dead computation – the snapshot mapper has no
         # mapping for it.
         return PostMetrics(
             video_views=int(video.get("view_count", 0) or 0),

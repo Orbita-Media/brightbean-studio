@@ -155,11 +155,13 @@ Beschreibung überein, es gibt keine Verschiebung um eine Position.
 
 Beide hier festgehaltenen offenen Punkte sind behoben:
 
-- **Bluesky zeigt höchstens vier Bilder.** Die Restfolien werden jetzt als
-  Antwort auf den eigenen Beitrag angehängt, die Alternativtexte wandern
-  positionstreu mit. Ausserdem deklariert jeder Kanal seine Bildgrenze und
-  der Publisher warnt vor dem Veröffentlichen, wenn Anhänge nicht sichtbar
-  würden. Siehe `docs/BLUESKY-ANTWORT-KETTE.md`.
+- **Bluesky zeigt höchstens vier Bilder.** Behoben, aber anders als hier
+  ursprünglich beschrieben: die Antwort-Kette vom 01.08.2026 ist am 05.08.2026
+  wieder ausgebaut worden. Sechs Folien gehen jetzt als **ein** Beitrag über
+  `app.bsky.embed.gallery` raus (bis zehn Bilder), die Alternativtexte wandern
+  positionstreu mit. Jeder Kanal deklariert seine Bildgrenze, und wer darüber
+  liegt, wird vom Publisher abgewiesen statt gekürzt veröffentlicht. Siehe
+  `docs/PLATTFORM-GRENZEN.md`.
 - **Alternativtexte sind nicht pflegbar.** Der Detailbereich der Mediathek
   hat jetzt ein Feld dafür, direkt über den Schlagwörtern. Der Text hängt am
   Medium, eine Korrektur wirkt deshalb für jeden Beitrag, der das Bild

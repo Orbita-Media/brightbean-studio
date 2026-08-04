@@ -8,7 +8,7 @@ This module implements the core publish loop:
 5. Post first comment after 2-minute delay.
 6. Update per-platform status and log results.
 
-Status is owned entirely by ``PlatformPost`` — the parent ``Post`` exposes an
+Status is owned entirely by ``PlatformPost`` – the parent ``Post`` exposes an
 aggregate ``status`` property derived from its children (see
 ``apps.composer.status``).
 """
@@ -141,7 +141,7 @@ class PublishEngine:
             )
             .annotate(effective_at=Coalesce("scheduled_at", "post__scheduled_at"))
             .filter(effective_at__lte=now)
-            # Never publish a post that has any platform on hold — a client hold
+            # Never publish a post that has any platform on hold – a client hold
             # parks the whole post out of the publish path even if a sibling
             # platform is already scheduled.
             .exclude(post__platform_posts__status=PlatformPost.Status.ON_HOLD)
@@ -153,7 +153,7 @@ class PublishEngine:
         """Publish a group of due PlatformPosts belonging to the same Post.
 
         Grouping is purely an operational optimization (shared media download,
-        shared credential resolution). Status lives on the children — the
+        shared credential resolution). Status lives on the children – the
         parent Post is not touched.
         """
         # Lock and transition each due child from SCHEDULED → PUBLISHING.
@@ -492,7 +492,7 @@ class PublishEngine:
                 post_type.value,
                 len(media_files),
             )
-            self._warn_on_dropped_media(provider, platform_post, len(media_files))
+            self._block_on_dropped_media(provider, platform_post, len(media_files))
             result = provider.publish_post(access_token, content)
             return {
                 "success": True,
@@ -542,27 +542,39 @@ class PublishEngine:
         )
 
     @staticmethod
-    def _warn_on_dropped_media(provider, platform_post, media_count: int) -> None:
-        """Log before publishing when the channel cannot show every attachment.
+    def _block_on_dropped_media(provider, platform_post, media_count: int) -> None:
+        """Refuse the post when the channel cannot show every attachment.
 
         Bluesky lost slides 5 and 6 of every six-slide carousel for weeks
         without a single line in the log, and slide 6 is the one carrying the
-        book. Providers that spread the overflow over further posts
-        (``chains_overflow_media``) are exempt; everyone else gets named here,
-        so the same gap can never go unnoticed on Instagram or Pinterest.
+        book. The first answer to that was a warning; it was not enough,
+        because a warning still publishes an amputated post. The second was a
+        reply chain on Bluesky; that was worse, because a post has to stand on
+        its own instead of continuing somewhere else.
+
+        So it fails here. Not retryable – the same attachments would fail the
+        same way. What belongs upstream is a version of this post for THIS
+        channel, condensed to the number of slides the platform shows.
         """
         limit = provider.max_media_per_post
         # ``isinstance`` rather than ``is not None``: a provider that does not
         # declare a real number must not be able to break a publish here.
-        if not isinstance(limit, int) or media_count <= limit or provider.chains_overflow_media:
+        if not isinstance(limit, int) or media_count <= limit:
             return
-        logger.warning(
-            "%s shows at most %d of %d attachments on PlatformPost %s, %d will not be published",
+        logger.error(
+            "%s shows at most %d of %d attachments on PlatformPost %s, publish refused",
             provider.platform_name,
             limit,
             media_count,
             platform_post.id,
-            media_count - limit,
+        )
+        raise PublishError(
+            f"{provider.platform_name} zeigt höchstens {limit} Anhänge je Beitrag, dieser "
+            f"Beitrag bringt {media_count} mit. Es wird weder gekürzt noch auf mehrere "
+            f"Beiträge verteilt: für diesen Kanal wird eine eigene, in sich geschlossene "
+            f"Fassung mit höchstens {limit} Folien gebraucht.",
+            platform=provider.platform_name,
+            retryable=False,
         )
 
     @staticmethod
@@ -592,12 +604,21 @@ class PublishEngine:
         if platform == "pinterest":
             return PostType.PIN
 
-        # 3. Multi-media → CAROUSEL for Instagram/Threads
+        # 3. Multi-media → CAROUSEL where the platform has a carousel format.
+        # Bluesky and LinkedIn accept CAROUSEL as well but derive the right
+        # embed from the attachment count, so they stay on IMAGE here.
         if media_count > 1 and platform in (
             "instagram",
             "instagram_login",
             "threads",
         ):
+            return PostType.CAROUSEL
+
+        # TikTok joined on 05.08.2026 (Photo Mode, up to 35 images) – but only
+        # for images. Its photo and video endpoints are different, and a set
+        # led by a video is a video post with stray attachments, not a
+        # carousel.
+        if media_count > 1 and platform == "tiktok" and first_media_type == "image":
             return PostType.CAROUSEL
 
         # 4. Fallback based on first media type

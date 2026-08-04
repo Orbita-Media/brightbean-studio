@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from providers.exceptions import APIError, PublishError
-from providers.tiktok import TikTokProvider
+from providers.tiktok import MAX_PHOTO_IMAGES, TikTokProvider
 from providers.types import PostType, PublishContent
 
 
@@ -44,7 +44,7 @@ class TestGetAuthUrl:
         # TikTok quirk: code_challenge is the HEX sha256 digest, not base64url.
         expected = hashlib.sha256(b"verifier-xyz").hexdigest()
         assert query["code_challenge"] == [expected]
-        assert len(expected) == 64  # hex digest length — guards against base64url (~43 chars)
+        assert len(expected) == 64  # hex digest length – guards against base64url (~43 chars)
         assert query["code_challenge_method"] == ["S256"]
 
     def test_omits_pkce_when_no_verifier(self):
@@ -81,7 +81,7 @@ class TestExchangeCode:
 class TestGetPostMetrics:
     @patch.object(TikTokProvider, "_request")
     def test_request_shape_with_video_id(self, mock_request):
-        # A bare numeric ID is treated as a TikTok video_id — no publish-status
+        # A bare numeric ID is treated as a TikTok video_id – no publish-status
         # round trip, single POST to /v2/video/query/.
         mock_request.return_value = _make_response({"data": {"videos": []}})
 
@@ -122,7 +122,7 @@ class TestGetPostMetrics:
         assert metrics.likes == 80
         assert metrics.comments == 12
         assert metrics.shares == 5
-        # ``engagements`` is intentionally NOT populated — the catalog's
+        # ``engagements`` is intentionally NOT populated – the catalog's
         # ``engagement`` rate is derived from raw parts by
         # ``apps.analytics.derive.engagement_rate``; populating the
         # dataclass field would be dead computation (no snapshot mapping).
@@ -162,7 +162,7 @@ class TestGetPostMetrics:
     def test_publish_id_resolves_to_video_id_before_query(self, mock_request):
         # ``platform_post_id`` stored by ``publish_post`` is a publish_id
         # (``v_pub_…``), not a video_id. The provider must resolve via
-        # /v2/post/publish/status/fetch/ before the analytics call —
+        # /v2/post/publish/status/fetch/ before the analytics call –
         # ``/v2/video/query/`` only accepts video_ids.
         responses = [
             _make_response(
@@ -207,13 +207,13 @@ class TestGetPostMetrics:
     def test_publish_id_in_progress_returns_empty(self, mock_request):
         # While the publish is still processing, there's no video_id yet.
         # Return empty metrics so the sync layer treats it as "no data" and
-        # tries again on the next cycle — no /v2/video/query/ call.
+        # tries again on the next cycle – no /v2/video/query/ call.
         mock_request.return_value = _make_response({"data": {"status": "PROCESSING_UPLOAD"}})
 
         provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
         metrics = provider.get_post_metrics("token", "v_pub_url~pending")
 
-        # Only the status fetch — never reaches the analytics endpoint.
+        # Only the status fetch – never reaches the analytics endpoint.
         assert mock_request.call_count == 1
         assert mock_request.call_args.args[1] == ("https://open.tiktokapis.com/v2/post/publish/status/fetch/")
         assert metrics.video_views == 0
@@ -358,6 +358,7 @@ class TestAccountMetricsPersistence:
 
 CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_info/query/"
 VIDEO_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
+PHOTO_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/content/init/"
 
 
 def _video_content(**extra) -> PublishContent:
@@ -405,7 +406,7 @@ class TestPublishPost:
 
     @patch.object(TikTokProvider, "_request")
     def test_unaudited_options_block_explicit_public_post_before_init(self, mock_request):
-        # Unaudited apps only get SELF_ONLY back — an explicitly public post
+        # Unaudited apps only get SELF_ONLY back – an explicitly public post
         # must fail fast with retryable=False, without ever hitting video/init.
         mock_request.return_value = _creator_info_response(["SELF_ONLY"])
 
@@ -610,3 +611,143 @@ class TestPublishPost:
 
         assert excinfo.value.retryable is False
         mock_request.assert_not_called()
+
+
+class TestPublishPhotoPost:
+    """TikTok's Photo Mode: a carousel of up to 35 images in one post.
+
+    The provider only knew videos until 05.08.2026 and declared a limit of 1 –
+    a number from our own code, not from TikTok. Sources in
+    docs/PLATTFORM-GRENZEN.md.
+    """
+
+    @staticmethod
+    def _photo_content(anzahl=6, **extra) -> PublishContent:
+        return PublishContent(
+            text="Sechs Folien, ein Beitrag.",
+            media_urls=[f"https://cdn.example.com/{i}.jpg" for i in range(1, anzahl + 1)],
+            post_type=PostType.CAROUSEL,
+            extra=extra,
+        )
+
+    @patch.object(TikTokProvider, "_request")
+    def test_six_slides_become_one_photo_post(self, mock_request):
+        mock_request.side_effect = [
+            _creator_info_response(["PUBLIC_TO_EVERYONE"]),
+            _make_response({"data": {"publish_id": "p_pub~1"}}),
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        result = provider.publish_post("tok", self._photo_content())
+
+        urls = [call.args[1] for call in mock_request.call_args_list]
+        assert urls == [CREATOR_INFO_URL, PHOTO_INIT_URL]
+        payload = mock_request.call_args_list[1].kwargs["json"]
+        assert payload["media_type"] == "PHOTO"
+        assert payload["post_mode"] == "DIRECT_POST"
+        assert len(payload["source_info"]["photo_images"]) == 6
+        assert result.platform_post_id == "p_pub~1"
+
+    @patch.object(TikTokProvider, "_request")
+    def test_photos_are_pulled_from_url_because_there_is_no_upload(self, mock_request):
+        mock_request.side_effect = [
+            _creator_info_response(["PUBLIC_TO_EVERYONE"]),
+            _make_response({"data": {"publish_id": "p_pub~1"}}),
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        provider.publish_post("tok", self._photo_content())
+
+        assert mock_request.call_args_list[1].kwargs["json"]["source_info"]["source"] == "PULL_FROM_URL"
+
+    @patch.object(TikTokProvider, "_request")
+    def test_the_caption_becomes_the_description_not_the_title(self, mock_request):
+        # The title field caps at 90 characters; on TikTok the caption IS the
+        # description (4000). Putting it in the title would cut it short.
+        mock_request.side_effect = [
+            _creator_info_response(["PUBLIC_TO_EVERYONE"]),
+            _make_response({"data": {"publish_id": "p_pub~1"}}),
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        content = self._photo_content()
+        content.text = "L" * 300
+        provider.publish_post("tok", content)
+
+        post_info = mock_request.call_args_list[1].kwargs["json"]["post_info"]
+        assert len(post_info["description"]) == 300
+        assert "title" not in post_info
+
+    @patch.object(TikTokProvider, "_request")
+    def test_the_first_slide_is_the_cover(self, mock_request):
+        mock_request.side_effect = [
+            _creator_info_response(["PUBLIC_TO_EVERYONE"]),
+            _make_response({"data": {"publish_id": "p_pub~1"}}),
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        provider.publish_post("tok", self._photo_content())
+
+        assert mock_request.call_args_list[1].kwargs["json"]["source_info"]["photo_cover_index"] == 0
+
+    @patch.object(TikTokProvider, "_request")
+    def test_an_out_of_range_cover_index_falls_back_to_the_first_slide(self, mock_request):
+        mock_request.side_effect = [
+            _creator_info_response(["PUBLIC_TO_EVERYONE"]),
+            _make_response({"data": {"publish_id": "p_pub~1"}}),
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        provider.publish_post("tok", self._photo_content(photo_cover_index=99))
+
+        assert mock_request.call_args_list[1].kwargs["json"]["source_info"]["photo_cover_index"] == 0
+
+    @patch.object(TikTokProvider, "_request")
+    def test_a_photo_post_without_urls_fails(self, mock_request):
+        mock_request.return_value = _creator_info_response(["PUBLIC_TO_EVERYONE"])
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        content = self._photo_content()
+        content.media_urls = []
+        content.media_files = ["/tmp/1.jpg"]
+
+        with pytest.raises(PublishError) as excinfo:
+            provider.publish_post("tok", content)
+
+        assert excinfo.value.retryable is False
+        assert "PULL_FROM_URL" in str(excinfo.value)
+
+    @patch.object(TikTokProvider, "_request")
+    def test_more_than_thirtyfive_images_fail(self, mock_request):
+        mock_request.return_value = _creator_info_response(["PUBLIC_TO_EVERYONE"])
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+
+        with pytest.raises(PublishError, match="höchstens 35 Bilder"):
+            provider.publish_post("tok", self._photo_content(anzahl=MAX_PHOTO_IMAGES + 1))
+
+    @patch.object(TikTokProvider, "_request")
+    def test_a_single_image_post_also_takes_the_photo_road(self, mock_request):
+        mock_request.side_effect = [
+            _creator_info_response(["PUBLIC_TO_EVERYONE"]),
+            _make_response({"data": {"publish_id": "p_pub~1"}}),
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        content = self._photo_content(anzahl=1)
+        content.post_type = PostType.IMAGE
+        provider.publish_post("tok", content)
+
+        assert mock_request.call_args_list[1].args[1] == PHOTO_INIT_URL
+
+    @patch.object(TikTokProvider, "_request")
+    def test_the_privacy_level_of_an_unaudited_app_still_applies(self, mock_request):
+        mock_request.side_effect = [
+            _creator_info_response(["SELF_ONLY"]),
+            _make_response({"data": {"publish_id": "p_pub~1"}}),
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        provider.publish_post("tok", self._photo_content())
+
+        assert mock_request.call_args_list[1].kwargs["json"]["post_info"]["privacy_level"] == "SELF_ONLY"
