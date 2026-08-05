@@ -12,7 +12,7 @@ three facts that were easy to get wrong while reading the docs:
 """
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -271,6 +271,53 @@ def test_withdrawn_track_falls_back_to_publishing_without_sound(caplog):
     assert "audio_configuration" not in retry_payload
     assert retry_payload["video_url"] == "https://cdn.example.com/reel.mp4"
     assert "retrying without sound" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Live check command
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_audio_check_command_says_what_is_missing_without_a_connected_account():
+    """The live lookup needs a Facebook-Login account. Without one the command
+    must say so plainly instead of pretending the catalogue is empty."""
+    from django.core.management import call_command
+    from django.core.management.base import CommandError
+
+    with pytest.raises(CommandError, match="No connected Instagram account"):
+        call_command("instagram_audio_check")
+
+
+@pytest.mark.django_db
+def test_audio_check_command_prints_tracks(capsys):
+    from django.core.management import call_command
+
+    from apps.organizations.models import Organization
+    from apps.social_accounts.models import SocialAccount
+    from apps.workspaces.models import Workspace
+
+    org = Organization.objects.create(name="Audio Org")
+    workspace = Workspace.objects.create(organization=org, name="Audio WS")
+    SocialAccount.objects.create(
+        workspace=workspace,
+        platform="instagram",
+        account_platform_id="17841400000000000",
+        account_name="Orbita Media",
+        connection_status=SocialAccount.ConnectionStatus.CONNECTED,
+        oauth_access_token="page-token",
+    )
+
+    provider = MagicMock()
+    provider.list_audio.return_value = [
+        {"id": "42", "title": "Sommerregen", "artist": "Komiku", "duration_ms": 21000, "cover_url": "", "raw": {}}
+    ]
+    with patch("apps.analytics.tasks._resolve_provider", return_value=provider):
+        call_command("instagram_audio_check")
+
+    out = capsys.readouterr().out
+    assert "Sommerregen" in out
+    assert "42" in out
 
 
 def test_container_failure_without_audio_still_raises():
