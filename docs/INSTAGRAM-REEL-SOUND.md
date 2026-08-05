@@ -121,6 +121,9 @@ des Beitrags.
 | Einheitstests | 25 neue Tests (Provider, Composer, Agent-API), Suite 1281 → 1317 grün |
 | Endpunkt existiert | belegt: `GET /v25.0/ig_audio` ohne Token antwortet `OAuthException 190` (Authentifizierung fehlt), ein erfundener Pfad dagegen `GraphMethodException 100/33` |
 | Abruf mit App-Token | schlägt fehl (`OAuthException 190`) – die Audio API verlangt ein Nutzer-Token, ein App-Token genügt nicht |
+| Composer im Browser | durchgespielt auf einer lokalen Instanz mit angelegtem Instagram-Kanal: Panel erscheint erst mit angehängtem Video, Titel wählbar, Voreinstellungen schalten 25/100 gegen 100/0, `Save Draft` **und** Autosave schreiben `platform_extra` korrekt, Neuladen zeigt den Titel wieder an; Console ohne Fehler |
+| Fehlerpfad im Browser | mit ungültigem Token liefert der Endpunkt `available: false` und das Panel zeigt „Instagram did not return any audio" – kein Abbruch, keine Ausnahme |
+| Darstellung | 1280×900, 390×844 und 360×780 geprüft, gemessener horizontaler Overflow jeweils keiner (`scrollWidth == clientWidth`); überlange Titel werden abgeschnitten statt zu sprengen |
 | Echter Katalog-Abruf | **offen**, weil kein Instagram-Konto verbunden ist (Stand 05.08.2026 hat der Verteiler genau zwei Kanäle: Bluesky und YouTube) |
 
 Der echte Abruf ist vorbereitet und nicht erfunden: sobald ein Konto verbunden
