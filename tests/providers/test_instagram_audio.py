@@ -159,9 +159,7 @@ def test_build_audio_configuration_defaults_keep_the_voice_in_front():
 
 
 def test_build_audio_configuration_clamps_and_survives_junk():
-    config = build_audio_configuration(
-        {"audio_id": "1", "audio_volume": 250, "video_volume": -30}
-    )
+    config = build_audio_configuration({"audio_id": "1", "audio_volume": 250, "video_volume": -30})
     assert config["audio_volume"] == 100
     assert config["video_volume"] == 0
 

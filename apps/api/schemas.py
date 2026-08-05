@@ -108,12 +108,57 @@ class AccountsListResponse(Schema):
     accounts: list[AccountSummary]
 
 
+class AudioTrack(Schema):
+    id: str
+    title: str = ""
+    artist: str = ""
+    duration_ms: int | None = None
+    cover_url: str = ""
+
+
+class InstagramAudioResponse(Schema):
+    """Result of an Instagram audio lookup.
+
+    ``available=false`` is a normal answer, not an error: the connection may
+    run through Instagram Login (which can publish but not pick sound), the
+    token may be stale, or Meta may simply return nothing. A sound is an
+    optional extra, so the caller carries on without one.
+    """
+
+    available: bool
+    trending: bool = Field(False, description="True when this is Meta's trending list (no search query).")
+    error: str = ""
+    tracks: list[AudioTrack] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # /posts — write
 # ---------------------------------------------------------------------------
 
 
 PostAction = Literal["draft", "schedule"]
+
+
+class InstagramAudioIn(Schema):
+    """A platform sound to attach to an Instagram reel.
+
+    Instagram is the only channel whose API can attach a sound at all, and
+    only through a Facebook-Login connection. Look the ``audio_id`` up first
+    via ``GET /api/v1/accounts/{id}/instagram-audio`` (no query = Meta's
+    trending list); the catalogue open to third parties is a subset of the
+    app's and it moves, so a track can disappear between lookup and publish.
+    In that case the reel is published without sound rather than failing.
+
+    The volumes are independent, which is the whole point: ``video_volume``
+    keeps the file's own audio (our narrator) audible underneath the platform
+    sound. Defaults 25 / 100 put the voice in front. A reel without narration
+    is the inverse case, 100 / 0, which also mutes an embedded music bed so
+    two pieces of music never play at once.
+    """
+
+    audio_id: str = Field(..., max_length=64, description="ig-audio-id from the audio lookup.")
+    audio_volume: int = Field(25, ge=0, le=100, description="Platform sound level. 0 mutes it.")
+    video_volume: int = Field(100, ge=0, le=100, description="The uploaded file's own audio. 0 mutes it.")
 
 
 class PlatformOverride(Schema):
@@ -136,6 +181,13 @@ class PlatformOverride(Schema):
     title: str | None = Field(None, max_length=255)
     caption: str | None = Field(None, max_length=10_000)
     first_comment: str | None = Field(None, max_length=10_000)
+    instagram_audio: InstagramAudioIn | None = Field(
+        None,
+        description=(
+            "Instagram only: attach a platform sound to the reel. Ignored on every "
+            "other platform, where the sound has to be inside the uploaded file."
+        ),
+    )
 
 
 class CreatePostRequest(Schema):

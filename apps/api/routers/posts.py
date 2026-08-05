@@ -177,11 +177,29 @@ def create(request, payload: CreatePostRequest):
                     f"social_account_id ({payload.social_account_id}); got {ov.social_account_id}."
                 ),
             )
-        platform_overrides[ov.social_account_id] = {
+        override: dict = {
             "title": ov.title,
             "caption": ov.caption,
             "first_comment": ov.first_comment,
         }
+        if ov.instagram_audio is not None:
+            # A platform sound is an Instagram-only extra. Accepting it for
+            # another platform would create a setting that quietly does
+            # nothing at publish time, so it is refused here instead.
+            if social_account.platform != "instagram":
+                raise HttpError(
+                    422,
+                    (
+                        "instagram_audio is only valid for Instagram accounts; "
+                        f"this account is on {social_account.platform}."
+                    ),
+                )
+            override["platform_extra"] = {
+                "audio_id": ov.instagram_audio.audio_id,
+                "audio_volume": ov.instagram_audio.audio_volume,
+                "video_volume": ov.instagram_audio.video_volume,
+            }
+        platform_overrides[ov.social_account_id] = override
 
     # ---- Atomic claim-first idempotency. Three early-out branches
     # before we do *any* mutating work, so concurrent identical retries

@@ -84,7 +84,7 @@ def create_post(
     proposed_publish_at: dt.datetime | None = None,
     author=None,
     status: str = "draft",
-    platform_overrides: dict[Any, dict[str, str | None]] | None = None,
+    platform_overrides: dict[Any, dict[str, Any]] | None = None,
 ):
     """Create a ``Post`` + one ``PlatformPost`` for ``social_account``.
 
@@ -113,6 +113,10 @@ def create_post(
     * Media assets are attached in order by their position in
       ``media_asset_ids``. They must already live in the workspace's
       media library.
+    * ``platform_overrides[account_id]`` holds the per-platform values:
+      the three ``platform_specific_*`` strings plus an optional
+      ``platform_extra`` dict for platform-only settings such as the
+      Instagram reel sound.
 
     Returns the persisted ``Post`` with one ``PlatformPost`` child.
     """
@@ -200,6 +204,10 @@ def create_post(
             platform_specific_title=override.get("title"),
             platform_specific_caption=override.get("caption"),
             platform_specific_first_comment=override.get("first_comment"),
+            # Per-platform metadata (e.g. the Instagram reel sound). The
+            # publisher merges it into PublishContent.extra, which is how
+            # every platform-specific setting reaches its provider.
+            platform_extra=override.get("platform_extra") or {},
         )
         for position, (_mid, u) in enumerate(resolved):
             # ``u`` is validated non-None and present in ``asset_map`` above

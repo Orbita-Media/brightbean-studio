@@ -85,15 +85,18 @@ class InstagramAudioEndpointTests(InstagramAudioTestsBase):
         data = response.json()
         self.assertTrue(data["available"])
         self.assertTrue(data["trending"])
-        self.assertEqual(data["tracks"], [
-            {
-                "id": "587784541076604",
-                "title": "Sommerregen",
-                "artist": "Komiku",
-                "duration_ms": 21000,
-                "cover_url": "",
-            }
-        ])
+        self.assertEqual(
+            data["tracks"],
+            [
+                {
+                    "id": "587784541076604",
+                    "title": "Sommerregen",
+                    "artist": "Komiku",
+                    "duration_ms": 21000,
+                    "cover_url": "",
+                }
+            ],
+        )
         provider.list_audio.assert_called_once()
         kwargs = provider.list_audio.call_args.kwargs
         self.assertEqual(kwargs["search_query"], "")

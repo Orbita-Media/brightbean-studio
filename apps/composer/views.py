@@ -159,12 +159,8 @@ def _instagram_audio_extra(request, acc_id, current_extra):
         return extra
 
     extra["audio_id"] = audio_id
-    extra["audio_volume"] = clamp_volume(
-        request.POST.get(f"ig_audio_volume_{acc_id}", ""), DEFAULT_AUDIO_VOLUME
-    )
-    extra["video_volume"] = clamp_volume(
-        request.POST.get(f"ig_video_volume_{acc_id}", ""), DEFAULT_VIDEO_VOLUME
-    )
+    extra["audio_volume"] = clamp_volume(request.POST.get(f"ig_audio_volume_{acc_id}", ""), DEFAULT_AUDIO_VOLUME)
+    extra["video_volume"] = clamp_volume(request.POST.get(f"ig_video_volume_{acc_id}", ""), DEFAULT_VIDEO_VOLUME)
     title = request.POST.get(f"ig_audio_title_{acc_id}", "").strip()
     artist = request.POST.get(f"ig_audio_artist_{acc_id}", "").strip()
     if title:

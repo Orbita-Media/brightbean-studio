@@ -479,9 +479,7 @@ class InstagramProvider(SocialProvider):
 
         return self._publish_container(access_token, ig_user_id, carousel_id)
 
-    def _create_container_with_audio(
-        self, access_token: str, ig_user_id: str, payload: dict
-    ) -> tuple[str, bool]:
+    def _create_container_with_audio(self, access_token: str, ig_user_id: str, payload: dict) -> tuple[str, bool]:
         """Create the container, retrying once without the platform sound.
 
         Meta hands third parties a subset of the in-app catalogue ("the
