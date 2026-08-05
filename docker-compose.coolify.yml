@@ -36,6 +36,12 @@ services:
   worker:
     build: .
     command: python manage.py process_tasks
+    # 2026-08-05 — Laufenden Task beim Deploy zu Ende bringen.
+    #
+    # Ohne diesen Wert gilt Dockers Standard von 10 Sekunden, dann SIGKILL —
+    # ein Task, der länger braucht, stirbt bei jedem Deploy mittendrin.
+    # Kein Nachteil im Leerlauf: Ist nichts zu tun, endet der Worker sofort.
+    stop_grace_period: 10m
     volumes:
       - media_data:/app/media
     env_file:
