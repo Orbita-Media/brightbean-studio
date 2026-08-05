@@ -3,6 +3,7 @@
 import base64
 import contextlib
 import json
+import logging
 import re
 import uuid
 from datetime import UTC, datetime
@@ -32,6 +33,14 @@ from apps.members.decorators import require_permission
 from apps.members.models import WorkspaceMembership
 from apps.social_accounts.models import SocialAccount
 from apps.workspaces.models import Workspace
+from providers.instagram import (
+    AUDIO_TYPES as INSTAGRAM_AUDIO_TYPES,
+)
+from providers.instagram import (
+    DEFAULT_AUDIO_VOLUME,
+    DEFAULT_VIDEO_VOLUME,
+    clamp_volume,
+)
 from providers.tiktok import VALID_PRIVACY_LEVELS as TIKTOK_PRIVACY_LEVELS
 
 from .forms import ContentCategoryForm, PostForm
@@ -48,6 +57,8 @@ from .models import (
     PostVersion,
     Tag,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_CSV_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB cap on CSV planner imports
 
@@ -127,6 +138,42 @@ def _scoped_platform_post_ids(request, post):
     return list(post.platform_posts.filter(social_account_id=scope).values_list("id", flat=True))
 
 
+def _instagram_audio_extra(request, acc_id, current_extra):
+    """Read the Instagram sound panel into ``platform_extra``.
+
+    A platform sound is optional and the exception: the default remains the
+    CC0 music baked into the file, because only that travels to the other
+    channels (an Instagram audio_id exists on Instagram and nowhere else).
+    An empty select therefore clears the audio keys instead of keeping a
+    stale one, and everything else already in ``platform_extra`` survives.
+
+    Title and artist ride along purely so the composer can show what is
+    attached after a reload without asking Meta again.
+    """
+    extra = dict(current_extra or {})
+    for key in ("audio_id", "audio_volume", "video_volume", "audio_title", "audio_artist"):
+        extra.pop(key, None)
+
+    audio_id = request.POST.get(f"ig_audio_id_{acc_id}", "").strip()
+    if not audio_id:
+        return extra
+
+    extra["audio_id"] = audio_id
+    extra["audio_volume"] = clamp_volume(
+        request.POST.get(f"ig_audio_volume_{acc_id}", ""), DEFAULT_AUDIO_VOLUME
+    )
+    extra["video_volume"] = clamp_volume(
+        request.POST.get(f"ig_video_volume_{acc_id}", ""), DEFAULT_VIDEO_VOLUME
+    )
+    title = request.POST.get(f"ig_audio_title_{acc_id}", "").strip()
+    artist = request.POST.get(f"ig_audio_artist_{acc_id}", "").strip()
+    if title:
+        extra["audio_title"] = title[:255]
+    if artist:
+        extra["audio_artist"] = artist[:255]
+    return extra
+
+
 def _sync_platform_posts(request, post, workspace, initial_status=None):
     """Sync platform post selections from form data.
 
@@ -184,6 +231,11 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
                 "show_similar_products": request.POST.get(f"pin_show_similar_{acc_id}") == "true",
                 "cover_image_asset_id": request.POST.get(f"pin_cover_image_asset_id_{acc_id}", "").strip() or None,
             }
+
+        elif account.platform == "instagram" and f"ig_audio_id_{acc_id}" in request.POST:
+            # Only rebuild extras when the Instagram panel was part of the form,
+            # so a save from elsewhere cannot silently drop a chosen sound.
+            pp.platform_extra = _instagram_audio_extra(request, acc_id, pp.platform_extra)
 
         elif account.platform == "tiktok" and f"tiktok_privacy_level_{acc_id}" in request.POST:
             # Only rebuild extras when the TikTok panel was part of the form,
@@ -1793,6 +1845,72 @@ def pinterest_boards(request, workspace_id, account_id):
         return JsonResponse({"error": "Failed to fetch boards"}, status=502)
 
     return JsonResponse({"boards": [{"id": b.get("id"), "name": b.get("name")} for b in boards]})
+
+
+@login_required
+@require_GET
+def instagram_audio(request, workspace_id, account_id):
+    """Trending or searched Instagram sounds for the composer's reel panel.
+
+    ``GET /ig_audio`` without a search query is Meta's documented trending
+    list. Instagram is the only one of our channels where a platform sound can
+    be attached through the API at all, and only through a Facebook-Login
+    connection, so a failure here is a missing extra and never a blocked post:
+    the endpoint degrades to a 200 with an empty list plus a reason.
+    """
+    workspace = _get_workspace(request, workspace_id)
+    account = get_object_or_404(SocialAccount, id=account_id, workspace=workspace, platform="instagram")
+
+    from apps.credentials.models import resolve_platform_credentials
+    from providers import get_provider
+
+    audio_type = request.GET.get("audio_type", "music")
+    if audio_type not in INSTAGRAM_AUDIO_TYPES:
+        audio_type = "music"
+    search_query = request.GET.get("q", "").strip()[:200]
+
+    def _unavailable(reason):
+        return JsonResponse({"available": False, "error": reason, "tracks": []})
+
+    credentials = resolve_platform_credentials("instagram", workspace.organization_id)
+    provider = get_provider("instagram", credentials)
+
+    access_token = account.oauth_access_token
+    if not access_token:
+        return _unavailable("Account is not connected")
+    if account.token_expires_at and account.is_token_expiring_soon:
+        try:
+            access_token = account.refresh_oauth_token(provider)
+        except Exception:
+            return _unavailable("Token refresh failed")
+
+    try:
+        tracks = provider.list_audio(
+            access_token,
+            audio_type=audio_type,
+            search_query=search_query,
+            ig_user_id=account.account_platform_id,
+        )
+    except Exception as exc:
+        logger.warning("Instagram audio lookup failed for %s: %s", account_id, exc)
+        return _unavailable("Instagram did not return any audio")
+
+    return JsonResponse(
+        {
+            "available": True,
+            "trending": not search_query,
+            "tracks": [
+                {
+                    "id": t["id"],
+                    "title": t["title"],
+                    "artist": t["artist"],
+                    "duration_ms": t["duration_ms"],
+                    "cover_url": t["cover_url"],
+                }
+                for t in tracks
+            ],
+        }
+    )
 
 
 @login_required

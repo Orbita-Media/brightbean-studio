@@ -669,6 +669,162 @@
                     </div>
                 </template>
 
+                <!-- Instagram reel sound. Instagram is the only channel whose API can
+                     attach a platform sound (Audio API, Facebook Login only); everywhere
+                     else the sound has to be inside the file. -->
+                <template x-for="accId in selectedAccounts" :key="'ig-audio-' + accId">
+                    <div x-show="charLimits[accId]?.platform === 'instagram'"
+                         x-data="{
+                             tracks: [],
+                             loading: false,
+                             loaded: false,
+                             unavailable: '',
+                             query: '',
+                             showList: false,
+                             audioId: platformExtras[accId]?.audio_id || '',
+                             audioTitle: platformExtras[accId]?.audio_title || '',
+                             audioArtist: platformExtras[accId]?.audio_artist || '',
+                             audioVolume: platformExtras[accId]?.audio_volume ?? 25,
+                             videoVolume: platformExtras[accId]?.video_volume ?? 100,
+                             load(force = false) {
+                                 if (this.loading || (this.loaded && !force)) return;
+                                 this.loading = true;
+                                 const url = `/workspace/{{ workspace.id }}/compose/instagram-audio/${accId}/`
+                                     + (this.query.trim() ? `?q=${encodeURIComponent(this.query.trim())}` : '');
+                                 fetch(url)
+                                     .then(r => r.json())
+                                     .then(data => {
+                                         this.tracks = data.tracks || [];
+                                         this.unavailable = data.available ? '' : (data.error || 'Audio unavailable');
+                                         this.loaded = true;
+                                     })
+                                     .catch(() => { this.unavailable = 'Audio lookup failed'; })
+                                     .finally(() => { this.loading = false; });
+                             },
+                             pick(track) {
+                                 this.audioId = track.id;
+                                 this.audioTitle = track.title || '';
+                                 this.audioArtist = track.artist || '';
+                                 this.showList = false;
+                             },
+                             clear() { this.audioId = ''; this.audioTitle = ''; this.audioArtist = ''; },
+                             preset(kind) {
+                                 if (kind === 'voice') { this.audioVolume = 25; this.videoVolume = 100; }
+                                 else { this.audioVolume = 100; this.videoVolume = 0; }
+                             }
+                         }"
+                         class="border border-stone-200 rounded-xl bg-white p-4 space-y-3">
+                        <div class="flex items-center gap-2">
+                            <span class="platform-icon w-5 h-5 rounded-[5px] flex items-center justify-center"
+                                  :class="'pi-' + (charLimits[accId]?.platform || '')"
+                                  x-html="platformIconSvg(charLimits[accId]?.platform || '')"></span>
+                            <span class="text-xs font-semibold text-stone-600" x-text="charLimits[accId]?.name + ' - Reel Sound'"></span>
+                        </div>
+
+                        <!-- These always submit, so clearing the sound really clears it -->
+                        <input type="hidden" :name="'ig_audio_id_' + accId" :value="audioId">
+                        <input type="hidden" :name="'ig_audio_title_' + accId" :value="audioTitle">
+                        <input type="hidden" :name="'ig_audio_artist_' + accId" :value="audioArtist">
+                        <input type="hidden" :name="'ig_audio_volume_' + accId" :value="audioVolume">
+                        <input type="hidden" :name="'ig_video_volume_' + accId" :value="videoVolume">
+
+                        <p x-show="!(mediaItems || []).some(m => m.is_video)" class="text-[11px] text-stone-400">
+                            Attach a video to pick a sound. A platform sound only attaches to reels, at creation time.
+                        </p>
+
+                        <div x-show="(mediaItems || []).some(m => m.is_video)" class="space-y-3">
+                            <!-- Chosen track -->
+                            <div x-show="audioId" class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-stone-50 border border-stone-200">
+                                <div class="min-w-0">
+                                    <p class="text-sm font-medium text-stone-700 truncate" x-text="audioTitle || audioId"></p>
+                                    <p class="text-[11px] text-stone-400 truncate" x-text="audioArtist"></p>
+                                </div>
+                                <button type="button" @click="clear()"
+                                        class="text-xs text-stone-400 hover:text-red-500 cursor-pointer flex-shrink-0">Remove</button>
+                            </div>
+
+                            <!-- Picker -->
+                            <div>
+                                <button type="button"
+                                        @click="showList = !showList; load()"
+                                        class="text-xs font-medium px-3 py-1.5 rounded-lg border border-stone-200 text-stone-700 hover:border-orange-400 hover:text-orange-600 transition-all cursor-pointer">
+                                    <span x-text="audioId ? 'Choose a different sound' : 'Add a trending sound'"></span>
+                                </button>
+
+                                <div x-show="showList" x-transition class="mt-3 space-y-2">
+                                    <div class="flex items-center gap-2">
+                                        <input type="text" x-model="query"
+                                               @keydown.enter.prevent="load(true)"
+                                               placeholder="Search Meta's catalogue, or leave empty for trending"
+                                               class="flex-1 text-sm px-3 py-2 rounded-lg border border-stone-200 bg-white outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 transition-all">
+                                        <button type="button" @click="load(true)"
+                                                class="text-xs font-medium px-3 py-2 rounded-lg border border-stone-200 text-stone-700 hover:border-orange-400 hover:text-orange-600 transition-all cursor-pointer">Search</button>
+                                        <button type="button" x-show="query" @click="query = ''; load(true)"
+                                                class="text-xs text-stone-400 hover:text-stone-600 cursor-pointer">Trending</button>
+                                    </div>
+
+                                    <p x-show="loading" class="text-[11px] text-stone-400">Loading sounds…</p>
+                                    <p x-show="unavailable" class="text-[11px] text-red-400" x-text="unavailable"></p>
+                                    <p x-show="loaded && !loading && !unavailable && tracks.length === 0" class="text-[11px] text-stone-400">
+                                        Nothing came back. Meta only exposes tracks cleared for third-party use, so a sound that is big in the app may be missing here.
+                                    </p>
+
+                                    <div x-show="tracks.length" class="max-h-56 overflow-y-auto rounded-lg border border-stone-200 divide-y divide-stone-100">
+                                        <template x-for="track in tracks" :key="track.id">
+                                            <button type="button" @click="pick(track)"
+                                                    class="w-full text-left px-3 py-2 hover:bg-stone-50 transition-colors cursor-pointer flex items-center gap-2">
+                                                <span class="min-w-0 flex-1">
+                                                    <span class="block text-sm text-stone-700 truncate" x-text="track.title || track.id"></span>
+                                                    <span class="block text-[11px] text-stone-400 truncate" x-text="track.artist"></span>
+                                                </span>
+                                                <span x-show="track.id === audioId" class="text-[11px] text-orange-600 flex-shrink-0">selected</span>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Mix -->
+                            <div x-show="audioId" class="border-t border-stone-100 pt-3 space-y-3">
+                                <div class="flex items-center gap-2">
+                                    <button type="button" @click="preset('voice')"
+                                            class="text-xs font-medium px-3 py-1.5 rounded-lg border transition-all cursor-pointer"
+                                            :class="videoVolume >= audioVolume ? 'border-orange-400 text-orange-600' : 'border-stone-200 text-stone-700 hover:border-orange-400'">
+                                        Voice leads
+                                    </button>
+                                    <button type="button" @click="preset('sound')"
+                                            class="text-xs font-medium px-3 py-1.5 rounded-lg border transition-all cursor-pointer"
+                                            :class="videoVolume < audioVolume ? 'border-orange-400 text-orange-600' : 'border-stone-200 text-stone-700 hover:border-orange-400'">
+                                        Sound carries
+                                    </button>
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1">
+                                        Platform sound <span class="tabular-nums" x-text="audioVolume + '%'"></span>
+                                    </label>
+                                    <input type="range" min="0" max="100" step="5" x-model.number="audioVolume"
+                                           class="w-full cursor-pointer accent-orange-500">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1">
+                                        Video's own audio <span class="tabular-nums" x-text="videoVolume + '%'"></span>
+                                    </label>
+                                    <input type="range" min="0" max="100" step="5" x-model.number="videoVolume"
+                                           class="w-full cursor-pointer accent-orange-500">
+                                </div>
+                                <p class="text-[11px] text-stone-400">
+                                    The video keeps its own track underneath, so a narrator stays audible. Upload the music-free cut:
+                                    a CC0 bed in the file plus a platform sound means two pieces of music at once. For a reel without
+                                    narration, "Sound carries" mutes the file's audio instead.
+                                </p>
+                                <p class="text-[11px] text-stone-400">
+                                    Instagram only. The sound cannot travel to the other channels and there is no preview, so the mix has to be right before publishing.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+
                 <!-- YouTube settings (auto-visible when any YouTube account is selected) -->
                 <template x-for="accId in selectedAccounts" :key="'yt-settings-' + accId">
                     <div x-show="charLimits[accId]?.platform === 'youtube'"
