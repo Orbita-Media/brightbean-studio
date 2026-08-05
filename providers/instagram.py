@@ -6,6 +6,7 @@ uses the Facebook OAuth flow with Instagram-specific scopes.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime
@@ -78,6 +79,79 @@ MAX_ALT_TEXT_LENGTH = 1000
 # six-slide carousel silently losing its closing slide is the exact failure
 # this project already had on Bluesky.
 MAX_CAROUSEL_ITEMS = 10
+
+# ---------------------------------------------------------------------------
+# Instagram Audio API
+# ---------------------------------------------------------------------------
+# Opened by Meta on 2026-06-01 for apps using Facebook Login. It is documented
+# on its own page, NOT in the Media reference – reading only the reference
+# leads to the wrong conclusion, because ``POST /{ig-user-id}/media`` lists 21
+# parameters and none of them selects a track. The one audio-ish field there,
+# ``audio_name``, merely *renames* the original sound already inside the
+# uploaded video ("You can only rename once"); it attaches nothing.
+#
+#   Search / trending:  GET /ig_audio?audio_type=music[&search_query=…]
+#                       "if no search query is provided, trending audio is returned"
+#   Metadata:           GET /{ig-audio-id}
+#   Attach:             audio_configuration={"audio_id":…,"audio_volume":…,"video_volume":…}
+#                       on the REELS container, at creation time only.
+#
+# https://developers.facebook.com/docs/instagram-platform/content-publishing/audio-api/
+AUDIO_ENDPOINT = f"{BASE_URL}/ig_audio"
+AUDIO_TYPE_MUSIC = "music"
+AUDIO_TYPE_ORIGINAL_SOUND = "original_sound"
+AUDIO_TYPES = (AUDIO_TYPE_MUSIC, AUDIO_TYPE_ORIGINAL_SOUND)
+
+# How many tracks one catalogue call returns. Meta paginates; the composer
+# shows a single page, so keep it short enough to stay readable.
+DEFAULT_AUDIO_LIMIT = 25
+MAX_AUDIO_LIMIT = 50
+
+# Volume defaults, deliberately NOT Meta's (audio 100 / video 100).
+#
+# Our reels carry a narrator. The documented mix knob is per-track: 100 is
+# "full volume", 0 is muted, so the values behave like a linear amplitude
+# percentage. A music bed under speech belongs 12 LU below the voice
+# (docs/MUSIK-UND-TON.md §5), and 10^(-12/20) = 0.251 – hence 25 for the
+# platform sound while the video (our voice) stays at 100. A reel WITHOUT
+# narration inverts this; the composer offers that as a second preset.
+DEFAULT_AUDIO_VOLUME = 25
+DEFAULT_VIDEO_VOLUME = 100
+MIN_VOLUME = 0
+MAX_VOLUME = 100
+
+
+def clamp_volume(value, default: int) -> int:
+    """Coerce a volume to the documented 0-100 range, falling back to ``default``."""
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return max(MIN_VOLUME, min(number, MAX_VOLUME))
+
+
+def build_audio_configuration(extra: dict | None) -> dict | None:
+    """Build the ``audio_configuration`` object from per-platform settings.
+
+    Reads ``audio_id`` (the only required field) plus the two optional volume
+    knobs out of ``PlatformPost.platform_extra``. Returns ``None`` when no
+    sound was chosen, which is the normal case: embedded CC0 music stays the
+    default and a platform sound is the deliberate exception.
+
+    ``should_loop_audio`` is deliberately not supported. It appears only in the
+    documentation's code sample and is missing from the field table, so it is
+    undocumented and must not be treated as guaranteed.
+    """
+    if not extra:
+        return None
+    audio_id = str(extra.get("audio_id") or "").strip()
+    if not audio_id:
+        return None
+    return {
+        "audio_id": audio_id,
+        "audio_volume": clamp_volume(extra.get("audio_volume"), DEFAULT_AUDIO_VOLUME),
+        "video_volume": clamp_volume(extra.get("video_volume"), DEFAULT_VIDEO_VOLUME),
+    }
 
 
 class InstagramProvider(SocialProvider):
@@ -305,6 +379,8 @@ class InstagramProvider(SocialProvider):
         if content.text:
             payload["caption"] = content.text
 
+        audio_configuration = build_audio_configuration(content.extra)
+
         if content.post_type in (PostType.REEL, PostType.VIDEO):
             # Instagram no longer supports standalone feed videos: a single
             # video is published as a Reel. PostType.VIDEO (the engine's
@@ -313,6 +389,11 @@ class InstagramProvider(SocialProvider):
             # sent as image_url ("The image format is not supported").
             payload["media_type"] = "REELS"
             payload["video_url"] = content.media_urls[0]
+            if audio_configuration:
+                # Sent as a JSON *string*, exactly as the documented curl call
+                # does (-d 'audio_configuration={…}'). Graph does not reliably
+                # unpack a nested object out of a JSON body.
+                payload["audio_configuration"] = json.dumps(audio_configuration)
         elif content.post_type == PostType.STORY:
             if content.media_urls and content.media_urls[0].endswith((".mp4", ".mov")):
                 payload["media_type"] = "STORIES"
@@ -329,14 +410,30 @@ class InstagramProvider(SocialProvider):
             if alt_text:
                 payload["alt_text"] = alt_text
 
+        if audio_configuration and "audio_configuration" not in payload:
+            # A platform sound only attaches to a reel, at creation time. Rather
+            # than fail an otherwise valid post we drop the setting and say so:
+            # a leftover sound on an image post is a composer slip, not a reason
+            # to lose the publish.
+            logger.warning(
+                "Instagram: ignoring audio_id %s on a %s post, the Audio API attaches sound to reels only",
+                audio_configuration.get("audio_id"),
+                content.post_type.value,
+            )
+
         # Step 1: create container
-        container_id = self._create_container(access_token, ig_user_id, payload)
+        container_id, audio_dropped = self._create_container_with_audio(access_token, ig_user_id, payload)
 
         # Step 2: wait for container to be ready
         self._wait_for_container(access_token, container_id)
 
         # Step 3: publish
-        return self._publish_container(access_token, ig_user_id, container_id)
+        result_extra: dict = {}
+        if audio_configuration and "audio_configuration" in payload:
+            result_extra["audio_id"] = audio_configuration["audio_id"]
+        if audio_dropped:
+            result_extra["audio_dropped"] = True
+        return self._publish_container(access_token, ig_user_id, container_id, result_extra=result_extra)
 
     def _publish_carousel(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
         """Publish a carousel post with multiple media items."""
@@ -381,6 +478,34 @@ class InstagramProvider(SocialProvider):
         self._wait_for_container(access_token, carousel_id)
 
         return self._publish_container(access_token, ig_user_id, carousel_id)
+
+    def _create_container_with_audio(
+        self, access_token: str, ig_user_id: str, payload: dict
+    ) -> tuple[str, bool]:
+        """Create the container, retrying once without the platform sound.
+
+        Meta hands third parties a subset of the in-app catalogue ("the
+        available selection may vary from what appears in the native app") and
+        that subset moves. A track that has since been withdrawn would
+        otherwise take a fully produced reel down with it, so the documented
+        advice is to fall back to publishing without sound. The retry is safe:
+        a container is only a staged upload, an abandoned one is never
+        published.
+
+        Returns ``(container_id, audio_dropped)``.
+        """
+        try:
+            return self._create_container(access_token, ig_user_id, payload), False
+        except (APIError, PublishError) as exc:
+            if "audio_configuration" not in payload:
+                raise
+            logger.warning(
+                "Instagram: container rejected with audio_configuration=%s, retrying without sound (%s)",
+                payload["audio_configuration"],
+                exc,
+            )
+            retry_payload = {k: v for k, v in payload.items() if k != "audio_configuration"}
+            return self._create_container(access_token, ig_user_id, retry_payload), True
 
     def _create_container(self, access_token: str, ig_user_id: str, payload: dict) -> str:
         resp = self._request(
@@ -427,7 +552,14 @@ class InstagramProvider(SocialProvider):
             platform=self.platform_name,
         )
 
-    def _publish_container(self, access_token: str, ig_user_id: str, container_id: str) -> PublishResult:
+    def _publish_container(
+        self,
+        access_token: str,
+        ig_user_id: str,
+        container_id: str,
+        *,
+        result_extra: dict | None = None,
+    ) -> PublishResult:
         resp = self._request(
             "POST",
             f"{BASE_URL}/{ig_user_id}/media_publish",
@@ -439,8 +571,101 @@ class InstagramProvider(SocialProvider):
         return PublishResult(
             platform_post_id=media_id,
             url=f"https://www.instagram.com/p/{media_id}/",
-            extra=data,
+            extra={**data, **(result_extra or {})},
         )
+
+    # ------------------------------------------------------------------
+    # Audio (Instagram Audio API, Facebook Login only)
+    # ------------------------------------------------------------------
+
+    def list_audio(
+        self,
+        access_token: str,
+        *,
+        audio_type: str = AUDIO_TYPE_MUSIC,
+        search_query: str = "",
+        ig_user_id: str | None = None,
+        limit: int = DEFAULT_AUDIO_LIMIT,
+    ) -> list[dict]:
+        """Return audio tracks that can be attached to a reel.
+
+        Without ``search_query`` this is the trending list, verbatim from the
+        docs: "When retrieving audio, if no search query is provided, trending
+        audio is returned." With one it is a catalogue search.
+
+        Two limits are worth knowing before trusting a result: the catalogue
+        only contains what Meta "has been authorized for third party use", and
+        it differs from the app. A track going viral in the app may simply not
+        be here, which is why the composer treats sound as optional.
+        """
+        if audio_type not in AUDIO_TYPES:
+            raise ValueError(f"audio_type must be one of {AUDIO_TYPES}, got {audio_type!r}")
+
+        params: dict = {
+            "audio_type": audio_type,
+            "limit": max(1, min(int(limit), MAX_AUDIO_LIMIT)),
+        }
+        user_id = ig_user_id or self.credentials.get("ig_user_id")
+        if user_id:
+            params["user_id"] = user_id
+        query = (search_query or "").strip()
+        if query:
+            params["search_query"] = query
+
+        resp = self._request("GET", AUDIO_ENDPOINT, access_token=access_token, params=params)
+        data = resp.json()
+        items = data.get("data", data if isinstance(data, list) else [])
+        tracks = [self._normalize_audio(item) for item in items if isinstance(item, dict)]
+        return [t for t in tracks if t["id"]]
+
+    def get_audio(self, access_token: str, audio_id: str) -> dict:
+        """Fetch one track's metadata by its ``ig-audio-id``."""
+        resp = self._request(
+            "GET",
+            f"{BASE_URL}/{audio_id}",
+            access_token=access_token,
+        )
+        return self._normalize_audio(resp.json())
+
+    @staticmethod
+    def _normalize_audio(item: dict) -> dict:
+        """Flatten one catalogue entry into id / title / artist / duration.
+
+        The Audio API page documents the endpoints and the attach parameter but
+        not the exact response shape, so every field is read through a list of
+        plausible keys and the untouched payload is kept in ``raw``. Nothing
+        downstream may depend on a key we have not seen in the wild.
+        """
+
+        def _first(*keys: str) -> str:
+            for key in keys:
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, int | float):
+                    return str(value)
+            return ""
+
+        artist = _first("artist", "artist_name", "display_artist", "owner_username")
+        if not artist:
+            owner = item.get("owner")
+            if isinstance(owner, dict):
+                artist = str(owner.get("username") or owner.get("name") or "").strip()
+
+        duration_ms = item.get("duration_ms") or item.get("duration_in_ms") or item.get("duration")
+        try:
+            duration_ms = int(duration_ms) if duration_ms is not None else None
+        except (TypeError, ValueError):
+            duration_ms = None
+
+        return {
+            "id": _first("id", "audio_id", "audio_asset_id", "ig_audio_id"),
+            "title": _first("title", "audio_title", "display_name", "name", "song_title"),
+            "artist": artist,
+            "duration_ms": duration_ms,
+            "cover_url": _first("cover_url", "display_image_uri", "thumbnail_url", "image_url"),
+            "raw": item,
+        }
 
     # ------------------------------------------------------------------
     # Comments
