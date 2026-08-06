@@ -315,13 +315,20 @@ def _no_accounts_warning(provider, platform, access_token):
                 "there, then reconnect."
             )
         if verdict == VERDICT_PAGES_WITH_INSTAGRAM:
-            # Die Verknüpfung IST gesetzt – dann liegt es am Konto selbst.
+            # Die Verknüpfung IST gesetzt – dann liegt es am Konto oder an
+            # einer Berechtigung, die nur bei Portfolio-Zugriff nötig ist. Der
+            # zweite Grund gehört ausdrücklich dazu: Wer nur den ersten liest,
+            # stellt sein Konto um, das längst professionell ist.
             linked = ", ".join(f"{name} → {ig_id}" for name, ig_id in instagram_links(diagnostics))
             return (
                 f"Your Page is linked to an Instagram account ({linked}), but Instagram did not "
-                "return a professional profile for it, so it cannot publish. Switch the account "
-                "to a Business or Creator account (Instagram app → Settings and privacy → "
-                "Account type and tools → Switch to professional account), then reconnect."
+                "return a professional profile for it, so it cannot publish. Two things cause "
+                "this. Either the account is not a professional one – switch it to Business or "
+                "Creator (Instagram app → Settings and privacy → Account type and tools → Switch "
+                "to professional account). Or your access to the Page comes from a business "
+                "portfolio rather than a Page role: Meta then also requires the ads_read (or "
+                "ads_management) permission before it answers for the Instagram account. In that "
+                "case the account is fine and the app needs that scope added."
             )
         if verdict == VERDICT_NO_PAGES:
             if selected:

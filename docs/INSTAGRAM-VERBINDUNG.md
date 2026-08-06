@@ -94,11 +94,27 @@ verknüpft. Abhilfe: Vollzugriff (mindestens „Inhalte") in Meta Business Suite
 Einstellungen → Personen. Die Meldung nennt diesen Fall inzwischen getrennt.
 
 **`verdict: pages_with_instagram`, aber trotzdem nichts anzubieten** – die
-Verknüpfung ist da, das Konto liess sich aber nicht bestätigen. Dann liegt es
-nicht an der Verknüpfung, sondern am Konto: Ein privates Konto beantwortet keine
-Profilfelder und kann nichts veröffentlichen. Umstellen in der Instagram-App →
-Einstellungen und Privatsphäre → **Kontotyp und Tools** → **Zu professionellem
-Konto wechseln**.
+Verknüpfung ist da, das Konto liess sich aber nicht bestätigen. Dafür gibt es
+zwei Ursachen, und die zweite ist die unangenehmere:
+
+1. **Das Konto ist privat.** Ein privates Konto beantwortet keine Profilfelder
+   und kann nichts veröffentlichen. Umstellen in der Instagram-App →
+   Einstellungen und Privatsphäre → **Kontotyp und Tools** → **Zu
+   professionellem Konto wechseln**.
+2. **Der Zugriff kommt aus einem Business-Portfolio.** Dann verlangt Meta eine
+   Berechtigung mehr, und das steht nur in der Referenz zum IG-User
+   ([Instagram
+   User](https://developers.facebook.com/docs/instagram-platform/reference/instagram-user)):
+
+   > „If the app user was granted a role via the Business Manager on the Page
+   > connected to the targeted IG User, you will also need one of:
+   > ads_management or ads_read"
+
+   Das ist genau Noahs Konstellation. Sollte das Konto also in der Auswahl
+   erscheinen und beim Abruf oder Veröffentlichen trotzdem schweigen, ist
+   `ads_read` der nächste fehlende Scope – **nicht** der Kontotyp. Die Meldung
+   nennt seit dem 06.08.2026 beide Ursachen, damit niemand ein längst
+   professionelles Konto umzustellen versucht.
 
 **Fehlerobjekt** – dann steht der Code direkt im Protokoll (`errors[].error.code`),
 zum Beispiel 190 für ein abgelaufenes Token oder 200 für eine fehlende
