@@ -425,18 +425,24 @@ def test_connected_instagram_account_failure_does_not_break_the_connect():
     assert provider.get_user_pages("user-token") == []
 
 
-def test_no_page_and_no_page_id_in_the_token_ends_the_search():
-    """Ohne Seite fragt der Ausweichweg das Token – nennt auch das keine, ist Schluss."""
+def test_no_page_anywhere_ends_the_search():
+    """Nennt das Token keine Seite, folgt der Blick in die Portfolios – dann ist Schluss.
+
+    Die ``instagram_basic``-Kennung ist bewusst dabei: Sie ist die Kennung des
+    Kontos, nicht die einer Seite, und darf keine Seitenabfrage auslösen.
+    """
     provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
     provider._request = MagicMock(
         side_effect=[
             _resp({"data": []}),
             _resp({"data": {"granular_scopes": [{"scope": "instagram_basic", "target_ids": ["ig-1"]}]}}),
+            _resp({"data": []}),
         ]
     )
 
     assert provider.get_user_pages("user-token") == []
-    assert provider._request.call_count == 2, "Seitenabfrage und Token-Abfrage, mehr nicht"
+    assert provider._request.call_count == 3, "Seitenabfrage, Token-Abfrage, Portfolio-Abfrage"
+    assert provider._request.call_args_list[-1][0][1].endswith("/me/businesses")
 
 
 # ---------------------------------------------------------------------------

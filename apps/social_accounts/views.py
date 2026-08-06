@@ -68,20 +68,31 @@ def _get_visible_platform_choices():
     return [(value, label) for value, label in PlatformCredential.Platform.choices if value not in hidden]
 
 
-def _apply_analytics_scope_flag(provider, platform):
-    """Set ``provider.include_analytics_scopes`` based on AnalyticsPlatformConfig.
+def _apply_oauth_scope_flags(provider, platform):
+    """Entscheidet, welche optionalen Berechtigungen der Dialog anfragt.
 
-    Providers add their analytics-only scopes (e.g. ``read_insights``,
+    ``include_analytics_scopes`` folgt ``AnalyticsPlatformConfig``: Providers add
+    their analytics-only scopes (e.g. ``read_insights``,
     ``yt-analytics.readonly``) to the OAuth scope list only when this flag is
     True. If the platform is disabled in ``AnalyticsPlatformConfig`` (analytics
     not yet rolled out for it), we omit those scopes so a self-hoster whose
     Meta / TikTok / Google app hasn't been approved for them can still connect
     accounts for publishing.
+
+    ``include_business_scope`` folgt ``META_REQUEST_BUSINESS_SCOPE`` und ist
+    standardmässig aus. Es fügt ``business_management`` hinzu – die einzige
+    Berechtigung, mit der die Dialog-Option "alle aktuellen und zukünftigen
+    Seiten" bei Seiten aus einem Business-Portfolio überhaupt etwas hergibt
+    (``providers/meta_business.py``). Ausdrücklich NUR hier, im internen
+    Verbinden-Weg: Der Verbindungslink für Kunden lässt das Flag unberührt,
+    damit dort nie eine Berechtigung im Dialog steht, die ein Nutzer ohne Rolle
+    in der App gar nicht erteilen kann.
     """
     from apps.social_accounts.models import AnalyticsPlatformConfig
 
     enabled = AnalyticsPlatformConfig.enabled_platforms()
     provider.include_analytics_scopes = platform in enabled
+    provider.include_business_scope = bool(getattr(settings, "META_REQUEST_BUSINESS_SCOPE", False))
 
 
 def _get_configured_platforms(org_id):
@@ -224,6 +235,20 @@ def _run_page_diagnostics(provider, platform, access_token):
     return diagnostics
 
 
+# Die Meldung für den Fall "alle aktuellen und zukünftigen Seiten". Sie steht
+# hier als Vorlage, weil Facebook und Instagram sie wortgleich brauchen und der
+# Text die eine Erkenntnis trägt, die am 06.08.2026 einen Abend gekostet hat:
+# Diese Dialog-Option trägt bei Seiten aus einem Business-Portfolio nicht.
+_OPTED_IN_TO_ALL_WARNING = (
+    "{lead}. Facebook granted the Page permission but did not name a single Page in the token – "
+    "that is what happens when you pick the option that opts in to all current and future Pages "
+    "('Alle aktuellen und zukünftigen Seiten'). For Pages that belong to a business portfolio "
+    "that option hands out nothing, and it leaves us without a single Page to ask for. "
+    "Connect again and pick the option that lists your Pages one by one "
+    "('Nur aktuelle Seiten auswählen'), then tick the Page{extra}. That path is proven to work."
+)
+
+
 def _no_accounts_warning(provider, platform, access_token):
     """Formuliert die Meldung für "nichts gefunden" aus dem echten Befund.
 
@@ -247,6 +272,7 @@ def _no_accounts_warning(provider, platform, access_token):
         VERDICT_PAGES_WITHOUT_INSTAGRAM,
         instagram_links,
         page_names,
+        pages_permission_without_targets,
         pages_without_content_role,
         selected_page_ids,
     )
@@ -258,6 +284,11 @@ def _no_accounts_warning(provider, platform, access_token):
     # weder über die Sammelabfrage noch einzeln. Ihm zu raten, er solle eine
     # Seite anhaken, wäre dann die falsche Fährte.
     selected = selected_page_ids(diagnostics) if verdict == VERDICT_NO_PAGES else []
+    # Die Berechtigung ist erteilt, das Token nennt aber keine einzige Seite:
+    # die Signatur der Dialog-Option "alle aktuellen und zukünftigen Seiten".
+    # Sie trägt bei Seiten aus einem Business-Portfolio nicht, und das kostete
+    # am 06.08.2026 einen ganzen Abend – deshalb steht es jetzt in der Meldung.
+    opted_in_to_all = bool(verdict == VERDICT_NO_PAGES and not selected and pages_permission_without_targets(diagnostics))
 
     if platform == PlatformCredential.Platform.INSTAGRAM:
         if verdict == VERDICT_PAGES_WITHOUT_INSTAGRAM:
@@ -299,6 +330,13 @@ def _no_accounts_warning(provider, platform, access_token):
                     "Settings → People, give yourself Full control of the Page, then reconnect. "
                     "The connection log names the Page that failed."
                 )
+            if opted_in_to_all:
+                return _OPTED_IN_TO_ALL_WARNING.format(
+                    lead=(
+                        "Facebook returned no Page at all, so no Instagram account could be found"
+                    ),
+                    extra=" and the Instagram account",
+                )
             return (
                 "Facebook returned no Page at all for your account, so no Instagram account "
                 "could be found – this option always connects Instagram through a Facebook "
@@ -321,6 +359,11 @@ def _no_accounts_warning(provider, platform, access_token):
                 "and your access there is too narrow: open Meta Business Suite → Settings → "
                 "People, give yourself Full control of the Page, then reconnect. The connection "
                 "log names the Page that failed."
+            )
+        if opted_in_to_all:
+            return _OPTED_IN_TO_ALL_WARNING.format(
+                lead="No Facebook Page was returned for your account",
+                extra="",
             )
         return (
             "No Facebook Pages were found for your account. "
@@ -414,7 +457,7 @@ def connect_platform(request, workspace_id):
 
     # Standard OAuth flow
     provider = _get_provider_for_platform(platform, request.org.id)
-    _apply_analytics_scope_flag(provider, platform)
+    _apply_oauth_scope_flags(provider, platform)
     nonce = secrets.token_urlsafe(32)
     state = _sign_state(workspace_id, platform, request.user.id, nonce)
 
@@ -877,7 +920,7 @@ def reconnect(request, workspace_id, account_id):
 
     # Standard OAuth reconnect
     provider = _get_provider_for_platform(platform, request.org.id)
-    _apply_analytics_scope_flag(provider, platform)
+    _apply_oauth_scope_flags(provider, platform)
     nonce = secrets.token_urlsafe(32)
     state = _sign_state(workspace_id, platform, request.user.id, nonce)
     code_verifier = issue_pkce_verifier(provider)

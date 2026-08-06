@@ -33,12 +33,8 @@ import logging
 import re
 from collections.abc import Callable
 
-from .meta_pages import (
-    PAGE_ID_SCOPES,
-    SOURCE_ME_ACCOUNTS,
-    SOURCE_TOKEN_SCOPES,
-    pages_from_token_scopes,
-)
+from .meta_business import pages_when_me_accounts_is_empty
+from .meta_pages import PAGE_ID_SCOPES, SOURCE_ME_ACCOUNTS
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +177,34 @@ def selected_page_ids(diagnostics: dict, limit: int = 3) -> list[str]:
     return found[:limit]
 
 
+def pages_permission_without_targets(diagnostics: dict) -> bool:
+    """Die Seiten-Berechtigung ist erteilt, das Token nennt trotzdem keine Seite.
+
+    Das ist die Signatur der Dialog-Option "Alle aktuellen und zukünftigen
+    Seiten". Wer dort einzelne Seiten anhakt, findet ihre Kennungen in den
+    ``granular_scopes`` wieder; wer "alle" wählt, bekommt dieselbe Berechtigung
+    **ohne** Ziel-ID, weil die Zustimmung nicht auf einzelne Ziele beschränkt
+    ist (belegt am 06.08.2026: ``"pages_show_list": []``).
+
+    Das ist keine Kleinigkeit, sondern der Unterschied zwischen "es geht" und
+    "es geht nicht": Gehören die Seiten einem Business-Portfolio, gibt
+    ``/me/accounts`` nichts heraus, und ohne eine einzige Kennung im Token
+    bleibt nur noch der Weg über ``business_management``. Greift auch der
+    nicht, ist "Nur aktuelle Seiten auswählen" der einzige belegte Weg – und
+    genau das muss die Meldung sagen, statt zum dritten Mal zu raten.
+
+    Ist die Berechtigung gar nicht erteilt, ist es ein anderer Fall: Dann hat
+    der Nutzer den Seiten-Schritt abgelehnt.
+    """
+    permissions = diagnostics.get("permissions")
+    if not isinstance(permissions, dict):
+        return False
+    granted = {str(name) for name in permissions.get("granted") or []}
+    if not granted & set(PAGE_ID_SCOPES):
+        return False
+    return not selected_page_ids(diagnostics, limit=1)
+
+
 def instagram_links(diagnostics: dict, limit: int = 3) -> list[tuple[str, str]]:
     """Seiten, an denen laut Graph ein Instagram-Konto hängt: (Seitenname, Konto-Kennung).
 
@@ -277,10 +301,10 @@ def _pages(request_fn: Callable, base_url: str, access_token: str, app_id: str =
         if items or not (app_id and app_secret):
             return result
 
-        # Keine Seite über die Sammelabfrage: derselbe Ausweichweg wie beim
+        # Keine Seite über die Sammelabfrage: dieselben Ausweichwege wie beim
         # Verbinden, sonst behauptet die Diagnose "keine Seite", während der
         # Verbinden-Weg längst welche gefunden hat.
-        fallback = pages_from_token_scopes(
+        fallback, source = pages_when_me_accounts_is_empty(
             request_fn,
             base_url=base_url,
             access_token=access_token,
@@ -290,7 +314,7 @@ def _pages(request_fn: Callable, base_url: str, access_token: str, app_id: str =
             label="Meta-Diagnose",
         )
         if fallback:
-            result["source"] = SOURCE_TOKEN_SCOPES
+            result["source"] = source
             result["items"] = [_page_item(page) for page in fallback]
             result["count"] = len(result["items"])
         return result

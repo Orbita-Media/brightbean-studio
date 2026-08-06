@@ -10,7 +10,8 @@ from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe, parse_insights_response
-from .meta_pages import SOURCE_ME_ACCOUNTS, SOURCE_TOKEN_SCOPES, pages_from_token_scopes
+from .meta_business import pages_when_me_accounts_is_empty
+from .meta_pages import SOURCE_ME_ACCOUNTS
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -258,10 +259,12 @@ class FacebookProvider(SocialProvider):
         Returns a list of dicts each containing id, name, access_token,
         category, and picture.
 
-        Bleibt ``/me/accounts`` leer, obwohl der Nutzer im Dialog Seiten
-        freigegeben hat, greift derselbe Ausweichweg wie bei Instagram: Die
-        Seitenkennungen stehen in den ``granular_scopes`` des Tokens, und jede
-        Seite wird einzeln geholt (``providers/meta_pages.py``).
+        Bleibt ``/me/accounts`` leer, greifen dieselben zwei Ausweichwege wie
+        bei Instagram: erst die Seitenkennungen aus den ``granular_scopes`` des
+        Tokens, jede Seite einzeln geholt (``providers/meta_pages.py``), dann
+        die Seiten der Business-Portfolios (``providers/meta_business.py``) für
+        den Fall, dass im Dialog "alle aktuellen und zukünftigen Seiten"
+        gewählt wurde und das Token deshalb keine Kennung nennt.
         """
         resp = self._request(
             "GET",
@@ -280,7 +283,7 @@ class FacebookProvider(SocialProvider):
         raw_pages = data.get("data", [])
         source = SOURCE_ME_ACCOUNTS
         if not raw_pages:
-            raw_pages = pages_from_token_scopes(
+            raw_pages, source = pages_when_me_accounts_is_empty(
                 self._request,
                 base_url=BASE_URL,
                 access_token=access_token,
@@ -289,8 +292,6 @@ class FacebookProvider(SocialProvider):
                 app_secret=self.credentials.get("client_secret", ""),
                 label="Facebook",
             )
-            if raw_pages:
-                source = SOURCE_TOKEN_SCOPES
         logger.info("Facebook: %d Seite(n) über %s gefunden", len(raw_pages), source)
         pages: list[dict] = []
         for page in raw_pages:

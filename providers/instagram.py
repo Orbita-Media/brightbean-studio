@@ -16,7 +16,8 @@ from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe
-from .meta_pages import SOURCE_ME_ACCOUNTS, SOURCE_TOKEN_SCOPES, pages_from_token_scopes
+from .meta_business import pages_when_me_accounts_is_empty
+from .meta_pages import SOURCE_ME_ACCOUNTS
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -229,7 +230,7 @@ class InstagramProvider(SocialProvider):
 
     @property
     def required_scopes(self) -> list[str]:
-        return [
+        scopes = [
             "instagram_basic",
             "instagram_content_publish",
             "instagram_manage_comments",
@@ -237,6 +238,16 @@ class InstagramProvider(SocialProvider):
             "pages_show_list",
             "pages_read_engagement",
         ]
+        # ``business_management`` wird NICHT standardmässig verlangt. Es ist der
+        # einzige Weg für die Dialog-Option "alle aktuellen und zukünftigen
+        # Seiten" (siehe ``providers/meta_business.py``), aber es ist auch eine
+        # Berechtigung mehr im Dialog. Der Weg, der nachweislich funktioniert
+        # ("nur aktuelle Seiten auswählen"), kommt ohne sie aus und darf durch
+        # sie nicht gefährdet werden. Umlegbar über META_REQUEST_BUSINESS_SCOPE,
+        # ohne dass dafür Code geändert werden muss.
+        if self.include_business_scope:
+            scopes.append("business_management")
+        return scopes
 
     @property
     def rate_limits(self) -> RateLimitConfig:
@@ -345,9 +356,12 @@ class InstagramProvider(SocialProvider):
         Brightbean should be the Instagram Business account selected from the
         Facebook Pages the user manages.
 
-        Bleibt ``/me/accounts`` leer, obwohl der Nutzer im Dialog Seiten
-        freigegeben hat, greift der Ausweichweg über die Seitenkennungen aus dem
-        Token (``providers/meta_pages.py``). Welcher Weg gegriffen hat, steht im
+        Bleibt ``/me/accounts`` leer, greifen zwei Ausweichwege nacheinander:
+        die im Dialog angehakten Seitenkennungen aus dem Token
+        (``providers/meta_pages.py``) und, wenn auch die fehlen, die Seiten der
+        Business-Portfolios (``providers/meta_business.py``). Der zweite Weg ist
+        der Fall "Alle aktuellen und zukünftigen Seiten", bei dem das Token
+        keine einzelne Seite nennt. Welcher Weg gegriffen hat, steht im
         Protokoll.
         """
         resp = self._request(
@@ -368,7 +382,7 @@ class InstagramProvider(SocialProvider):
         pages = data.get("data", [])
         source = SOURCE_ME_ACCOUNTS
         if not pages:
-            pages = pages_from_token_scopes(
+            pages, source = pages_when_me_accounts_is_empty(
                 self._request,
                 base_url=BASE_URL,
                 access_token=access_token,
@@ -377,8 +391,6 @@ class InstagramProvider(SocialProvider):
                 app_secret=self.credentials.get("client_secret", ""),
                 label="Instagram",
             )
-            if pages:
-                source = SOURCE_TOKEN_SCOPES
         logger.info("Instagram: %d Seite(n) über %s gefunden", len(pages), source)
 
         accounts: list[dict] = []
@@ -412,9 +424,10 @@ class InstagramProvider(SocialProvider):
             # Seiten da, aber keine mit ``instagram_business_account``: bevor
             # der Nutzer eine Fehlmeldung bekommt, wird das zweite Seitenfeld
             # geprüft, das dieselbe Verknüpfung tragen kann.
-            if source == SOURCE_TOKEN_SCOPES:
-                # Der Ausweichweg hat beide Verknüpfungsfelder schon verlangt,
-                # ein zweiter Rundgang zum Graph wäre verschenkt.
+            if source != SOURCE_ME_ACCOUNTS:
+                # Beide Ausweichwege haben die Verknüpfungsfelder schon verlangt
+                # (dieselbe Feldleiter), ein zweiter Rundgang zum Graph wäre
+                # verschenkt.
                 accounts = self._accounts_from_connected_field(access_token, pages)
             else:
                 accounts = self._accounts_via_connected_instagram(access_token, pages)

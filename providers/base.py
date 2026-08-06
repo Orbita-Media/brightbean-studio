@@ -93,6 +93,14 @@ class SocialProvider(ABC):
     # from the requested scope list. Default True keeps backward compat.
     include_analytics_scopes: bool = True
 
+    # Meta only: request ``business_management`` on top of the usual scopes.
+    # Default False on purpose – the working path ("opt in to current Pages
+    # only") does not need it, and no login dialog should carry a permission it
+    # does not need. Flipping it on is what makes "all current and future
+    # Pages" work for Pages owned by a business portfolio; see
+    # ``providers/meta_business.py`` and ``META_REQUEST_BUSINESS_SCOPE``.
+    include_business_scope: bool = False
+
     # OAuth providers that require PKCE flip this to True. The connect view then
     # generates a code_verifier, stashes it in the session, sends the derived
     # code_challenge on the authorize URL, and replays the verifier on token

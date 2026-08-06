@@ -316,18 +316,24 @@ def test_pages_from_a_business_portfolio_are_found_through_the_token():
     ]
 
 
-def test_no_page_and_no_page_id_in_the_token_ends_the_search():
-    """Nennt auch das Token keine Seite, bleibt es bei der leeren Liste."""
+def test_no_page_anywhere_ends_the_search():
+    """Findet auch der letzte Weg nichts, bleibt es bei der leeren Liste.
+
+    Die drei Abfragen sind die drei Wege in ihrer Reihenfolge: die
+    Sammelabfrage, die Seitenkennungen im Token und die Business-Portfolios.
+    """
     provider = FacebookProvider({"client_id": "id", "client_secret": "secret"})
     provider._request = MagicMock(
         side_effect=[
             _resp({"data": []}),
             _resp({"data": {"granular_scopes": []}}),
+            _resp({"data": []}),
         ]
     )
 
     assert provider.get_user_pages("user-token") == []
-    assert provider._request.call_count == 2
+    assert provider._request.call_count == 3
+    assert provider._request.call_args_list[-1][0][1].endswith("/me/businesses")
 
 
 def test_get_profile_uses_user_safe_fields():

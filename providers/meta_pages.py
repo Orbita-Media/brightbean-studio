@@ -215,7 +215,7 @@ def _page_by_id(
             continue
 
         if "access_token" in fields and not payload.get("access_token"):
-            token = _page_access_token(
+            token = fetch_page_access_token(
                 request_fn,
                 base_url=base_url,
                 access_token=access_token,
@@ -230,13 +230,13 @@ def _page_by_id(
     return None
 
 
-def _page_access_token(
+def fetch_page_access_token(
     request_fn: Callable,
     *,
     base_url: str,
     access_token: str,
     page_id: str,
-    label: str,
+    label: str = "Meta",
 ) -> str:
     """Den Seitenschlüssel notfalls einzeln nachfordern.
 
