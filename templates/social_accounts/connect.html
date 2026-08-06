@@ -76,7 +76,7 @@
             {% endif %}
 
             {% if value not in configured_platforms %}
-            <div class="absolute inset-0 rounded-xl bg-white/40 cursor-not-allowed" title="Platform credentials not configured. Contact your administrator."></div>
+            <div class="absolute inset-0 rounded-xl bg-white/40 cursor-not-allowed" title="{% if value == 'threads' %}Threads needs its own Threads App ID and App Secret (Meta app: Use cases &rarr; Access the Threads API &rarr; API setup). The Facebook App ID does not work here.{% else %}Platform credentials not configured. Contact your administrator.{% endif %}"></div>
             {% endif %}
         </div>
         {% endfor %}

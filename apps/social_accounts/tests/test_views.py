@@ -398,3 +398,98 @@ class TestMastodonConnectView:
         response = authenticated_client.get(url)
         assert response.status_code == 200
         assert b"Connect Mastodon" in response.content
+
+
+class TestNoAccountsWarning:
+    """Die Meldung nach einer Anbindung ohne Treffer muss den Fall benennen."""
+
+    def _provider(self, diagnostics):
+        provider = MagicMock()
+        provider.diagnose_pages.return_value = diagnostics
+        return provider
+
+    def test_instagram_pages_without_instagram_names_the_pages(self):
+        from apps.social_accounts.views import _no_accounts_warning
+
+        warning = _no_accounts_warning(
+            self._provider(
+                {
+                    "verdict": "pages_without_instagram",
+                    "pages": {"count": 1, "items": [{"id": "page-1", "name": "Orbita Media Verlag"}]},
+                }
+            ),
+            "instagram",
+            "user-token",
+        )
+
+        assert "Orbita Media Verlag" in warning
+        assert "Linked accounts" in warning
+        assert "no Page at all" not in warning
+
+    def test_instagram_without_any_page_says_so(self):
+        from apps.social_accounts.views import _no_accounts_warning
+
+        warning = _no_accounts_warning(
+            self._provider({"verdict": "no_pages", "pages": {"count": 0, "items": []}}),
+            "instagram",
+            "user-token",
+        )
+
+        assert "no Page at all" in warning
+        assert "Linked accounts" not in warning
+
+    def test_instagram_without_a_diagnosis_stays_generic(self):
+        from apps.social_accounts.views import _no_accounts_warning
+
+        provider = MagicMock()
+        provider.diagnose_pages.side_effect = RuntimeError("Graph nicht erreichbar")
+
+        warning = _no_accounts_warning(provider, "instagram", "user-token")
+
+        assert "did not say why" in warning
+
+    def test_linkedin_company_keeps_its_own_wording(self):
+        from apps.social_accounts.views import _no_accounts_warning
+
+        provider = MagicMock()
+        warning = _no_accounts_warning(provider, "linkedin_company", "user-token")
+
+        assert "Company Pages" in warning
+        provider.diagnose_pages.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestThreadsNeedsItsOwnAppId:
+    def test_connect_without_threads_credentials_names_the_missing_app_id(self, authenticated_client, workspace):
+        url = reverse("social_accounts:connect", kwargs={"workspace_id": workspace.id})
+        response = authenticated_client.post(url, {"platform": "threads"}, follow=True)
+
+        text = " ".join(str(m) for m in response.context["messages"])
+        assert "Threads App ID" in text
+        assert "Facebook App ID does not work" in text
+
+    def test_authorization_url_failure_does_not_send_the_user_to_the_platform(
+        self, authenticated_client, workspace
+    ):
+        """Scheitert der Aufbau der Adresse, bleibt der Nutzer im Verteiler."""
+        from apps.credentials.models import PlatformCredential
+        from providers.exceptions import OAuthError
+
+        PlatformCredential.objects.create(
+            organization=workspace.organization,
+            platform="threads",
+            credentials={"app_id": "", "app_secret": ""},
+            is_configured=True,
+        )
+
+        mock_provider = MagicMock()
+        mock_provider.uses_pkce = False
+        mock_provider.get_auth_url.side_effect = OAuthError("Threads needs its own Threads App ID")
+
+        url = reverse("social_accounts:connect", kwargs={"workspace_id": workspace.id})
+        with patch("apps.social_accounts.views._get_provider_for_platform", return_value=mock_provider):
+            response = authenticated_client.post(url, {"platform": "threads"}, follow=True)
+
+        assert response.status_code == 200
+        text = " ".join(str(m) for m in response.context["messages"])
+        assert "Threads App ID" in text

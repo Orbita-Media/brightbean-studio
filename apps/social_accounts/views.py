@@ -3,6 +3,7 @@
 Handles OAuth flows, account listing, connect/reconnect/disconnect actions.
 """
 
+import json
 import logging
 import secrets
 from datetime import timedelta
@@ -31,6 +32,18 @@ logger = logging.getLogger(__name__)
 
 OAUTH_STATE_MAX_AGE = 600  # 10 minutes
 OAUTH_SESSION_KEY = "social_oauth"
+
+# Warum eine Plattform nicht eingerichtet ist, sofern die Antwort bekannt ist.
+# Ohne diesen Zusatz landet der Nutzer bei "wende dich an deinen Administrator",
+# obwohl die fehlende Angabe genau benannt werden kann.
+UNCONFIGURED_PLATFORM_HINTS = {
+    "threads": (
+        "Threads needs its own Threads App ID and App Secret "
+        "(Meta app → Use cases → Access the Threads API → API setup); "
+        "the Facebook App ID does not work here. Set PLATFORM_THREADS_APP_ID "
+        "and PLATFORM_THREADS_APP_SECRET, then reload."
+    ),
+}
 
 
 def _get_provider_for_platform(platform: str, org_id, **extra_credentials):
@@ -184,6 +197,100 @@ def _resolve_mastodon_extra_creds(session_data):
     return extra_creds
 
 
+def _run_page_diagnostics(provider, platform, access_token):
+    """Erhebt beim Anbieter, warum kein Konto zurückkam, und protokolliert es.
+
+    Läuft ausschliesslich im Fehlerfall. Ohne diese Erhebung sind "gar keine
+    Seite", "Seite ohne Instagram-Konto" und "Fehlerobjekt vom Graph" von aussen
+    nicht zu unterscheiden, und die Suche beginnt jedes Mal von vorn. Im Log
+    steht anschliessend die vollständige Antwort in einer Zeile: Anzahl Seiten,
+    je Seite Kennung, Name und ob ein Instagram-Konto daran hängt, dazu die
+    tatsächlich erteilten Berechtigungen samt der im Dialog ausgewählten Ziele.
+    Zugangstoken stehen nicht darin.
+    """
+    if not hasattr(provider, "diagnose_pages"):
+        return None
+    try:
+        diagnostics = provider.diagnose_pages(access_token)
+    except Exception:
+        logger.exception("Account diagnostics failed for %s", platform)
+        return None
+
+    logger.warning(
+        "OAuth connect returned no accounts for %s: %s",
+        platform,
+        json.dumps(diagnostics, ensure_ascii=False, sort_keys=True, default=str),
+    )
+    return diagnostics
+
+
+def _no_accounts_warning(provider, platform, access_token):
+    """Formuliert die Meldung für "nichts gefunden" aus dem echten Befund.
+
+    Die frühere Fassung nannte für Instagram nur eine mögliche Ursache und
+    schickte damit jeden auf dieselbe Suche, auch wenn schlicht keine Seite
+    zurückkam. Jetzt entscheidet der Befund, was der Nutzer liest.
+    """
+    if platform == PlatformCredential.Platform.LINKEDIN_COMPANY:
+        return (
+            "No LinkedIn Company Pages were found for your account. "
+            "Only Company Pages you administer can be connected – "
+            "personal profiles connect via the LinkedIn (Personal) option. "
+            "If you expected to see a Page, ask the page owner to grant "
+            "you Admin access in LinkedIn → Admin tools → "
+            "Manage admins, then reconnect."
+        )
+
+    from providers.meta_diagnostics import (
+        VERDICT_NO_PAGES,
+        VERDICT_PAGES_WITHOUT_INSTAGRAM,
+        page_names,
+    )
+
+    diagnostics = _run_page_diagnostics(provider, platform, access_token) or {}
+    verdict = diagnostics.get("verdict", "")
+    page_count = (diagnostics.get("pages") or {}).get("count", 0)
+
+    if platform == PlatformCredential.Platform.INSTAGRAM:
+        if verdict == VERDICT_PAGES_WITHOUT_INSTAGRAM:
+            names = ", ".join(page_names(diagnostics))
+            return (
+                f"Facebook returned {page_count} Page(s) ({names}), but none of them has an "
+                "Instagram professional account linked to it. Linking the account inside your "
+                "business portfolio is not the same link: open the Page itself "
+                "(Meta Business Suite → Settings → Linked accounts → Instagram → "
+                "Connect account), link the account there, then reconnect."
+            )
+        if verdict == VERDICT_NO_PAGES:
+            return (
+                "Facebook returned no Page at all for your account, so no Instagram account "
+                "could be found – this option always connects Instagram through a Facebook "
+                "Page. Make sure you have a role on the Page and that you ticked that Page in "
+                "the Facebook dialog (the step that lists your Pages), then reconnect."
+            )
+        return (
+            "No Instagram Business accounts were found for your account, and Facebook did not "
+            "say why. Only Instagram Business or Creator accounts linked to a Facebook Page can "
+            "be connected through this Instagram option. Make sure the account is linked to a "
+            "Page you manage, then reconnect."
+        )
+
+    if verdict == VERDICT_NO_PAGES or not verdict:
+        return (
+            "No Facebook Pages were found for your account. "
+            "Only Pages can be connected – personal profiles are not "
+            "supported by the Facebook API. "
+            "If you expected to see a Page, make sure you have admin "
+            "access and try removing the app in Facebook Settings → "
+            "Business Integrations, then reconnect."
+        )
+    return (
+        f"Facebook returned {page_count} Page(s), but none of them could be connected. "
+        "Make sure you have admin access to the Page and that you selected it in the "
+        "Facebook dialog, then reconnect."
+    )
+
+
 # ------------------------------------------------------------------
 # Account List
 # ------------------------------------------------------------------
@@ -246,7 +353,8 @@ def connect_platform(request, workspace_id):
     if platform not in configured_platforms:
         messages.error(
             request,
-            f"Platform credentials for {platform} are not configured. Please contact your administrator.",
+            f"Platform credentials for {platform} are not configured. "
+            f"{UNCONFIGURED_PLATFORM_HINTS.get(platform, 'Please contact your administrator.')}",
         )
         return redirect("social_accounts:connect", workspace_id=workspace_id)
 
@@ -276,7 +384,18 @@ def connect_platform(request, workspace_id):
     }
 
     redirect_uri = _build_redirect_uri(request, platform)
-    auth_url = provider.get_auth_url(redirect_uri, state, **pkce_kwargs(code_verifier))
+    try:
+        auth_url = provider.get_auth_url(redirect_uri, state, **pkce_kwargs(code_verifier))
+    except Exception:
+        # Lieber hier mit klarer Meldung enden als den Nutzer auf die
+        # Fehlerseite der Plattform schicken, wo nur ein Fehlercode steht.
+        logger.exception("Could not build the authorization URL for %s", platform)
+        messages.error(
+            request,
+            f"Could not start the connection for {platform}. "
+            f"{UNCONFIGURED_PLATFORM_HINTS.get(platform, 'Please contact your administrator.')}",
+        )
+        return redirect("social_accounts:connect", workspace_id=workspace_id)
     return redirect(auth_url)
 
 
@@ -365,6 +484,7 @@ def oauth_callback(request, platform):
         ) and hasattr(provider, "get_user_pages"):
             pages = provider.get_user_pages(tokens.access_token)
             if pages:
+                logger.info("OAuth connect found %d selectable account(s) for %s", len(pages), platform)
                 # Store in session for account selection
                 request.session["oauth_page_select"] = {
                     "workspace_id": workspace_id,
@@ -377,32 +497,7 @@ def oauth_callback(request, platform):
                 }
                 return redirect("social_accounts:select_account")
             else:
-                if platform == PlatformCredential.Platform.LINKEDIN_COMPANY:
-                    warning = (
-                        "No LinkedIn Company Pages were found for your account. "
-                        "Only Company Pages you administer can be connected — "
-                        "personal profiles connect via the LinkedIn (Personal) option. "
-                        "If you expected to see a Page, ask the page owner to grant "
-                        "you Admin access in LinkedIn \u2192 Admin tools \u2192 "
-                        "Manage admins, then reconnect."
-                    )
-                else:
-                    if platform == PlatformCredential.Platform.INSTAGRAM:
-                        warning = (
-                            "No Instagram Business accounts were found for your account. "
-                            "Only Instagram Business or Creator accounts linked to a Facebook Page "
-                            "can be connected through this Instagram option. If you expected to "
-                            "see an account, make sure it is linked to a Page you manage, then reconnect."
-                        )
-                    else:
-                        warning = (
-                            "No Facebook Pages were found for your account. "
-                            "Only Pages can be connected — personal profiles are not "
-                            "supported by the Facebook API. "
-                            "If you expected to see a Page, make sure you have admin "
-                            "access and try removing the app in Facebook Settings \u2192 "
-                            "Business Integrations, then reconnect."
-                        )
+                warning = _no_accounts_warning(provider, platform, tokens.access_token)
                 messages.warning(request, warning)
                 return redirect("social_accounts:list", workspace_id=workspace_id)
 
@@ -749,7 +844,18 @@ def reconnect(request, workspace_id, account_id):
     }
 
     redirect_uri = _build_redirect_uri(request, platform)
-    auth_url = provider.get_auth_url(redirect_uri, state, **pkce_kwargs(code_verifier))
+    try:
+        auth_url = provider.get_auth_url(redirect_uri, state, **pkce_kwargs(code_verifier))
+    except Exception:
+        # Lieber hier mit klarer Meldung enden als den Nutzer auf die
+        # Fehlerseite der Plattform schicken, wo nur ein Fehlercode steht.
+        logger.exception("Could not build the authorization URL for %s", platform)
+        messages.error(
+            request,
+            f"Could not start the connection for {platform}. "
+            f"{UNCONFIGURED_PLATFORM_HINTS.get(platform, 'Please contact your administrator.')}",
+        )
+        return redirect("social_accounts:connect", workspace_id=workspace_id)
     return redirect(auth_url)
 
 

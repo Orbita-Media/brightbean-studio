@@ -314,3 +314,121 @@ def test_account_metrics_followers_none_when_profile_fetch_fails():
 
     assert metrics.followers is None
     assert metrics.reach == 12
+
+
+# ---------------------------------------------------------------------------
+# Ausweichweg über connected_instagram_account
+# ---------------------------------------------------------------------------
+
+
+def _page_without_business_account():
+    return {
+        "data": [
+            {
+                "id": "page-1",
+                "name": "Orbita Media Verlag",
+                "access_token": "page-token",
+                "category": "Publisher",
+                "picture": {"data": {"url": "https://example.com/page.jpg"}},
+            }
+        ]
+    }
+
+
+def test_get_user_pages_falls_back_to_connected_instagram_account():
+    """Trägt die Seite die Verknüpfung nur im zweiten Feld, zählt sie trotzdem."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = MagicMock(
+        side_effect=[
+            _resp(_page_without_business_account()),
+            _resp(
+                {
+                    "data": [
+                        {
+                            "id": "page-1",
+                            "name": "Orbita Media Verlag",
+                            "access_token": "page-token",
+                            "category": "Publisher",
+                            "picture": {"data": {"url": "https://example.com/page.jpg"}},
+                            "connected_instagram_account": {
+                                "id": "17841466348000992",
+                                "username": "orbitamedia_verlag",
+                            },
+                        }
+                    ]
+                }
+            ),
+            _resp(
+                {
+                    "id": "17841466348000992",
+                    "username": "orbitamedia_verlag",
+                    "name": "Orbita Media Verlag",
+                    "profile_picture_url": "https://example.com/ig.jpg",
+                    "followers_count": 7,
+                }
+            ),
+        ]
+    )
+
+    accounts = provider.get_user_pages("user-token")
+
+    assert accounts == [
+        {
+            "id": "17841466348000992",
+            "name": "Orbita Media Verlag",
+            "handle": "orbitamedia_verlag",
+            "category": "Publisher",
+            "picture": "https://example.com/ig.jpg",
+            "followers_count": 7,
+            "page_id": "page-1",
+            "page_name": "Orbita Media Verlag",
+            "link_source": "connected_instagram_account",
+            "access_token": "page-token",
+        }
+    ]
+
+
+def test_connected_instagram_account_is_skipped_when_it_is_not_professional():
+    """Ein privates Konto beantwortet keine Profilfelder und wird nicht angeboten."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = MagicMock(
+        side_effect=[
+            _resp(_page_without_business_account()),
+            _resp(
+                {
+                    "data": [
+                        {
+                            "id": "page-1",
+                            "name": "Orbita Media Verlag",
+                            "connected_instagram_account": {"id": "17841400000000001"},
+                        }
+                    ]
+                }
+            ),
+            APIError("Instagram API error 100: unsupported get request", platform="Instagram"),
+        ]
+    )
+
+    assert provider.get_user_pages("user-token") == []
+
+
+def test_connected_instagram_account_failure_does_not_break_the_connect():
+    """Fällt das undokumentierte Feld aus, bleibt es bei der leeren Liste."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = MagicMock(
+        side_effect=[
+            _resp(_page_without_business_account()),
+            APIError("Instagram API error 400: nonexisting field", platform="Instagram"),
+        ]
+    )
+
+    assert provider.get_user_pages("user-token") == []
+
+
+def test_no_fallback_call_when_no_page_came_back_at_all():
+    """Ohne Seite gibt es nichts nachzuschlagen – kein zweiter Aufruf."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = MagicMock(return_value=_resp({"data": []}))
+
+    assert provider.get_user_pages("user-token") == []
+    assert provider._request.call_count == 1

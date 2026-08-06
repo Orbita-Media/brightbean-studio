@@ -345,7 +345,8 @@ def test_save_update_fields_persists_derived_flag(organization):
 REALISTIC_ENV = {
     "facebook": {"app_id": "fb-id", "app_secret": "fb-sec"},
     "instagram": {"app_id": "fb-id", "app_secret": "fb-sec"},
-    "threads": {"app_id": "fb-id", "app_secret": "fb-sec"},
+    # Threads sitzt in derselben Meta-App, hat aber eine eigene Kennung.
+    "threads": {"app_id": "th-id", "app_secret": "th-sec"},
     "instagram_login": {"app_id": "ig-id", "app_secret": "ig-sec"},
     "linkedin_personal": {"client_id": "li-id", "client_secret": "li-sec", "_oauth_mode": "oidc"},
     "linkedin_company": {"client_id": "lic-id", "client_secret": "lic-sec"},

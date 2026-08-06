@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
+from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe
 from .types import (
     AccountMetrics,
@@ -51,6 +52,18 @@ INSTAGRAM_MEDIA_INSIGHTS = [
     "shares",
     "total_interactions",
 ]
+# Felder der Seitenabfrage. ``instagram_business_account`` ist der dokumentierte
+# Weg zur Instagram-Kennung: "GET /{page-id}?fields=instagram_business_account"
+# (Instagram Platform, "Instagram API with Facebook Login – Get Started").
+PAGE_FIELDS = (
+    "id,name,access_token,category,picture,"
+    "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}"
+)
+# Ausweichabfrage, siehe ``_accounts_via_connected_instagram``. Bewusst schmal
+# gehalten: Auf einem undokumentierten Feld sind nur ``id`` und ``username``
+# verlässlich, alles Weitere wird am Konto selbst nachgeladen.
+CONNECTED_PAGE_FIELDS = "id,name,access_token,category,picture,connected_instagram_account{id,username}"
+
 INSTAGRAM_MEDIA_FIELDS = [
     "id",
     "caption",
@@ -317,12 +330,7 @@ class InstagramProvider(SocialProvider):
             "GET",
             f"{BASE_URL}/me/accounts",
             access_token=access_token,
-            params={
-                "fields": (
-                    "id,name,access_token,category,picture,"
-                    "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}"
-                ),
-            },
+            params={"fields": PAGE_FIELDS},
         )
         data = resp.json()
         if "error" in data:
@@ -333,8 +341,9 @@ class InstagramProvider(SocialProvider):
                 raw_response=data,
             )
 
+        pages = data.get("data", [])
         accounts: list[dict] = []
-        for page in data.get("data", []):
+        for page in pages:
             ig_account = page.get("instagram_business_account")
             if not ig_account:
                 continue
@@ -359,7 +368,99 @@ class InstagramProvider(SocialProvider):
             if page_token:
                 account["access_token"] = page_token
             accounts.append(account)
+
+        if pages and not accounts:
+            # Seiten da, aber keine mit ``instagram_business_account``: bevor
+            # der Nutzer eine Fehlmeldung bekommt, wird das zweite Seitenfeld
+            # geprüft, das dieselbe Verknüpfung tragen kann.
+            accounts = self._accounts_via_connected_instagram(access_token, pages)
         return accounts
+
+    def _accounts_via_connected_instagram(self, access_token: str, pages: list[dict]) -> list[dict]:
+        """Zweiter Versuch über das Seitenfeld ``connected_instagram_account``.
+
+        Der Graph führt zwei Felder für dieselbe Sache: ``instagram_business_account``
+        ist das dokumentierte und wird gesetzt, wenn das professionelle Konto über
+        die Seite verknüpft ist. ``connected_instagram_account`` ist das ältere,
+        undokumentierte Feld und trägt in manchen Konten die Verknüpfung, die aus
+        der Instagram-App heraus entstanden ist. Beide zeigen im Regelfall auf
+        dasselbe Konto, gefüllt ist aber nicht immer beides.
+
+        Weil das Feld undokumentiert ist, bleibt es ein eigener, abgesicherter
+        Aufruf: Scheitert er, bleibt es bei der leeren Liste, statt die ganze
+        Anbindung mitzureissen. Und weil das Feld auch auf ein PRIVATES
+        Instagram-Konto zeigen kann, mit dem sich nichts veröffentlichen liesse,
+        wird jeder Treffer nachgeprüft – nur ein professionelles Konto antwortet
+        auf seine Profilfelder.
+        """
+        try:
+            data = self._request(
+                "GET",
+                f"{BASE_URL}/me/accounts",
+                access_token=access_token,
+                params={"fields": CONNECTED_PAGE_FIELDS},
+            ).json()
+        except APIError as exc:
+            logger.warning("Instagram: connected_instagram_account nicht abfragbar: %s", exc)
+            return []
+
+        accounts: list[dict] = []
+        for page in data.get("data", []):
+            ig_account = page.get("connected_instagram_account") or {}
+            ig_id = str(ig_account.get("id") or "")
+            if not ig_id:
+                continue
+
+            profile = self._get_profile_fields(access_token, ig_id) or {}
+            username = profile.get("username") or ig_account.get("username") or ""
+            if not username:
+                logger.warning(
+                    "Instagram: Seite %s ist mit Konto %s verknüpft, das Konto liefert aber keine "
+                    "Profilfelder – vermutlich kein professionelles Konto, wird nicht angeboten",
+                    page.get("id"),
+                    ig_id,
+                )
+                continue
+
+            picture_url = profile.get("profile_picture_url")
+            if not picture_url and "picture" in page and "data" in page["picture"]:
+                picture_url = page["picture"]["data"].get("url")
+
+            account = {
+                "id": ig_id,
+                "name": profile.get("name") or username or page.get("name", ""),
+                "handle": username,
+                "category": page.get("category", ""),
+                "picture": picture_url,
+                "followers_count": profile.get("followers_count", 0),
+                "page_id": page.get("id"),
+                "page_name": page.get("name", ""),
+                "link_source": "connected_instagram_account",
+            }
+            page_token = page.get("access_token")
+            if page_token:
+                account["access_token"] = page_token
+            accounts.append(account)
+
+        if accounts:
+            logger.info(
+                "Instagram: %d Konto/Konten nur über connected_instagram_account gefunden",
+                len(accounts),
+            )
+        return accounts
+
+    def diagnose_pages(self, access_token: str) -> dict:
+        """Erhebt, was der Graph zu diesem Zugang sagt (ohne Zugangstoken).
+
+        Wird vom OAuth-Rückweg aufgerufen, wenn kein Konto gefunden wurde.
+        """
+        return collect_diagnostics(
+            self._request,
+            base_url=BASE_URL,
+            access_token=access_token,
+            app_id=self.credentials.get("client_id", ""),
+            app_secret=self.credentials.get("client_secret", ""),
+        )
 
     # ------------------------------------------------------------------
     # Publishing (two-step container flow)

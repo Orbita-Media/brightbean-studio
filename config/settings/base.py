@@ -372,6 +372,18 @@ _INSTAGRAM_LOGIN_CREDENTIALS = {
     "app_id": env("PLATFORM_INSTAGRAM_APP_ID", default=""),
     "app_secret": env("PLATFORM_INSTAGRAM_APP_SECRET", default=""),
 }
+# Threads hat eine EIGENE App-Kennung, nicht die der Facebook-App. Meta dazu
+# wörtlich: "When creating your app there will be 2 app IDs and app secrets.
+# For Threads API implementation purposes, use the Threads app ID and its
+# corresponding app secret." (developers.facebook.com/docs/threads/get-started)
+# Mit der Facebook-Kennung antwortet das Anmeldefenster von threads.com mit
+# "No app ID was provided in the request" (error_code 4476002) – deshalb hier
+# KEIN Rückfall auf _META_CREDENTIALS: ohne eigene Kennung gilt Threads als
+# nicht eingerichtet und der Verteiler bietet es gar nicht erst an.
+_THREADS_CREDENTIALS = {
+    "app_id": env("PLATFORM_THREADS_APP_ID", default=""),
+    "app_secret": env("PLATFORM_THREADS_APP_SECRET", default=""),
+}
 _LINKEDIN_LEGACY_CLIENT_ID = env("PLATFORM_LINKEDIN_CLIENT_ID", default="")
 _LINKEDIN_LEGACY_CLIENT_SECRET = env("PLATFORM_LINKEDIN_CLIENT_SECRET", default="")
 
@@ -409,10 +421,11 @@ else:
     _LINKEDIN_PERSONAL_CREDENTIALS = {"client_id": "", "client_secret": ""}
 
 PLATFORM_CREDENTIALS_FROM_ENV = {
-    # Meta platforms - Facebook, Instagram, and Threads share the same app
+    # Meta platforms - Facebook and Instagram share the same Facebook app.
+    # Threads sits in the same app but has its own app id/secret, see above.
     "facebook": _META_CREDENTIALS,
     "instagram": _META_CREDENTIALS,
-    "threads": _META_CREDENTIALS,
+    "threads": _THREADS_CREDENTIALS,
     # Instagram (Direct) - uses Instagram Login with separate Instagram App credentials.
     # Despite the platform key, this targets Professional (Business/Creator) IG accounts
     # without requiring a linked Facebook Page. See providers/instagram_login.py.

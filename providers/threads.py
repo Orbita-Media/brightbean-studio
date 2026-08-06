@@ -107,6 +107,19 @@ class ThreadsProvider(SocialProvider):
     # ------------------------------------------------------------------
 
     def get_auth_url(self, redirect_uri: str, state: str, code_verifier: str | None = None) -> str:
+        # Ohne eigene Threads-Kennung endet der Nutzer auf der Fehlerseite von
+        # threads.com ("No app ID was provided in the request", error_code
+        # 4476002) und weiss nicht, woran es lag. Meta: "When creating your app
+        # there will be 2 app IDs and app secrets. For Threads API
+        # implementation purposes, use the Threads app ID and its corresponding
+        # app secret." Die Facebook-Kennung taugt hier also nicht.
+        if not str(self.credentials.get("client_id") or "").strip():
+            raise OAuthError(
+                "Threads needs its own Threads App ID and App Secret "
+                "(Meta app -> Use cases -> Access the Threads API -> API setup); "
+                "the Facebook App ID does not work for the Threads authorization window",
+                platform=self.platform_name,
+            )
         params = {
             "client_id": self.credentials["client_id"],
             "redirect_uri": redirect_uri,

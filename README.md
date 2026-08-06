@@ -374,7 +374,14 @@ For example, if your `APP_URL` is `https://brightbean.example.com`, the Facebook
 
 ### Meta (Facebook, Instagram, Threads)
 
-Facebook, Instagram, and Threads all use the same Meta app credentials.
+Facebook and Instagram use the same Meta app credentials. Threads lives in the
+same app but has its **own** app id and secret: *"When creating your app there
+will be 2 app IDs and app secrets. For Threads API implementation purposes, use
+the Threads app ID and its corresponding app secret."*
+([Threads API, Get Started](https://developers.facebook.com/docs/threads/get-started))
+Handing the Threads authorization window the Facebook app id makes it answer
+`No app ID was provided in the request` (error 4476002), so Threads stays
+"Not Configured" until `PLATFORM_THREADS_APP_ID` is set.
 
 1. Go to [Meta for Developers](https://developers.facebook.com/) and create a new app (type: **Business**)
 2. Under **App Settings → Basic**, copy your **App ID** and **App Secret**
@@ -406,6 +413,20 @@ Facebook, Instagram, and Threads all use the same Meta app credentials.
    PLATFORM_FACEBOOK_APP_ID=your-app-id
    PLATFORM_FACEBOOK_APP_SECRET=your-app-secret
    ```
+6. For Threads, take the **Threads App ID / Threads App Secret** from
+   **Use cases → Access the Threads API → API setup** (they differ from the
+   Facebook ones) and set:
+   ```
+   PLATFORM_THREADS_APP_ID=your-threads-app-id
+   PLATFORM_THREADS_APP_SECRET=your-threads-app-secret
+   ```
+
+> **Instagram connects through a Facebook Page.** The Page must carry the link
+> in the Page's own settings, not only inside the business portfolio: the
+> connect flow reads `GET /me/accounts?fields=instagram_business_account`, and
+> that field stays empty otherwise. When no account is found, the callback logs
+> the full Graph answer (pages, permissions, granular scopes) at WARNING level -
+> see `docs/INSTAGRAM-VERBINDUNG.md`.
 
 ### Instagram (Direct, via Instagram Login)
 

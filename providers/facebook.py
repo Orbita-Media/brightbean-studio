@@ -8,6 +8,7 @@ from urllib.parse import urlencode, urlparse
 
 from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
+from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe, parse_insights_response
 from .types import (
     AccountMetrics,
@@ -276,6 +277,19 @@ class FacebookProvider(SocialProvider):
                 }
             )
         return pages
+
+    def diagnose_pages(self, access_token: str) -> dict:
+        """Erhebt, was der Graph zu diesem Zugang sagt (ohne Zugangstoken).
+
+        Wird vom OAuth-Rückweg aufgerufen, wenn keine Seite gefunden wurde.
+        """
+        return collect_diagnostics(
+            self._request,
+            base_url=BASE_URL,
+            access_token=access_token,
+            app_id=self.credentials.get("client_id", ""),
+            app_secret=self.credentials.get("client_secret", ""),
+        )
 
     # ------------------------------------------------------------------
     # Publishing
