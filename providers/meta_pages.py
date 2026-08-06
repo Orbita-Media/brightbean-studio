@@ -94,8 +94,7 @@ def pages_from_token_scopes(
         label=label,
     )
     logger.info(
-        "%s: %d von %d im Token genannten Seite(n) über den Ausweichweg %s geladen "
-        "(/me/accounts war leer)",
+        "%s: %d von %d im Token genannten Seite(n) über den Ausweichweg %s geladen (/me/accounts war leer)",
         label,
         len(pages),
         len(page_ids),

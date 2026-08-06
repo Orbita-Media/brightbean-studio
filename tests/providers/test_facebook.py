@@ -262,6 +262,74 @@ def test_get_user_pages_includes_follower_count():
     )
 
 
+def test_pages_from_a_business_portfolio_are_found_through_the_token():
+    """Bleibt /me/accounts leer, kommen die Kennungen aus den granular_scopes.
+
+    Derselbe Befund wie bei Instagram am 06.08.2026: Der Nutzer hat die Seite im
+    Dialog freigegeben, hat auf ihr aber keine klassische Rolle, sondern Zugriff
+    über ein Business-Portfolio. Die Sammelabfrage schweigt, die einzelne Seite
+    antwortet.
+    """
+    provider = FacebookProvider({"client_id": "id", "client_secret": "secret"})
+
+    def _call(method, url, **kwargs):
+        if url.endswith("/me/accounts"):
+            return _resp({"data": []})
+        if url.endswith("/debug_token"):
+            return _resp(
+                {
+                    "data": {
+                        "is_valid": True,
+                        "granular_scopes": [
+                            {"scope": "pages_show_list", "target_ids": ["254978271039996"]},
+                            {"scope": "pages_read_engagement", "target_ids": ["254978271039996"]},
+                        ],
+                    }
+                }
+            )
+        if url.endswith("/254978271039996"):
+            return _resp(
+                {
+                    "id": "254978271039996",
+                    "name": "Orbita Media Verlag",
+                    "access_token": "seiten-schlüssel",
+                    "category": "Publisher",
+                    "followers_count": 7,
+                    "picture": {"data": {"url": "https://example.com/page.jpg"}},
+                }
+            )
+        raise AssertionError(f"Unerwarteter Aufruf: {url}")
+
+    provider._request = MagicMock(side_effect=_call)
+
+    pages = provider.get_user_pages("user-token")
+
+    assert pages == [
+        {
+            "id": "254978271039996",
+            "name": "Orbita Media Verlag",
+            "access_token": "seiten-schlüssel",
+            "category": "Publisher",
+            "picture": "https://example.com/page.jpg",
+            "followers_count": 7,
+        }
+    ]
+
+
+def test_no_page_and_no_page_id_in_the_token_ends_the_search():
+    """Nennt auch das Token keine Seite, bleibt es bei der leeren Liste."""
+    provider = FacebookProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = MagicMock(
+        side_effect=[
+            _resp({"data": []}),
+            _resp({"data": {"granular_scopes": []}}),
+        ]
+    )
+
+    assert provider.get_user_pages("user-token") == []
+    assert provider._request.call_count == 2
+
+
 def test_get_profile_uses_user_safe_fields():
     provider = FacebookProvider({"client_id": "id", "client_secret": "secret"})
     provider._request = MagicMock(

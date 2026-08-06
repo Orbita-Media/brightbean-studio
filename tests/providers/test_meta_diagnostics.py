@@ -81,6 +81,72 @@ def test_collect_diagnostics_reports_pages_without_instagram():
     assert page_names(diagnostics) == ["Orbita Media Verlag"]
 
 
+def test_diagnostics_take_the_same_fallback_as_the_connect():
+    """Sonst meldet die Diagnose "keine Seite", während das Verbinden längst welche hat.
+
+    Noahs Fall: ``/me/accounts`` schweigt, die Kennungen stehen im Token. Die
+    Diagnose muss dieselben Seiten sehen, sonst schickt sie den Nutzer mit einer
+    falschen Begründung los.
+    """
+    request_fn = _request_stub(
+        {
+            "/me/permissions": {"data": [{"permission": "pages_show_list", "status": "granted"}]},
+            "/debug_token": {
+                "data": {
+                    "app_id": "app",
+                    "is_valid": True,
+                    "granular_scopes": [
+                        {"scope": "instagram_basic", "target_ids": ["17841466348000992"]},
+                        {"scope": "pages_show_list", "target_ids": ["254978271039996"]},
+                        {"scope": "pages_read_engagement", "target_ids": ["254978271039996"]},
+                    ],
+                }
+            },
+            "/me/accounts": {"data": []},
+            "/254978271039996": {
+                "id": "254978271039996",
+                "name": "Orbita Media Verlag",
+                "category": "Publisher",
+                "tasks": ["MANAGE", "CREATE_CONTENT"],
+            },
+        }
+    )
+
+    diagnostics = collect_diagnostics(
+        request_fn,
+        base_url="https://graph.facebook.com/v25.0",
+        access_token="user-token",
+        app_id="app",
+        app_secret="secret",
+    )
+
+    assert diagnostics["pages"]["source"] == "granular_scopes"
+    assert diagnostics["pages"]["count"] == 1
+    assert page_names(diagnostics) == ["Orbita Media Verlag"]
+    # Die Seite ist da, nur die Verknüpfung fehlt – das ist ein anderer Rat als
+    # "Sie haben gar keine Seite".
+    assert diagnostics["verdict"] == VERDICT_PAGES_WITHOUT_INSTAGRAM
+    assert pages_without_content_role(diagnostics) == []
+
+
+def test_diagnostics_report_which_way_found_the_pages():
+    """Kommen die Seiten über die Sammelabfrage, steht auch das im Befund."""
+    request_fn = _request_stub(
+        {
+            "/me/permissions": {"data": []},
+            "/me/accounts": {"data": [{"id": "page-1", "name": "Seite", "tasks": ["MANAGE"]}]},
+        }
+    )
+
+    diagnostics = collect_diagnostics(
+        request_fn,
+        base_url="https://graph.facebook.com/v25.0",
+        access_token="user-token",
+    )
+
+    assert diagnostics["pages"]["source"] == "me_accounts"
+
+
 def test_collect_diagnostics_never_leaks_the_access_token():
     request_fn = _request_stub(
         {
