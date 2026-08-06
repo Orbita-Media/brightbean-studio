@@ -420,6 +420,26 @@ else:
     # via `_is_oidc_mode` if it ever sees an empty credentials dict.
     _LINKEDIN_PERSONAL_CREDENTIALS = {"client_id": "", "client_secret": ""}
 
+# Ask Meta for ``business_management`` on top of the usual scopes. Off by
+# default and on purpose: the login path that is proven to work ("opt in to
+# current Pages only") does not need it, and it must not be put at risk by an
+# extra permission in the dialog.
+#
+# Turn it on for the one case it solves: Pages that belong to a business
+# portfolio, connected with "all current and future Pages". Meta's changelog of
+# 15 September 2023 spells that out – ``GET /me/accounts`` "no longer returns
+# Facebook pages that have been linked to a Meta business account, unless the
+# app user has granted the business_management permission to the app and has a
+# role on the linked business account". With the permission, future Pages come
+# along on their own; without it, every new Page needs another trip through the
+# dialog.
+#
+# It needs no App Review as long as the person connecting has a role on the app
+# (Standard Access, granted automatically). Someone without such a role cannot
+# grant it – which is why the customer-facing connection link never asks for it
+# (see ``apps.social_accounts.views._apply_oauth_scope_flags``).
+META_REQUEST_BUSINESS_SCOPE = env.bool("META_REQUEST_BUSINESS_SCOPE", default=False)
+
 PLATFORM_CREDENTIALS_FROM_ENV = {
     # Meta platforms - Facebook and Instagram share the same Facebook app.
     # Threads sits in the same app but has its own app id/secret, see above.
