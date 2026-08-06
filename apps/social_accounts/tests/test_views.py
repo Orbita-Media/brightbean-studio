@@ -509,6 +509,62 @@ class TestNoAccountsWarning:
             # Die Konto-Kennung ist keine Seite und darf nicht auftauchen.
             assert "17841466348000992" not in warning
 
+    def test_opting_in_to_all_pages_is_named_as_the_cause(self):
+        """Der zweite Fall vom 06.08.2026: "alle Seiten" gewählt, nichts bekommen.
+
+        Die Berechtigung ist erteilt, das Token nennt trotzdem keine einzige
+        Seite – so sieht die Dialog-Option "alle aktuellen und zukünftigen
+        Seiten" aus. Bei Seiten aus einem Business-Portfolio trägt sie nicht.
+        Wer hier "hake eine Seite an" liest, sucht an der falschen Stelle;
+        gebraucht wird der Hinweis auf die andere Dialog-Option.
+        """
+        from apps.social_accounts.views import _no_accounts_warning
+
+        diagnostics = {
+            "verdict": "no_pages",
+            "pages": {"count": 0, "source": "me_accounts", "items": []},
+            "permissions": {"granted": ["instagram_basic", "pages_show_list", "pages_read_engagement"], "declined": []},
+            "token": {
+                "granular_scopes": {
+                    "instagram_basic": [],
+                    "pages_show_list": [],
+                    "pages_read_engagement": [],
+                }
+            },
+        }
+
+        for platform in ("instagram", "facebook"):
+            warning = _no_accounts_warning(self._provider(diagnostics), platform, "user-token")
+
+            assert "all current and future Pages" in warning
+            assert "Nur aktuelle Seiten auswählen" in warning
+            assert "business portfolio" in warning
+
+    def test_a_declined_page_permission_is_not_mistaken_for_opting_in_to_all(self):
+        """Ohne erteilte Seiten-Berechtigung ist es ein anderer Fall.
+
+        Sonst bekäme jemand, der den Seiten-Schritt schlicht abgelehnt hat, den
+        Rat, eine andere Dialog-Option zu wählen – und die Ablehnung bliebe
+        unbenannt.
+        """
+        from apps.social_accounts.views import _no_accounts_warning
+
+        warning = _no_accounts_warning(
+            self._provider(
+                {
+                    "verdict": "no_pages",
+                    "pages": {"count": 0, "items": []},
+                    "permissions": {"granted": ["public_profile"], "declined": ["pages_show_list"]},
+                    "token": {"granular_scopes": {}},
+                }
+            ),
+            "instagram",
+            "user-token",
+        )
+
+        assert "all current and future Pages" not in warning
+        assert "no Page at all" in warning
+
     def test_instagram_without_a_page_role_says_so_instead_of_blaming_the_link(self):
         """Fehlende Rolle sieht in der Antwort aus wie eine fehlende Verknüpfung."""
         from apps.social_accounts.views import _no_accounts_warning

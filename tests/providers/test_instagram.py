@@ -10,6 +10,35 @@ def _resp(data):
     return MagicMock(json=MagicMock(return_value=data))
 
 
+def test_the_login_dialog_does_not_ask_for_business_management_by_default():
+    """Der Weg, der nachweislich funktioniert, bleibt unangetastet.
+
+    ``business_management`` löst genau einen Fall ("alle aktuellen und
+    zukünftigen Seiten") und ist für alles andere eine Berechtigung zu viel im
+    Dialog. Wer sie nicht erteilen kann, weil er keine Rolle in der App hat,
+    soll sie gar nicht erst zu sehen bekommen.
+    """
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+
+    assert provider.required_scopes == [
+        "instagram_basic",
+        "instagram_content_publish",
+        "instagram_manage_comments",
+        "instagram_manage_insights",
+        "pages_show_list",
+        "pages_read_engagement",
+    ]
+    assert "business_management" not in provider.get_auth_url("https://example.com/cb", "state")
+
+
+def test_business_management_is_added_only_when_it_is_switched_on():
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider.include_business_scope = True
+
+    assert provider.required_scopes[-1] == "business_management"
+    assert "business_management" in provider.get_auth_url("https://example.com/cb", "state")
+
+
 def test_get_user_pages_returns_linked_instagram_business_accounts():
     provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
     provider._request = MagicMock(
