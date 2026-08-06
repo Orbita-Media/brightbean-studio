@@ -33,7 +33,12 @@ import logging
 import re
 from collections.abc import Callable
 
-from .meta_pages import SOURCE_ME_ACCOUNTS, SOURCE_TOKEN_SCOPES, pages_from_token_scopes
+from .meta_pages import (
+    PAGE_ID_SCOPES,
+    SOURCE_ME_ACCOUNTS,
+    SOURCE_TOKEN_SCOPES,
+    pages_from_token_scopes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +157,28 @@ def pages_without_content_role(diagnostics: dict, limit: int = 3) -> list[str]:
         if not tasks & set(PAGE_TASKS_FOR_CONTENT):
             without.append(str(page.get("name") or page.get("id") or ""))
     return [name for name in without if name][:limit]
+
+
+def selected_page_ids(diagnostics: dict, limit: int = 3) -> list[str]:
+    """Seitenkennungen, die der Nutzer im Anmeldedialog freigegeben hat.
+
+    Sie stehen in den ``granular_scopes`` des Tokens. Kommt trotzdem keine Seite
+    zurück, ist das ein eigener Fall: Der Nutzer HAT ausgewählt, der Graph gibt
+    die Seiten aber weder über die Sammelabfrage noch einzeln heraus. Ihm zu
+    raten, er solle im Dialog eine Seite anhaken, wäre dann falsch.
+    """
+    token = diagnostics.get("token")
+    if not isinstance(token, dict):
+        return []
+    granular = token.get("granular_scopes")
+    if not isinstance(granular, dict):
+        return []
+    found: list[str] = []
+    for scope in PAGE_ID_SCOPES:
+        for page_id in granular.get(scope) or []:
+            if page_id and page_id not in found:
+                found.append(str(page_id))
+    return found[:limit]
 
 
 def instagram_links(diagnostics: dict, limit: int = 3) -> list[tuple[str, str]]:

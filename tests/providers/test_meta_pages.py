@@ -77,13 +77,13 @@ def test_pages_come_from_the_ids_in_the_token_when_me_accounts_is_empty():
             f"/{PAGE_A}": {
                 "id": PAGE_A,
                 "name": "Orbita Media",
-                "access_token": "seiten-schluessel-a",
+                "access_token": "seiten-schlüssel-a",
                 "category": "Publisher",
             },
             f"/{PAGE_B}": {
                 "id": PAGE_B,
                 "name": "Orbita Media Verlag",
-                "access_token": "seiten-schluessel-b",
+                "access_token": "seiten-schlüssel-b",
                 "category": "Publisher",
                 "instagram_business_account": {"id": IG_ACCOUNT, "username": "orbitamedia_verlag"},
             },
@@ -103,8 +103,8 @@ def test_pages_come_from_the_ids_in_the_token_when_me_accounts_is_empty():
     assert pages[1]["instagram_business_account"]["id"] == IG_ACCOUNT
     # Der Seitenschlüssel ist der Grund für die ganze Übung: ohne ihn kann der
     # Verteiler nichts veröffentlichen.
-    assert pages[0]["access_token"] == "seiten-schluessel-a"
-    assert pages[1]["access_token"] == "seiten-schluessel-b"
+    assert pages[0]["access_token"] == "seiten-schlüssel-a"
+    assert pages[1]["access_token"] == "seiten-schlüssel-b"
 
 
 def test_instagram_target_ids_are_not_mistaken_for_pages():
@@ -176,7 +176,7 @@ def test_the_page_access_token_is_fetched_separately_when_it_is_missing():
         fields = kwargs["params"]["fields"]
         calls.append(fields)
         if fields == "access_token":
-            return {"id": PAGE_B, "access_token": "nachgereichter-schluessel"}
+            return {"id": PAGE_B, "access_token": "nachgereichter-schlüssel"}
         return {"id": PAGE_B, "name": "Orbita Media Verlag"}
 
     request_fn = _graph_stub({f"/{PAGE_B}": _page})
@@ -189,7 +189,7 @@ def test_the_page_access_token_is_fetched_separately_when_it_is_missing():
         field_sets=FIELD_SETS,
     )
 
-    assert pages[0]["access_token"] == "nachgereichter-schluessel"
+    assert pages[0]["access_token"] == "nachgereichter-schlüssel"
     assert calls[-1] == "access_token", "die Nachforderung fragt genau dieses eine Feld"
 
 
@@ -218,7 +218,7 @@ def test_one_failing_page_does_not_take_the_others_with_it():
     request_fn = _graph_stub(
         {
             f"/{PAGE_A}": APIError("Facebook API error 100: Object does not exist", status_code=400),
-            f"/{PAGE_B}": {"id": PAGE_B, "name": "Orbita Media Verlag", "access_token": "schluessel"},
+            f"/{PAGE_B}": {"id": PAGE_B, "name": "Orbita Media Verlag", "access_token": "schlüssel"},
         }
     )
 
@@ -258,7 +258,7 @@ def test_the_field_ladder_is_walked_from_wide_to_narrow():
         used.append(fields)
         if "connected_instagram_account" in fields:
             return APIError("Facebook API error 100: nonexisting field", status_code=400)
-        return {"id": PAGE_B, "name": "Orbita Media Verlag", "access_token": "schluessel"}
+        return {"id": PAGE_B, "name": "Orbita Media Verlag", "access_token": "schlüssel"}
 
     pages = pages_by_id(
         _graph_stub({f"/{PAGE_B}": _page}),

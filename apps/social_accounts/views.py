@@ -248,11 +248,16 @@ def _no_accounts_warning(provider, platform, access_token):
         instagram_links,
         page_names,
         pages_without_content_role,
+        selected_page_ids,
     )
 
     diagnostics = _run_page_diagnostics(provider, platform, access_token) or {}
     verdict = diagnostics.get("verdict", "")
     page_count = (diagnostics.get("pages") or {}).get("count", 0)
+    # Der Nutzer HAT im Dialog Seiten freigegeben, sie kommen nur nicht zurück –
+    # weder über die Sammelabfrage noch einzeln. Ihm zu raten, er solle eine
+    # Seite anhaken, wäre dann die falsche Fährte.
+    selected = selected_page_ids(diagnostics) if verdict == VERDICT_NO_PAGES else []
 
     if platform == PlatformCredential.Platform.INSTAGRAM:
         if verdict == VERDICT_PAGES_WITHOUT_INSTAGRAM:
@@ -285,6 +290,15 @@ def _no_accounts_warning(provider, platform, access_token):
                 "Account type and tools → Switch to professional account), then reconnect."
             )
         if verdict == VERDICT_NO_PAGES:
+            if selected:
+                return (
+                    f"You did approve {len(selected)} Page(s) in the Facebook dialog "
+                    f"({', '.join(selected)}), but Facebook will not hand them out – neither as "
+                    "a list nor one by one. That happens when the Pages sit in a business "
+                    "portfolio and your access there is too narrow: open Meta Business Suite → "
+                    "Settings → People, give yourself Full control of the Page, then reconnect. "
+                    "The connection log names the Page that failed."
+                )
             return (
                 "Facebook returned no Page at all for your account, so no Instagram account "
                 "could be found – this option always connects Instagram through a Facebook "
@@ -299,6 +313,15 @@ def _no_accounts_warning(provider, platform, access_token):
         )
 
     if verdict == VERDICT_NO_PAGES or not verdict:
+        if selected:
+            return (
+                f"You did approve {len(selected)} Page(s) in the Facebook dialog "
+                f"({', '.join(selected)}), but Facebook will not hand them out – neither as a "
+                "list nor one by one. That happens when the Pages sit in a business portfolio "
+                "and your access there is too narrow: open Meta Business Suite → Settings → "
+                "People, give yourself Full control of the Page, then reconnect. The connection "
+                "log names the Page that failed."
+            )
         return (
             "No Facebook Pages were found for your account. "
             "Only Pages can be connected – personal profiles are not "

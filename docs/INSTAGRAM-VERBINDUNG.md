@@ -208,6 +208,17 @@ Steht dort `me_accounts`, lief alles über die Sammelabfrage. Steht dort
 Business-Portfolio zugewiesen. Der Befund der Diagnose führt dasselbe unter
 `pages.source`. Zugangstoken stehen in keiner dieser Zeilen.
 
+### Wenn auch der Ausweichweg nichts findet
+
+Dann bleibt ein Fall übrig, der von aussen wie „keine Seite" aussieht, aber
+etwas anderes ist: Das Token nennt Seitenkennungen, der Graph gibt die Seiten
+aber weder als Liste noch einzeln heraus. Dem Nutzer zu raten, er solle im
+Dialog eine Seite anhaken, wäre dann die falsche Fährte – er hat sie ja
+angehakt. Die Meldung nennt in diesem Fall die freigegebenen Kennungen und
+verweist auf den Zugriff im Business-Portfolio
+(`selected_page_ids` in `providers/meta_diagnostics.py`). Welche Seite genau
+scheiterte und warum, steht als Warnung im Protokoll.
+
 ## Die zwei Seitenfelder – der eigentliche Stolperstein
 
 Der Graph führt für dieselbe Verknüpfung **zwei** Felder, und die Referenz

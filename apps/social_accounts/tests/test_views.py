@@ -479,6 +479,36 @@ class TestNoAccountsWarning:
         assert "no Page at all" in warning
         assert "Linked accounts" not in warning
 
+    def test_approved_pages_that_never_arrive_get_their_own_wording(self):
+        """Der Nutzer HAT ausgewählt – ihn zum Anhaken zu schicken, wäre falsch.
+
+        Dieser Fall bleibt übrig, wenn auch der Ausweichweg über die
+        Seitenkennungen im Token keine Seite laden konnte.
+        """
+        from apps.social_accounts.views import _no_accounts_warning
+
+        diagnostics = {
+            "verdict": "no_pages",
+            "pages": {"count": 0, "source": "granular_scopes", "items": []},
+            "token": {
+                "granular_scopes": {
+                    "instagram_basic": ["17841466348000992"],
+                    "pages_show_list": ["708768612318133", "254978271039996"],
+                    "pages_read_engagement": ["708768612318133", "254978271039996"],
+                }
+            },
+        }
+
+        for platform in ("instagram", "facebook"):
+            warning = _no_accounts_warning(self._provider(diagnostics), platform, "user-token")
+
+            assert "708768612318133" in warning
+            assert "254978271039996" in warning
+            assert "2 Page(s)" in warning
+            assert "ticked that Page" not in warning
+            # Die Konto-Kennung ist keine Seite und darf nicht auftauchen.
+            assert "17841466348000992" not in warning
+
     def test_instagram_without_a_page_role_says_so_instead_of_blaming_the_link(self):
         """Fehlende Rolle sieht in der Antwort aus wie eine fehlende Verknüpfung."""
         from apps.social_accounts.views import _no_accounts_warning

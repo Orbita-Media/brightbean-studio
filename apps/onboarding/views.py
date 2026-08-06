@@ -423,8 +423,8 @@ def connection_oauth_callback(request, platform):
             pages = provider.get_user_pages(tokens.access_token)
             if not pages:
                 # Bisher fiel dieser Weg stumm in den Standardweg: bei Facebook
-                # wurde dann das PERSOENLICHE Profil verbunden, mit dem sich
-                # nichts veroeffentlichen laesst, bei Instagram endete es in der
+                # wurde dann das PERSÖNLICHE Profil verbunden, mit dem sich
+                # nichts veröffentlichen lässt, bei Instagram endete es in der
                 # allgemeinen Fehlermeldung. Der Kunde bekommt jetzt denselben
                 # konkreten Befund wie im Verteiler.
                 request.session["connection_link_error"] = _no_accounts_warning(provider, platform, tokens.access_token)

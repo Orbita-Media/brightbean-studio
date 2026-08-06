@@ -821,7 +821,7 @@ def test_publish_video_treats_metadata_lookup_failures_as_best_effort(lookup_err
 def test_publish_video_survives_malformed_metadata_response():
     """The post-publish metadata GET runs AFTER the video is already live, so a
     non-API error (e.g. .json() raising on a malformed 2xx body) must NOT
-    propagate — otherwise the publish engine retries and double-posts the video."""
+    propagate – otherwise the publish engine retries and double-posts the video."""
     provider = FacebookProvider({"client_id": "id", "client_secret": "secret"})
     provider._request = MagicMock(
         side_effect=[
