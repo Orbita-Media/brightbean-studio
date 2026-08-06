@@ -21,9 +21,15 @@ schreiben kann.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+# Siehe ``redact``: Nutzer- und Seitentoken von Meta beginnen mit ``EAA``,
+# App-Token sind ``<app-id>|<app-secret>``.
+_TOKEN_PATTERN = re.compile(r"EAA[A-Za-z0-9_\-]{10,}")
+_APP_TOKEN_PATTERN = re.compile(r"\b\d{10,}\|[A-Za-z0-9]{16,}\b")
 
 # Verdikte, die ``classify`` liefert. Der Aufrufer entscheidet daran, welche
 # Meldung der Nutzer sieht – deshalb sind es Konstanten und keine losen Strings.
@@ -32,11 +38,10 @@ VERDICT_PAGES_WITHOUT_INSTAGRAM = "pages_without_instagram"
 VERDICT_PAGES_WITH_INSTAGRAM = "pages_with_instagram"
 VERDICT_UNKNOWN = "unknown"
 
-# Feldlisten in absteigender Ausführlichkeit. ``connected_instagram_account``
-# ist ein altes, nicht dokumentiertes Seitenfeld; fragt man es auf einer
-# Graph-Version ab, die es nicht mehr kennt, scheitert der GANZE Aufruf. Darum
-# wird von oben nach unten probiert, bis eine Liste durchgeht – eine Diagnose,
-# die selbst am Feldnamen scheitert, wäre wertlos.
+# Feldlisten in absteigender Ausführlichkeit. Ein Feldname, den die angefragte
+# Graph-Version nicht kennt, lässt den GANZEN Aufruf scheitern (Fehler 100,
+# "nonexisting field"). Darum wird von oben nach unten probiert, bis eine Liste
+# durchgeht – eine Diagnose, die selbst am Feldnamen scheitert, wäre wertlos.
 PAGE_FIELD_SETS = (
     "id,name,category,tasks,instagram_business_account{id,username},connected_instagram_account{id,username}",
     "id,name,category,tasks,instagram_business_account{id,username}",
@@ -107,6 +112,25 @@ def page_names(diagnostics: dict, limit: int = 3) -> list[str]:
         return []
     names = [str(page.get("name") or page.get("id") or "") for page in pages.get("items") or []]
     return [name for name in names if name][:limit]
+
+
+def instagram_links(diagnostics: dict, limit: int = 3) -> list[tuple[str, str]]:
+    """Seiten, an denen laut Graph ein Instagram-Konto hängt: (Seitenname, Konto-Kennung).
+
+    Wird für den dritten Fall gebraucht: Die Verknüpfung IST gesetzt, das Konto
+    liess sich trotzdem nicht anbieten. Dann liegt es am Konto selbst (nicht
+    professionell) und nicht an der Verknüpfung – eine Meldung über fehlende
+    Verknüpfungen würde in die Irre führen.
+    """
+    pages = diagnostics.get("pages")
+    if not isinstance(pages, dict):
+        return []
+    found: list[tuple[str, str]] = []
+    for page in pages.get("items") or []:
+        ig_id = page.get("instagram_business_account") or page.get("connected_instagram_account") or ""
+        if ig_id:
+            found.append((str(page.get("name") or page.get("id") or ""), str(ig_id)))
+    return found[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +243,7 @@ def _describe(error) -> dict:
             "code": payload.get("code"),
             "subcode": payload.get("error_subcode"),
             "type": str(payload.get("type", "")),
-            "message": str(payload.get("message", ""))[:300],
+            "message": redact(str(payload.get("message", "")))[:300],
         }
 
     raw = getattr(error, "raw_response", None)
@@ -227,4 +251,18 @@ def _describe(error) -> dict:
         described = _describe(raw)
         if any(described.values()):
             return described
-    return {"code": None, "subcode": None, "type": type(error).__name__, "message": str(error)[:300]}
+    return {"code": None, "subcode": None, "type": type(error).__name__, "message": redact(str(error))[:300]}
+
+
+def redact(text: str) -> str:
+    """Entfernt alles, was wie ein Zugangstoken aussieht, aus einem Text.
+
+    Der Fehlertext eines Providers enthält den Anfang der Antwort im Klartext
+    (``providers.base.SocialProvider._request``). Die Diagnose fragt zwar keine
+    Token-Felder ab, aber eine Fehlermeldung ist der eine Ort, an dem doch eine
+    Antwort mitkommt, die nie jemand geprüft hat. Deshalb wird hier stumpf
+    gelöscht statt darauf zu vertrauen: Meta-Nutzer- und Seitentoken beginnen
+    mit ``EAA``, App-Token haben die Form ``<app-id>|<app-secret>``.
+    """
+    cleaned = _TOKEN_PATTERN.sub("[entfernt]", text or "")
+    return _APP_TOKEN_PATTERN.sub("[entfernt]", cleaned)

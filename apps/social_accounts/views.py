@@ -243,7 +243,9 @@ def _no_accounts_warning(provider, platform, access_token):
 
     from providers.meta_diagnostics import (
         VERDICT_NO_PAGES,
+        VERDICT_PAGES_WITH_INSTAGRAM,
         VERDICT_PAGES_WITHOUT_INSTAGRAM,
+        instagram_links,
         page_names,
     )
 
@@ -256,10 +258,19 @@ def _no_accounts_warning(provider, platform, access_token):
             names = ", ".join(page_names(diagnostics))
             return (
                 f"Facebook returned {page_count} Page(s) ({names}), but none of them has an "
-                "Instagram professional account linked to it. Linking the account inside your "
-                "business portfolio is not the same link: open the Page itself "
-                "(Meta Business Suite → Settings → Linked accounts → Instagram → "
-                "Connect account), link the account there, then reconnect."
+                "Instagram account linked to it. Linking the account inside your business "
+                "portfolio is not the same link: open the Page itself (Meta Business Suite → "
+                "Settings → Linked accounts → Instagram → Connect account), link the account "
+                "there, then reconnect."
+            )
+        if verdict == VERDICT_PAGES_WITH_INSTAGRAM:
+            # Die Verknüpfung IST gesetzt – dann liegt es am Konto selbst.
+            linked = ", ".join(f"{name} → {ig_id}" for name, ig_id in instagram_links(diagnostics))
+            return (
+                f"Your Page is linked to an Instagram account ({linked}), but Instagram did not "
+                "return a professional profile for it, so it cannot publish. Switch the account "
+                "to a Business or Creator account (Instagram app → Settings and privacy → "
+                "Account type and tools → Switch to professional account), then reconnect."
             )
         if verdict == VERDICT_NO_PAGES:
             return (

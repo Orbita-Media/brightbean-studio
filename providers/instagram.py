@@ -52,16 +52,18 @@ INSTAGRAM_MEDIA_INSIGHTS = [
     "shares",
     "total_interactions",
 ]
-# Felder der Seitenabfrage. ``instagram_business_account`` ist der dokumentierte
-# Weg zur Instagram-Kennung: "GET /{page-id}?fields=instagram_business_account"
-# (Instagram Platform, "Instagram API with Facebook Login – Get Started").
+# Felder der Seitenabfrage. ``instagram_business_account`` ist der Weg zur
+# Instagram-Kennung, den die Anleitung nennt: "GET /{page-id}?fields=
+# instagram_business_account" (Instagram Platform, "Instagram API with Facebook
+# Login – Get Started").
 PAGE_FIELDS = (
     "id,name,access_token,category,picture,"
     "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}"
 )
 # Ausweichabfrage, siehe ``_accounts_via_connected_instagram``. Bewusst schmal
-# gehalten: Auf einem undokumentierten Feld sind nur ``id`` und ``username``
-# verlässlich, alles Weitere wird am Konto selbst nachgeladen.
+# gehalten: Für dieses Feld beschreibt die Referenz keine Unterfelder, deshalb
+# werden nur ``id`` und ``username`` verlangt und alles Weitere am Konto selbst
+# nachgeladen.
 CONNECTED_PAGE_FIELDS = "id,name,access_token,category,picture,connected_instagram_account{id,username}"
 
 INSTAGRAM_MEDIA_FIELDS = [
@@ -379,19 +381,22 @@ class InstagramProvider(SocialProvider):
     def _accounts_via_connected_instagram(self, access_token: str, pages: list[dict]) -> list[dict]:
         """Zweiter Versuch über das Seitenfeld ``connected_instagram_account``.
 
-        Der Graph führt zwei Felder für dieselbe Sache: ``instagram_business_account``
-        ist das dokumentierte und wird gesetzt, wenn das professionelle Konto über
-        die Seite verknüpft ist. ``connected_instagram_account`` ist das ältere,
-        undokumentierte Feld und trägt in manchen Konten die Verknüpfung, die aus
-        der Instagram-App heraus entstanden ist. Beide zeigen im Regelfall auf
-        dasselbe Konto, gefüllt ist aber nicht immer beides.
+        Der Graph führt zwei Felder für die Instagram-Verknüpfung einer Seite,
+        und die Referenz unterscheidet sie danach, WIE die Verknüpfung entstanden
+        ist: ``instagram_business_account`` ist das "Instagram account linked to
+        page during Instagram business conversion flow",
+        ``connected_instagram_account`` das "Instagram account connected to page
+        via page settings" (Graph API Reference, Page). Wer sein Konto also nicht
+        über den Umwandlungsablauf, sondern in den Seiteneinstellungen bzw. im
+        Business-Portfolio verbunden hat, hat unter Umständen nur das zweite Feld
+        gefüllt – und fiel bisher lautlos durch.
 
-        Weil das Feld undokumentiert ist, bleibt es ein eigener, abgesicherter
-        Aufruf: Scheitert er, bleibt es bei der leeren Liste, statt die ganze
-        Anbindung mitzureissen. Und weil das Feld auch auf ein PRIVATES
-        Instagram-Konto zeigen kann, mit dem sich nichts veröffentlichen liesse,
-        wird jeder Treffer nachgeprüft – nur ein professionelles Konto antwortet
-        auf seine Profilfelder.
+        Der Aufruf bleibt bewusst eigenständig und abgesichert: Scheitert er,
+        bleibt es bei der leeren Liste, statt die ganze Anbindung mitzureissen.
+        Und weil dieses Feld auch auf ein PRIVATES Instagram-Konto zeigen kann,
+        mit dem sich nichts veröffentlichen liesse, wird jeder Treffer
+        nachgeprüft – nur ein professionelles Konto antwortet auf seine
+        Profilfelder.
         """
         try:
             data = self._request(

@@ -438,6 +438,34 @@ class TestNoAccountsWarning:
         assert "no Page at all" in warning
         assert "Linked accounts" not in warning
 
+    def test_instagram_with_a_linked_account_points_at_the_account_type(self):
+        """Verknüpfung da, Konto trotzdem unbrauchbar: dann liegt es am Konto."""
+        from apps.social_accounts.views import _no_accounts_warning
+
+        warning = _no_accounts_warning(
+            self._provider(
+                {
+                    "verdict": "pages_with_instagram",
+                    "pages": {
+                        "count": 1,
+                        "items": [
+                            {
+                                "id": "page-1",
+                                "name": "Orbita Media Verlag",
+                                "connected_instagram_account": "17841466348000992",
+                            }
+                        ],
+                    },
+                }
+            ),
+            "instagram",
+            "user-token",
+        )
+
+        assert "17841466348000992" in warning
+        assert "Switch to professional account" in warning
+        assert "Linked accounts" not in warning
+
     def test_instagram_without_a_diagnosis_stays_generic(self):
         from apps.social_accounts.views import _no_accounts_warning
 
@@ -468,9 +496,7 @@ class TestThreadsNeedsItsOwnAppId:
         assert "Threads App ID" in text
         assert "Facebook App ID does not work" in text
 
-    def test_authorization_url_failure_does_not_send_the_user_to_the_platform(
-        self, authenticated_client, workspace
-    ):
+    def test_authorization_url_failure_does_not_send_the_user_to_the_platform(self, authenticated_client, workspace):
         """Scheitert der Aufbau der Adresse, bleibt der Nutzer im Verteiler."""
         from apps.credentials.models import PlatformCredential
         from providers.exceptions import OAuthError

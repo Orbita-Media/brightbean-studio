@@ -10,7 +10,9 @@ from providers.meta_diagnostics import (
     VERDICT_PAGES_WITHOUT_INSTAGRAM,
     classify,
     collect_diagnostics,
+    instagram_links,
     page_names,
+    redact,
 )
 
 
@@ -152,6 +154,51 @@ def test_collect_diagnostics_records_a_failing_step_instead_of_raising():
 def test_classify_without_page_data_stays_unknown():
     assert classify({}) == "unknown"
     assert classify({"pages": {"count": 0, "items": []}}) == VERDICT_NO_PAGES
+
+
+def test_redact_removes_anything_shaped_like_a_token():
+    text = "error for token EAAG9ZBxyzAbCdEf1234567890 with app 1062167552935661|abcdef0123456789abcdef"
+
+    cleaned = redact(text)
+
+    assert "EAAG9ZBxyzAbCdEf1234567890" not in cleaned
+    assert "1062167552935661|abcdef0123456789abcdef" not in cleaned
+    assert cleaned.count("[entfernt]") == 2
+
+
+def test_a_failing_step_reports_a_redacted_message():
+    """Der Fehlertext eines Providers trägt den Anfang der Antwort mit sich."""
+    request_fn = _request_stub(
+        {
+            "/me/permissions": APIError(
+                'Instagram API error 400: {"access_token":"EAAG9ZBleakedtokenvalue1234"}',
+                status_code=400,
+            ),
+            "/me/accounts": {"data": []},
+        }
+    )
+
+    diagnostics = collect_diagnostics(
+        request_fn,
+        base_url="https://graph.facebook.com/v25.0",
+        access_token="user-token",
+    )
+
+    assert "EAAG9ZBleakedtokenvalue1234" not in repr(diagnostics)
+    assert "[entfernt]" in diagnostics["errors"][0]["error"]["message"]
+
+
+def test_instagram_links_lists_only_pages_that_carry_an_account():
+    diagnostics = {
+        "pages": {
+            "items": [
+                {"id": "page-1", "name": "Ohne Konto", "instagram_business_account": ""},
+                {"id": "page-2", "name": "Mit Konto", "connected_instagram_account": "17841466348000992"},
+            ]
+        }
+    }
+
+    assert instagram_links(diagnostics) == [("Mit Konto", "17841466348000992")]
 
 
 def test_provider_diagnose_pages_uses_the_app_credentials():
