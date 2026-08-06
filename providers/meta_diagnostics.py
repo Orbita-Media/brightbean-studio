@@ -4,7 +4,8 @@ Wird vom OAuth-Rückweg aufgerufen, wenn eine Facebook- oder Instagram-Anbindung
 keine einzige verwendbare Seite gefunden hat. Dahinter stecken Fälle, die von
 aussen identisch aussehen und deshalb bisher nicht zu unterscheiden waren:
 
-1. ``/me/accounts`` liefert gar keine Seite – dann fehlt ``pages_show_list``
+1. ``/me/accounts`` liefert gar keine Seite, und auch der Ausweichweg über die
+   Seitenkennungen im Token findet keine – dann fehlt ``pages_show_list``
    oder im Anmeldedialog wurde keine Seite ausgewählt.
 2. Seiten kommen, aber keine trägt ein Instagram-Konto – dann ist die
    Verknüpfung im Sinne des Graph nicht gesetzt, egal was das
@@ -31,6 +32,8 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
+
+from .meta_pages import SOURCE_ME_ACCOUNTS, SOURCE_TOKEN_SCOPES, pages_from_token_scopes
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +99,7 @@ def collect_diagnostics(
         if token_info is not None:
             diagnostics["token"] = token_info
 
-    pages = _safe(diagnostics, "pages", lambda: _pages(request_fn, base_url, access_token))
+    pages = _safe(diagnostics, "pages", lambda: _pages(request_fn, base_url, access_token, app_id, app_secret))
     if pages is not None:
         diagnostics["pages"] = pages
 
@@ -221,7 +224,7 @@ def _token_info(request_fn: Callable, base_url: str, access_token: str, app_id: 
     }
 
 
-def _pages(request_fn: Callable, base_url: str, access_token: str) -> dict:
+def _pages(request_fn: Callable, base_url: str, access_token: str, app_id: str = "", app_secret: str = "") -> dict:
     last_error: Exception | None = None
     for fields in PAGE_FIELD_SETS:
         try:
@@ -235,27 +238,49 @@ def _pages(request_fn: Callable, base_url: str, access_token: str) -> dict:
             last_error = exc
             continue
 
-        items = []
-        for page in payload.get("data") or []:
-            items.append(
-                {
-                    "id": str(page.get("id", "")),
-                    "name": str(page.get("name", "")),
-                    "category": str(page.get("category", "")),
-                    "tasks": [str(t) for t in page.get("tasks") or []],
-                    "instagram_business_account": str((page.get("instagram_business_account") or {}).get("id", "")),
-                    "connected_instagram_account": str((page.get("connected_instagram_account") or {}).get("id", "")),
-                }
-            )
-        return {
+        items = [_page_item(page) for page in payload.get("data") or []]
+        result = {
+            "source": SOURCE_ME_ACCOUNTS,
             "fields": fields,
             "count": len(items),
             "has_next_page": bool((payload.get("paging") or {}).get("next")),
             "response_error": _describe(payload.get("error")) if payload.get("error") else None,
             "items": items,
         }
+        if items or not (app_id and app_secret):
+            return result
+
+        # Keine Seite über die Sammelabfrage: derselbe Ausweichweg wie beim
+        # Verbinden, sonst behauptet die Diagnose "keine Seite", während der
+        # Verbinden-Weg längst welche gefunden hat.
+        fallback = pages_from_token_scopes(
+            request_fn,
+            base_url=base_url,
+            access_token=access_token,
+            field_sets=PAGE_FIELD_SETS,
+            app_id=app_id,
+            app_secret=app_secret,
+            label="Meta-Diagnose",
+        )
+        if fallback:
+            result["source"] = SOURCE_TOKEN_SCOPES
+            result["items"] = [_page_item(page) for page in fallback]
+            result["count"] = len(result["items"])
+        return result
 
     raise last_error if last_error else RuntimeError("Seitenabfrage lieferte kein Ergebnis")
+
+
+def _page_item(page: dict) -> dict:
+    """Eine Seitenantwort auf die Felder bringen, die im Protokoll stehen sollen."""
+    return {
+        "id": str(page.get("id", "")),
+        "name": str(page.get("name", "")),
+        "category": str(page.get("category", "")),
+        "tasks": [str(t) for t in page.get("tasks") or []],
+        "instagram_business_account": str((page.get("instagram_business_account") or {}).get("id", "")),
+        "connected_instagram_account": str((page.get("connected_instagram_account") or {}).get("id", "")),
+    }
 
 
 # ---------------------------------------------------------------------------

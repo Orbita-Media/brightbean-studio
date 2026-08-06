@@ -425,10 +425,195 @@ def test_connected_instagram_account_failure_does_not_break_the_connect():
     assert provider.get_user_pages("user-token") == []
 
 
-def test_no_fallback_call_when_no_page_came_back_at_all():
-    """Ohne Seite gibt es nichts nachzuschlagen – kein zweiter Aufruf."""
+def test_no_page_and_no_page_id_in_the_token_ends_the_search():
+    """Ohne Seite fragt der Ausweichweg das Token – nennt auch das keine, ist Schluss."""
     provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
-    provider._request = MagicMock(return_value=_resp({"data": []}))
+    provider._request = MagicMock(
+        side_effect=[
+            _resp({"data": []}),
+            _resp({"data": {"granular_scopes": [{"scope": "instagram_basic", "target_ids": ["ig-1"]}]}}),
+        ]
+    )
 
     assert provider.get_user_pages("user-token") == []
-    assert provider._request.call_count == 1
+    assert provider._request.call_count == 2, "Seitenabfrage und Token-Abfrage, mehr nicht"
+
+
+# ---------------------------------------------------------------------------
+# Ausweichweg: Seiten aus einem Business-Portfolio
+# ---------------------------------------------------------------------------
+#
+# Noahs Fall vom 06.08.2026, mit den echten Kennungen aus dem Protokoll:
+# /me/accounts liefert null Seiten, obwohl das Token beide Seiten und das
+# Instagram-Konto nennt. Die Seiten gehören einem Business-Portfolio.
+
+PORTFOLIO_PAGE_A = "708768612318133"
+PORTFOLIO_PAGE_B = "254978271039996"
+PORTFOLIO_IG = "17841466348000992"
+
+
+def _portfolio_token_payload():
+    return {
+        "data": {
+            "app_id": "1062167552935661",
+            "user_id": "1069610232678392",
+            "type": "USER",
+            "is_valid": True,
+            "granular_scopes": [
+                {"scope": "instagram_basic", "target_ids": [PORTFOLIO_IG]},
+                {"scope": "instagram_content_publish", "target_ids": [PORTFOLIO_IG]},
+                {"scope": "pages_read_engagement", "target_ids": [PORTFOLIO_PAGE_A, PORTFOLIO_PAGE_B]},
+                {"scope": "pages_show_list", "target_ids": [PORTFOLIO_PAGE_A, PORTFOLIO_PAGE_B]},
+            ],
+        }
+    }
+
+
+def _portfolio_graph(page_b_payload, page_a_payload=None):
+    def _call(method, url, **kwargs):
+        if url.endswith("/me/accounts"):
+            return _resp({"data": []})
+        if url.endswith("/debug_token"):
+            return _resp(_portfolio_token_payload())
+        if url.endswith(f"/{PORTFOLIO_PAGE_A}"):
+            return _resp(page_a_payload or {"id": PORTFOLIO_PAGE_A, "name": "Orbita Media"})
+        if url.endswith(f"/{PORTFOLIO_PAGE_B}"):
+            return _resp(page_b_payload)
+        raise AssertionError(f"Unerwarteter Aufruf: {url}")
+
+    return MagicMock(side_effect=_call)
+
+
+def test_portfolio_pages_are_found_through_the_ids_in_the_token():
+    """Der Fix: leere Sammelabfrage, Kennungen aus dem Token, Seite einzeln geholt."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = _portfolio_graph(
+        {
+            "id": PORTFOLIO_PAGE_B,
+            "name": "Orbita Media Verlag",
+            "access_token": "seiten-schlüssel",
+            "category": "Publisher",
+            "picture": {"data": {"url": "https://example.com/page.jpg"}},
+            "instagram_business_account": {
+                "id": PORTFOLIO_IG,
+                "username": "orbitamedia_verlag",
+                "name": "Orbita Media Verlag",
+                "profile_picture_url": "https://example.com/ig.jpg",
+                "followers_count": 7,
+            },
+        }
+    )
+
+    accounts = provider.get_user_pages("user-token")
+
+    assert accounts == [
+        {
+            "id": PORTFOLIO_IG,
+            "name": "Orbita Media Verlag",
+            "handle": "orbitamedia_verlag",
+            "category": "Publisher",
+            "picture": "https://example.com/ig.jpg",
+            "followers_count": 7,
+            "page_id": PORTFOLIO_PAGE_B,
+            "page_name": "Orbita Media Verlag",
+            "access_token": "seiten-schlüssel",
+        }
+    ]
+
+
+def test_portfolio_pages_also_work_through_the_second_link_field():
+    """Trägt die Seite die Verknüpfung nur im zweiten Feld, zählt sie auch hier."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+
+    def _call(method, url, **kwargs):
+        if url.endswith("/me/accounts"):
+            return _resp({"data": []})
+        if url.endswith("/debug_token"):
+            return _resp(_portfolio_token_payload())
+        if url.endswith(f"/{PORTFOLIO_PAGE_A}"):
+            return _resp({"id": PORTFOLIO_PAGE_A, "name": "Orbita Media"})
+        if url.endswith(f"/{PORTFOLIO_PAGE_B}"):
+            return _resp(
+                {
+                    "id": PORTFOLIO_PAGE_B,
+                    "name": "Orbita Media Verlag",
+                    "access_token": "seiten-schlüssel",
+                    "category": "Publisher",
+                    "connected_instagram_account": {"id": PORTFOLIO_IG, "username": "orbitamedia_verlag"},
+                }
+            )
+        if url.endswith(f"/{PORTFOLIO_IG}"):
+            return _resp(
+                {
+                    "id": PORTFOLIO_IG,
+                    "username": "orbitamedia_verlag",
+                    "name": "Orbita Media Verlag",
+                    "followers_count": 7,
+                }
+            )
+        raise AssertionError(f"Unerwarteter Aufruf: {url}")
+
+    provider._request = MagicMock(side_effect=_call)
+
+    accounts = provider.get_user_pages("user-token")
+
+    assert len(accounts) == 1
+    assert accounts[0]["id"] == PORTFOLIO_IG
+    assert accounts[0]["link_source"] == "connected_instagram_account"
+    assert accounts[0]["access_token"] == "seiten-schlüssel"
+    # Der Ausweichweg hat beide Verknüpfungsfelder schon verlangt: ein zweites
+    # /me/accounts wäre verschenkt und liefe ohnehin wieder ins Leere.
+    accounts_calls = [c for c in provider._request.call_args_list if c.args[1].endswith("/me/accounts")]
+    assert len(accounts_calls) == 1
+
+
+def test_the_log_says_which_way_found_the_pages(caplog):
+    """Beim nächsten Konto soll sofort sichtbar sein, welcher Weg gegriffen hat."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = _portfolio_graph(
+        {
+            "id": PORTFOLIO_PAGE_B,
+            "name": "Orbita Media Verlag",
+            "access_token": "seiten-schlüssel",
+            "instagram_business_account": {"id": PORTFOLIO_IG, "username": "orbitamedia_verlag"},
+        }
+    )
+
+    with caplog.at_level("INFO"):
+        provider.get_user_pages("user-token")
+
+    assert "granular_scopes" in caplog.text
+    assert "seiten-schlüssel" not in caplog.text
+
+
+def test_the_page_access_token_is_requested_separately_when_it_is_missing():
+    """Kommt der Seitenschlüssel nicht mit, wird er einzeln nachgefordert."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    asked_for_token = []
+
+    def _call(method, url, **kwargs):
+        if url.endswith("/me/accounts"):
+            return _resp({"data": []})
+        if url.endswith("/debug_token"):
+            return _resp(_portfolio_token_payload())
+        if url.endswith(f"/{PORTFOLIO_PAGE_A}"):
+            return _resp({"id": PORTFOLIO_PAGE_A, "name": "Orbita Media"})
+        if url.endswith(f"/{PORTFOLIO_PAGE_B}"):
+            if kwargs["params"]["fields"] == "access_token":
+                asked_for_token.append(url)
+                return _resp({"id": PORTFOLIO_PAGE_B, "access_token": "nachgereicht"})
+            return _resp(
+                {
+                    "id": PORTFOLIO_PAGE_B,
+                    "name": "Orbita Media Verlag",
+                    "instagram_business_account": {"id": PORTFOLIO_IG, "username": "orbitamedia_verlag"},
+                }
+            )
+        raise AssertionError(f"Unerwarteter Aufruf: {url}")
+
+    provider._request = MagicMock(side_effect=_call)
+
+    accounts = provider.get_user_pages("user-token")
+
+    assert asked_for_token, "der Seitenschlüssel muss einzeln nachgefordert werden"
+    assert accounts[0]["access_token"] == "nachgereicht"

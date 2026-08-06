@@ -16,6 +16,7 @@ from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe
+from .meta_pages import SOURCE_ME_ACCOUNTS, SOURCE_TOKEN_SCOPES, pages_from_token_scopes
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -65,6 +66,22 @@ PAGE_FIELDS = (
 # werden nur ``id`` und ``username`` verlangt und alles Weitere am Konto selbst
 # nachgeladen.
 CONNECTED_PAGE_FIELDS = "id,name,access_token,category,picture,connected_instagram_account{id,username}"
+
+# Feldleiter für den Ausweichweg über die einzelne Seite (siehe
+# ``providers/meta_pages.py``). Dort wird jede Seite einzeln geholt, deshalb
+# lohnt es sich, beide Verknüpfungsfelder in EINEM Aufruf zu verlangen statt
+# hinterher ein zweites Mal zu fragen. Fällt ein Feldname weg, greift die
+# nächste Zeile.
+PAGE_FIELD_SETS_BY_ID = (
+    (
+        "id,name,access_token,category,picture,tasks,"
+        "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count},"
+        "connected_instagram_account{id,username}"
+    ),
+    PAGE_FIELDS,
+    CONNECTED_PAGE_FIELDS,
+    "id,name,access_token,category,picture",
+)
 
 INSTAGRAM_MEDIA_FIELDS = [
     "id",
@@ -327,6 +344,11 @@ class InstagramProvider(SocialProvider):
         The user authenticates through Facebook, but the connected account in
         Brightbean should be the Instagram Business account selected from the
         Facebook Pages the user manages.
+
+        Bleibt ``/me/accounts`` leer, obwohl der Nutzer im Dialog Seiten
+        freigegeben hat, greift der Ausweichweg über die Seitenkennungen aus dem
+        Token (``providers/meta_pages.py``). Welcher Weg gegriffen hat, steht im
+        Protokoll.
         """
         resp = self._request(
             "GET",
@@ -344,6 +366,21 @@ class InstagramProvider(SocialProvider):
             )
 
         pages = data.get("data", [])
+        source = SOURCE_ME_ACCOUNTS
+        if not pages:
+            pages = pages_from_token_scopes(
+                self._request,
+                base_url=BASE_URL,
+                access_token=access_token,
+                field_sets=PAGE_FIELD_SETS_BY_ID,
+                app_id=self.credentials.get("client_id", ""),
+                app_secret=self.credentials.get("client_secret", ""),
+                label="Instagram",
+            )
+            if pages:
+                source = SOURCE_TOKEN_SCOPES
+        logger.info("Instagram: %d Seite(n) über %s gefunden", len(pages), source)
+
         accounts: list[dict] = []
         for page in pages:
             ig_account = page.get("instagram_business_account")
@@ -375,7 +412,12 @@ class InstagramProvider(SocialProvider):
             # Seiten da, aber keine mit ``instagram_business_account``: bevor
             # der Nutzer eine Fehlmeldung bekommt, wird das zweite Seitenfeld
             # geprüft, das dieselbe Verknüpfung tragen kann.
-            accounts = self._accounts_via_connected_instagram(access_token, pages)
+            if source == SOURCE_TOKEN_SCOPES:
+                # Der Ausweichweg hat beide Verknüpfungsfelder schon verlangt,
+                # ein zweiter Rundgang zum Graph wäre verschenkt.
+                accounts = self._accounts_from_connected_field(access_token, pages)
+            else:
+                accounts = self._accounts_via_connected_instagram(access_token, pages)
         return accounts
 
     def _accounts_via_connected_instagram(self, access_token: str, pages: list[dict]) -> list[dict]:
@@ -393,10 +435,6 @@ class InstagramProvider(SocialProvider):
 
         Der Aufruf bleibt bewusst eigenständig und abgesichert: Scheitert er,
         bleibt es bei der leeren Liste, statt die ganze Anbindung mitzureissen.
-        Und weil dieses Feld auch auf ein PRIVATES Instagram-Konto zeigen kann,
-        mit dem sich nichts veröffentlichen liesse, wird jeder Treffer
-        nachgeprüft – nur ein professionelles Konto antwortet auf seine
-        Profilfelder.
         """
         try:
             data = self._request(
@@ -409,8 +447,17 @@ class InstagramProvider(SocialProvider):
             logger.warning("Instagram: connected_instagram_account nicht abfragbar: %s", exc)
             return []
 
+        return self._accounts_from_connected_field(access_token, data.get("data", []))
+
+    def _accounts_from_connected_field(self, access_token: str, pages: list[dict]) -> list[dict]:
+        """Kontoliste aus Seiten bauen, die ``connected_instagram_account`` schon tragen.
+
+        Weil dieses Feld auch auf ein PRIVATES Instagram-Konto zeigen kann, mit
+        dem sich nichts veröffentlichen liesse, wird jeder Treffer nachgeprüft –
+        nur ein professionelles Konto antwortet auf seine Profilfelder.
+        """
         accounts: list[dict] = []
-        for page in data.get("data", []):
+        for page in pages:
             ig_account = page.get("connected_instagram_account") or {}
             ig_id = str(ig_account.get("id") or "")
             if not ig_id:

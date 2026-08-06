@@ -10,6 +10,7 @@ from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe, parse_insights_response
+from .meta_pages import SOURCE_ME_ACCOUNTS, SOURCE_TOKEN_SCOPES, pages_from_token_scopes
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -44,6 +45,17 @@ FACEBOOK_POST_INSIGHTS = [
     "post_clicks",
     "post_reactions_by_type_total",
 ]
+# Felder der Seitenabfrage. Dieselbe Liste dient beiden Wegen: der Sammelabfrage
+# ``/me/accounts`` und dem Ausweichweg über die einzelne Seite.
+PAGE_FIELDS = "id,name,access_token,category,picture,followers_count"
+# Feldleiter für den Ausweichweg (siehe ``providers/meta_pages.py``). Ein
+# Feldname, den die angefragte Graph-Version nicht kennt, lässt den ganzen
+# Aufruf scheitern, deshalb steht darunter je eine schmalere Zeile.
+PAGE_FIELD_SETS_BY_ID = (
+    PAGE_FIELDS,
+    "id,name,access_token,category,picture",
+    "id,name,access_token",
+)
 FACEBOOK_POST_FIELDS = [
     "id",
     "message",
@@ -245,12 +257,17 @@ class FacebookProvider(SocialProvider):
 
         Returns a list of dicts each containing id, name, access_token,
         category, and picture.
+
+        Bleibt ``/me/accounts`` leer, obwohl der Nutzer im Dialog Seiten
+        freigegeben hat, greift derselbe Ausweichweg wie bei Instagram: Die
+        Seitenkennungen stehen in den ``granular_scopes`` des Tokens, und jede
+        Seite wird einzeln geholt (``providers/meta_pages.py``).
         """
         resp = self._request(
             "GET",
             f"{BASE_URL}/me/accounts",
             access_token=access_token,
-            params={"fields": "id,name,access_token,category,picture,followers_count"},
+            params={"fields": PAGE_FIELDS},
         )
         data = resp.json()
         if "error" in data:
@@ -260,9 +277,23 @@ class FacebookProvider(SocialProvider):
                 platform=self.platform_name,
                 raw_response=data,
             )
-        logger.debug("Facebook /me/accounts returned %d pages", len(data.get("data", [])))
+        raw_pages = data.get("data", [])
+        source = SOURCE_ME_ACCOUNTS
+        if not raw_pages:
+            raw_pages = pages_from_token_scopes(
+                self._request,
+                base_url=BASE_URL,
+                access_token=access_token,
+                field_sets=PAGE_FIELD_SETS_BY_ID,
+                app_id=self.credentials.get("client_id", ""),
+                app_secret=self.credentials.get("client_secret", ""),
+                label="Facebook",
+            )
+            if raw_pages:
+                source = SOURCE_TOKEN_SCOPES
+        logger.info("Facebook: %d Seite(n) über %s gefunden", len(raw_pages), source)
         pages: list[dict] = []
-        for page in data.get("data", []):
+        for page in raw_pages:
             picture_url = None
             if "picture" in page and "data" in page["picture"]:
                 picture_url = page["picture"]["data"].get("url")
