@@ -1,16 +1,24 @@
 """Diagnose für Meta-Anbindungen: was gibt der Graph wirklich zurück?
 
 Wird vom OAuth-Rückweg aufgerufen, wenn eine Facebook- oder Instagram-Anbindung
-keine einzige verwendbare Seite gefunden hat. Genau dann sind drei Fälle
-möglich, die von aussen identisch aussehen und deshalb bisher nicht zu
-unterscheiden waren:
+keine einzige verwendbare Seite gefunden hat. Dahinter stecken Fälle, die von
+aussen identisch aussehen und deshalb bisher nicht zu unterscheiden waren:
 
 1. ``/me/accounts`` liefert gar keine Seite – dann fehlt ``pages_show_list``
    oder im Anmeldedialog wurde keine Seite ausgewählt.
 2. Seiten kommen, aber keine trägt ein Instagram-Konto – dann ist die
    Verknüpfung im Sinne des Graph nicht gesetzt, egal was das
    Business-Portfolio anzeigt.
-3. Der Aufruf läuft in ein Fehlerobjekt – dann sagt der Fehlercode es direkt.
+3. Seiten kommen ohne Instagram-Konto, weil dem Nutzer die Rolle fehlt, der
+   Meta das verknüpfte Konto überhaupt zeigt (``tasks``, siehe
+   ``pages_without_content_role``). Sieht aus wie Fall 2, ist es aber nicht.
+4. Eine Seite trägt ein Konto, das sich trotzdem nicht anbieten lässt – dann
+   liegt es am Konto (privat statt professionell), nicht an der Verknüpfung.
+5. Der Aufruf läuft in ein Fehlerobjekt – dann sagt der Fehlercode es direkt.
+
+Fall 3 und 4 unterscheidet nicht ``classify``, sondern der Aufrufer anhand von
+``pages_without_content_role`` bzw. daran, dass trotz Verknüpfung nichts
+angeboten werden konnte.
 
 Es landet KEIN Zugangstoken im Ergebnis, weder ganz noch gekürzt: nur
 Kennungen, Namen, Berechtigungsnamen und Fehlerobjekte. Das Ergebnis ist
