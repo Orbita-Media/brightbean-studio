@@ -242,8 +242,9 @@ def _run_page_diagnostics(provider, platform, access_token):
 _OPTED_IN_TO_ALL_WARNING = (
     "{lead}. Facebook granted the Page permission but did not name a single Page in the token – "
     "that is what happens when you pick the option that opts in to all current and future Pages "
-    "('Alle aktuellen und zukünftigen Seiten'). For Pages that belong to a business portfolio "
-    "that option hands out nothing, and it leaves us without a single Page to ask for. "
+    "('Alle aktuellen und zukünftigen Seiten'). That option grants more, not less, but it leaves "
+    "the token without a single Page ID to ask for – and Facebook does not list Pages that belong "
+    "to a business portfolio unless the app also holds the business_management permission. "
     "Connect again and pick the option that lists your Pages one by one "
     "('Nur aktuelle Seiten auswählen'), then tick the Page{extra}. That path is proven to work."
 )

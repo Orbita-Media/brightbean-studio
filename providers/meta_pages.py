@@ -78,9 +78,16 @@ def pages_from_token_scopes(
         label=label,
     )
     if not page_ids:
-        logger.warning(
-            "%s: /me/accounts lieferte keine Seite, und das Token nennt auch keine freigegebene "
-            "Seite. Im Anmeldedialog wurde im Schritt Seiten nichts angehakt.",
+        # NICHT als "nichts ausgewählt" auslegen: Die Referenz zu /debug_token
+        # sagt zum Feld granular_scopes "If permission applies to all, targets
+        # will not be shown". Eine leere Zielliste ist also die Darstellung von
+        # "gilt für alle Seiten" – die WEITER reichende Zusage, nur eben ohne
+        # eine einzige Kennung, die man abfragen könnte. Weiter geht es deshalb
+        # über die Business-Portfolios (``providers/meta_business.py``).
+        logger.info(
+            "%s: /me/accounts lieferte keine Seite, und das Token nennt keine einzelne Seite "
+            "(im Dialog wurde entweder 'alle aktuellen und zukünftigen Seiten' gewählt oder "
+            "nichts angehakt). Weiter über die Business-Portfolios.",
             label,
         )
         return []

@@ -307,7 +307,13 @@ def test_a_failing_debug_token_call_stays_quiet():
 
 
 def test_a_token_without_page_targets_leads_to_no_page_lookup():
-    """Wurde im Dialog keine Seite angehakt, gibt es nichts nachzuschlagen."""
+    """Nennt das Token keine einzelne Seite, gibt es hier nichts nachzuschlagen.
+
+    Das ist die Signatur der Dialog-Option "alle aktuellen und zukünftigen
+    Seiten": "If permission applies to all, targets will not be shown"
+    (Referenz zu /debug_token). Dieser Weg endet dann, der über die
+    Business-Portfolios übernimmt.
+    """
     request_fn = _graph_stub({"/debug_token": _debug_token_payload({"pages_show_list": []})})
 
     assert (
