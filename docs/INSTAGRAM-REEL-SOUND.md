@@ -97,7 +97,13 @@ des Beitrags.
 
 - **Nur mit Facebook-Login.** Eine Anbindung über „Instagram Login" darf
   veröffentlichen, aber keinen Ton wählen. Das entscheidet sich beim Einrichten
-  des Kanals, nicht beim Posten.
+  des Kanals, nicht beim Posten. Seit dem 06.08.2026 hat die Orbita-Installation
+  Zugangsdaten für **beide** Wege hinterlegt, der Kanal „Instagram (Direct)"
+  steht also auf „Connect". Verbunden werden soll trotzdem nur „Instagram" –
+  Begründung und Belegstellen im Content-Tool unter
+  `docs/KANAL-SETUP-ANLEITUNG.md` Abschnitt 1.9. Der Code setzt das hart um:
+  `platform == "instagram"` in `apps/composer/views.py:231`,
+  `apps/api/routers/accounts.py:63` und `apps/api/routers/posts.py:189`.
 - **Keine Vorschau.** Die Doku sagt es ausdrücklich („Previewing a Reel with
   attached audio is not supported"). Die Mischung muss vorher sitzen.
 - **Nur beim Anlegen.** Ton nachträglich zuweisen sieht die Schnittstelle nicht
