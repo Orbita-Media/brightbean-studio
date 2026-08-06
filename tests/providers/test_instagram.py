@@ -10,6 +10,26 @@ def _resp(data):
     return MagicMock(json=MagicMock(return_value=data))
 
 
+def test_the_account_id_lookup_also_survives_an_empty_me_accounts():
+    """Der Notnagel in ``_get_ig_user_id`` darf nicht an derselben Stelle scheitern.
+
+    Veroeffentlichen, Zustandspruefung und Auswertung reichen die gespeicherte
+    Kennung als ``ig_user_id`` durch, dieser Zweig greift also selten. Wenn er
+    greift, lief bisher nur ``/me/accounts`` – und genau das gibt Seiten aus
+    einem Business-Portfolio nicht heraus.
+    """
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider._request = MagicMock(
+        side_effect=[
+            _resp({"data": []}),
+            _resp({"data": {"granular_scopes": [{"scope": "pages_show_list", "target_ids": ["page-9"]}]}}),
+            _resp({"id": "page-9", "instagram_business_account": {"id": "17841466348000992"}}),
+        ]
+    )
+
+    assert provider._get_ig_user_id("user-token") == "17841466348000992"
+
+
 def test_the_login_dialog_does_not_ask_for_business_management_by_default():
     """Der Weg, der nachweislich funktioniert, bleibt unangetastet.
 

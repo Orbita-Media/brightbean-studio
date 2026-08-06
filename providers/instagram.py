@@ -84,6 +84,13 @@ PAGE_FIELD_SETS_BY_ID = (
     "id,name,access_token,category,picture",
 )
 
+# Feldleiter für die Notfall-Auflösung der Konto-Kennung (``_get_ig_user_id``).
+# Bewusst schmal: Gebraucht wird nur die Kennung, nicht das ganze Konto.
+IG_LOOKUP_FIELD_SETS = (
+    "id,instagram_business_account{id},connected_instagram_account{id}",
+    "id,instagram_business_account",
+)
+
 INSTAGRAM_MEDIA_FIELDS = [
     "id",
     "caption",
@@ -981,10 +988,27 @@ class InstagramProvider(SocialProvider):
             "GET",
             f"{BASE_URL}/me/accounts",
             access_token=access_token,
-            params={"fields": "id,instagram_business_account"},
+            params={"fields": IG_LOOKUP_FIELD_SETS[0]},
         )
-        for page in resp.json().get("data", []):
-            ig_account = page.get("instagram_business_account")
+        pages = resp.json().get("data", [])
+        if not pages:
+            # Derselbe Notnagel wie beim Verbinden. In der Praxis kommt dieser
+            # Zweig kaum vor – Veröffentlichen, Zustandsprüfung und Auswertung
+            # reichen die gespeicherte Kennung als ``ig_user_id`` durch. Wenn er
+            # doch greift, darf er nicht an derselben Stelle scheitern wie
+            # ``/me/accounts``: Seiten aus einem Business-Portfolio stehen dort
+            # nicht drin (siehe ``providers/meta_business.py``).
+            pages, _ = pages_when_me_accounts_is_empty(
+                self._request,
+                base_url=BASE_URL,
+                access_token=access_token,
+                field_sets=IG_LOOKUP_FIELD_SETS,
+                app_id=self.credentials.get("client_id", ""),
+                app_secret=self.credentials.get("client_secret", ""),
+                label="Instagram",
+            )
+        for page in pages:
+            ig_account = page.get("instagram_business_account") or page.get("connected_instagram_account")
             if ig_account:
                 return ig_account["id"]
 
