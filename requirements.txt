@@ -52,7 +52,12 @@ mypy>=1.11,<1.20
 django-stubs>=5.0,<6.0
 types-python-dateutil>=2.9,<3.0
 pytest>=8.3,<9.0
-pytest-django>=4.8,<5.0
+# Obergrenze mit Absicht: Ab 4.12 setzt pytest-django beim Aufbau der
+# Testdatenbank ``TestCase._pre_setup_ran_eagerly`` voraus, ein Attribut, das es
+# erst ab Django 5.2 gibt. Mit dem oben festgelegten Django 5.1 bricht damit
+# JEDER Test ab, der die Datenbank braucht (AttributeError beim Setup) - eine
+# frische Installation kann die Testreihe sonst gar nicht fahren.
+pytest-django>=4.8,<4.12
 pytest-cov>=5.0,<6.0
 factory-boy>=3.3,<4.0
 

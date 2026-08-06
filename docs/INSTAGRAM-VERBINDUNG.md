@@ -42,17 +42,22 @@ Erhoben wird:
 | `GET /me/accounts` | Wie viele Seiten kommen zurück, und trägt eine davon ein Instagram-Konto? |
 
 Kein Zugangstoken landet im Protokoll – weder ganz noch gekürzt. Enthalten sind
-nur Kennungen, Seitennamen, Berechtigungsnamen und Fehlerobjekte.
+nur Kennungen, Seitennamen, Berechtigungsnamen und Fehlerobjekte. Zusätzlich
+läuft jede Fehlermeldung durch `redact()`: Der Fehlertext eines Providers trägt
+den Anfang der Antwort mit sich, und das ist die einzige Stelle, an der doch
+einmal etwas mitkommen könnte, das niemand geprüft hat.
 
 Abrufen auf dem Server:
 
 ```bash
+# Der Containername enthält den Zeitstempel des letzten Deploys und ändert sich
+# damit bei jedem Deploy – deshalb nicht festschreiben, sondern nachschlagen.
 ssh -i ~/.ssh/noah_desktop_hetzner root@5.75.158.30 \
-  "docker logs --since 30m app-xos84sccocw488o8kccow88g-024611249478 2>&1 \
-   | grep 'OAuth connect returned no accounts'"
+  'C=$(docker ps --format "{{.Names}}" | grep "^app-xos84" | head -1); \
+   docker logs --since 30m $C 2>&1 | grep "OAuth connect returned no accounts"'
 ```
 
-## Die drei Fälle und was jeweils zu tun ist
+## Die vier Fälle und was jeweils zu tun ist
 
 **`verdict: no_pages`** – `/me/accounts` liefert keine einzige Seite. Dann fehlt
 `pages_show_list`, oder im Anmeldedialog wurde im Schritt „Seiten" nichts
@@ -61,28 +66,58 @@ zeigt es: steht dort `pages_show_list` ohne `target_ids`, wurde zugestimmt, aber
 nichts ausgewählt.
 
 **`verdict: pages_without_instagram`** – Seiten kommen, keine trägt ein
-Instagram-Konto. Dann ist die Verknüpfung im Sinne des Graph nicht gesetzt,
-**egal was das Business-Portfolio unter „Verknüpfte Assets" anzeigt**. Die
-Verknüpfung, die zählt, wird an der Seite selbst gesetzt: Meta Business Suite →
-Einstellungen → **Verknüpfte Konten** → Instagram → **Konto verbinden**
+Instagram-Konto, **in keinem der beiden Felder**. Dann ist die Verknüpfung im
+Sinne des Graph nicht gesetzt, egal was das Business-Portfolio unter
+„Verknüpfte Assets" anzeigt. Gesetzt wird sie an der Seite selbst: Meta Business
+Suite → Einstellungen → **Verknüpfte Konten** → Instagram → **Konto verbinden**
 ([Meta Business Help
-Center](https://www.facebook.com/business/help/connect-instagram-to-page)).
+Center](https://www.facebook.com/business/help/898752960195806)).
 Voraussetzung: Das Instagram-Konto ist professionell (Business oder Creator) und
 man ist Administrator der Seite.
+
+**`verdict: pages_with_instagram`, aber trotzdem nichts anzubieten** – die
+Verknüpfung ist da, das Konto liess sich aber nicht bestätigen. Dann liegt es
+nicht an der Verknüpfung, sondern am Konto: Ein privates Konto beantwortet keine
+Profilfelder und kann nichts veröffentlichen. Umstellen in der Instagram-App →
+Einstellungen und Privatsphäre → **Kontotyp und Tools** → **Zu professionellem
+Konto wechseln**.
 
 **Fehlerobjekt** – dann steht der Code direkt im Protokoll (`errors[].error.code`),
 zum Beispiel 190 für ein abgelaufenes Token oder 200 für eine fehlende
 Berechtigung.
 
-## Ausweichweg: `connected_instagram_account`
+## Derselbe Befund im Verbindungslink für Kunden
 
-Der Graph führt zwei Felder für dieselbe Sache. `instagram_business_account` ist
-das dokumentierte; `connected_instagram_account` ist älter, undokumentiert und
-trägt in manchen Konten die Verknüpfung, die aus der Instagram-App heraus
-entstanden ist. Findet der erste Weg nichts, prüft
-`_accounts_via_connected_instagram` das zweite Feld – als eigener, abgesicherter
-Aufruf, damit ein nicht mehr existierendes Feld nicht die ganze Anbindung
-mitreisst.
+`apps/onboarding/views.py` ist der zweite Weg in dieselbe Anbindung: Ein Kunde
+öffnet einen Verbindungslink und meldet sich selbst an. Dieser Weg fiel bei
+leerer Seitenliste bisher stumm in den Standardweg – bei Facebook wurde dann das
+**persönliche Profil** verbunden, mit dem sich nichts veröffentlichen lässt, bei
+Instagram endete es in „Failed to connect account. Please try again." Seit dem
+06.08.2026 zeigt er dieselbe konkrete Meldung wie der Verteiler und legt nichts
+an. Nebeneffekt: Das Profil wird für Facebook und Instagram gar nicht mehr
+abgefragt, es wurde dort ohnehin verworfen.
+
+## Die zwei Seitenfelder – der eigentliche Stolperstein
+
+Der Graph führt für dieselbe Verknüpfung **zwei** Felder, und die Referenz
+unterscheidet sie danach, WIE die Verknüpfung entstanden ist
+([Graph API Reference,
+Page](https://developers.facebook.com/docs/graph-api/reference/page/)):
+
+| Feld | Beschreibung laut Referenz |
+|---|---|
+| `instagram_business_account` | „Instagram account linked to page during Instagram business conversion flow" |
+| `connected_instagram_account` | „Instagram account connected to page via page settings" |
+
+Der Verbinden-Weg las bis zum 06.08.2026 nur das erste. Wer sein Konto also
+nicht über den Umwandlungsablauf, sondern in den Seiteneinstellungen oder im
+Business-Portfolio verbunden hat, fiel lautlos durch – die Verknüpfung war da,
+nur im anderen Feld.
+
+Seither prüft `_accounts_via_connected_instagram` das zweite Feld, wenn das
+erste nichts hergibt. Der Aufruf bleibt eigenständig und abgesichert, damit ein
+Feldname, den eine spätere Graph-Version nicht mehr kennt, nicht die ganze
+Anbindung mitreisst.
 
 Ein Treffer wird **nicht ungeprüft** angeboten: Das Feld kann auch auf ein
 privates Konto zeigen, mit dem sich nichts veröffentlichen liesse. Deshalb

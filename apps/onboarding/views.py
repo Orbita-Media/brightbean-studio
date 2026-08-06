@@ -33,6 +33,7 @@ from apps.social_accounts.views import (
     _create_or_update_account,
     _get_configured_platforms,
     _get_provider_for_platform,
+    _no_accounts_warning,
     _normalize_mastodon_instance_url,
     _resolve_mastodon_extra_creds,
 )
@@ -413,7 +414,6 @@ def connection_oauth_callback(request, platform):
         provider = _get_provider_for_platform(platform, org.id, **extra_creds)
         redirect_uri = redirect_uri_from_request(request)
         tokens = provider.exchange_code(code, redirect_uri, **pkce_kwargs(session_data.get("code_verifier")))
-        profile = provider.get_profile(tokens.access_token)
 
         # Handle Facebook/Instagram multi-page: auto-connect first page
         if platform in (
@@ -421,32 +421,41 @@ def connection_oauth_callback(request, platform):
             PlatformCredential.Platform.INSTAGRAM,
         ) and hasattr(provider, "get_user_pages"):
             pages = provider.get_user_pages(tokens.access_token)
-            if pages:
-                from providers.types import AccountProfile
-
-                for page in pages:
-                    page_profile = AccountProfile(
-                        platform_id=page["id"],
-                        name=page["name"],
-                        handle=page.get("handle"),
-                        avatar_url=page.get("picture", ""),
-                        follower_count=page.get("followers_count", 0),
-                    )
-                    account = _create_or_update_account(
-                        workspace_id=workspace_id,
-                        platform=platform,
-                        profile=page_profile,
-                        access_token=page.get("access_token", tokens.access_token),
-                        refresh_token=tokens.refresh_token,
-                        expires_in=tokens.expires_in,
-                    )
-                    ConnectionLinkUsage.objects.get_or_create(
-                        connection_link=link,
-                        social_account=account,
-                    )
+            if not pages:
+                # Bisher fiel dieser Weg stumm in den Standardweg: bei Facebook
+                # wurde dann das PERSOENLICHE Profil verbunden, mit dem sich
+                # nichts veroeffentlichen laesst, bei Instagram endete es in der
+                # allgemeinen Fehlermeldung. Der Kunde bekommt jetzt denselben
+                # konkreten Befund wie im Verteiler.
+                request.session["connection_link_error"] = _no_accounts_warning(provider, platform, tokens.access_token)
                 return redirect("onboarding:connection_page", token=token)
 
+            from providers.types import AccountProfile
+
+            for page in pages:
+                page_profile = AccountProfile(
+                    platform_id=page["id"],
+                    name=page["name"],
+                    handle=page.get("handle"),
+                    avatar_url=page.get("picture", ""),
+                    follower_count=page.get("followers_count", 0),
+                )
+                account = _create_or_update_account(
+                    workspace_id=workspace_id,
+                    platform=platform,
+                    profile=page_profile,
+                    access_token=page.get("access_token", tokens.access_token),
+                    refresh_token=tokens.refresh_token,
+                    expires_in=tokens.expires_in,
+                )
+                ConnectionLinkUsage.objects.get_or_create(
+                    connection_link=link,
+                    social_account=account,
+                )
+            return redirect("onboarding:connection_page", token=token)
+
         # Standard single-account flow
+        profile = provider.get_profile(tokens.access_token)
         account = _create_or_update_account(
             workspace_id=workspace_id,
             platform=platform,

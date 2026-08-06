@@ -84,3 +84,63 @@ class TestConnectionLinkPkce:
         mock_provider.exchange_code.assert_called_once()
         _, kwargs = mock_provider.exchange_code.call_args
         assert kwargs["code_verifier"] == verifier
+
+
+@pytest.mark.django_db
+class TestConnectionLinkWithoutPages:
+    """Ohne verwendbare Seite darf der Verbindungslink nichts Falsches anlegen."""
+
+    def _state(self, workspace, connection_link, nonce, client, platform):
+        state = _sign_connection_link_state(workspace.id, platform, connection_link.token, nonce)
+        session = client.session
+        session[CONNECTION_LINK_OAUTH_SESSION_KEY] = {
+            "nonce": nonce,
+            "workspace_id": str(workspace.id),
+            "platform": platform,
+            "token": connection_link.token,
+        }
+        session.save()
+        return state
+
+    def test_instagram_without_pages_reports_the_finding_instead_of_a_generic_error(
+        self, client, workspace, connection_link
+    ):
+        from apps.social_accounts.models import SocialAccount
+
+        state = self._state(workspace, connection_link, "nonce-ig", client, "instagram")
+
+        mock_provider = MagicMock()
+        mock_provider.exchange_code.return_value = OAuthTokens(access_token="tok", refresh_token="r", expires_in=3600)
+        mock_provider.get_user_pages.return_value = []
+        mock_provider.diagnose_pages.return_value = {
+            "verdict": "pages_without_instagram",
+            "pages": {"count": 1, "items": [{"id": "page-1", "name": "Orbita Media Verlag"}]},
+        }
+
+        url = reverse("onboarding:oauth_callback", kwargs={"platform": "instagram"})
+        with patch("apps.onboarding.views._get_provider_for_platform", return_value=mock_provider):
+            response = client.get(url, {"code": "auth-code", "state": state})
+
+        assert response.status_code == 302
+        assert "Orbita Media Verlag" in client.session["connection_link_error"]
+        assert not SocialAccount.objects.filter(workspace=workspace).exists()
+        # Das persoenliche Profil darf gar nicht erst geholt werden.
+        mock_provider.get_profile.assert_not_called()
+
+    def test_facebook_without_pages_does_not_connect_the_personal_profile(self, client, workspace, connection_link):
+        from apps.social_accounts.models import SocialAccount
+
+        state = self._state(workspace, connection_link, "nonce-fb", client, "facebook")
+
+        mock_provider = MagicMock()
+        mock_provider.exchange_code.return_value = OAuthTokens(access_token="tok", refresh_token="r", expires_in=3600)
+        mock_provider.get_user_pages.return_value = []
+        mock_provider.diagnose_pages.return_value = {"verdict": "no_pages", "pages": {"count": 0, "items": []}}
+
+        url = reverse("onboarding:oauth_callback", kwargs={"platform": "facebook"})
+        with patch("apps.onboarding.views._get_provider_for_platform", return_value=mock_provider):
+            response = client.get(url, {"code": "auth-code", "state": state})
+
+        assert response.status_code == 302
+        assert "No Facebook Pages were found" in client.session["connection_link_error"]
+        assert not SocialAccount.objects.filter(workspace=workspace).exists()
