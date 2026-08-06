@@ -242,6 +242,47 @@ class TestOAuthCallbackView:
         assert page_data["platform"] == "instagram"
         assert page_data["pages"][0]["id"] == "17841400000000000"
 
+    def test_instagram_without_accounts_writes_the_finding_into_the_log(
+        self, authenticated_client, workspace, user, caplog
+    ):
+        """Der eigentliche Zweck der Erhebung: Der Befund muss im Protokoll landen.
+
+        Und zwar vollstaendig genug, um den Fall zu entscheiden - und ohne
+        Zugangstoken, auch nicht den des Nutzers, der hier durchgereicht wird.
+        """
+        import logging
+
+        nonce = "nonce-diag"
+        state = _sign_state(workspace.id, "instagram", user.id, nonce)
+        session = authenticated_client.session
+        session[OAUTH_SESSION_KEY] = {"nonce": nonce}
+        session.save()
+
+        mock_provider = MagicMock()
+        mock_provider.exchange_code.return_value = OAuthTokens(access_token="EAAgeheimestoken", refresh_token="r")
+        mock_provider.get_user_pages.return_value = []
+        mock_provider.diagnose_pages.return_value = {
+            "verdict": "pages_without_instagram",
+            "permissions": {"granted": ["pages_show_list"], "declined": []},
+            "pages": {"count": 1, "items": [{"id": "page-1", "name": "Orbita Media Verlag"}]},
+            "errors": [],
+        }
+
+        url = reverse("social_accounts:oauth_callback", kwargs={"platform": "instagram"})
+        with (
+            caplog.at_level(logging.WARNING, logger="apps.social_accounts.views"),
+            patch("apps.social_accounts.views._get_provider_for_platform", return_value=mock_provider),
+        ):
+            response = authenticated_client.get(url, {"code": "abc123", "state": state})
+
+        assert response.status_code == 302
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "OAuth connect returned no accounts for instagram" in logged
+        assert "pages_without_instagram" in logged
+        assert "Orbita Media Verlag" in logged
+        assert "pages_show_list" in logged
+        assert "EAAgeheimestoken" not in logged
+
     def test_tiktok_callback_replays_pkce_verifier(self, authenticated_client, workspace, user):
         """The verifier stashed at connect is read from the session and replayed
         on the TikTok token exchange (callback arrives at the ``social1`` slug)."""
