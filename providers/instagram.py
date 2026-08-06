@@ -14,9 +14,9 @@ from urllib.parse import urlencode
 
 from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
+from .meta_business import pages_when_me_accounts_is_empty
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe
-from .meta_business import pages_when_me_accounts_is_empty
 from .meta_pages import SOURCE_ME_ACCOUNTS
 from .types import (
     AccountMetrics,

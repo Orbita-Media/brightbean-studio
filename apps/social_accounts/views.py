@@ -289,7 +289,9 @@ def _no_accounts_warning(provider, platform, access_token):
     # die Signatur der Dialog-Option "alle aktuellen und zukünftigen Seiten".
     # Sie trägt bei Seiten aus einem Business-Portfolio nicht, und das kostete
     # am 06.08.2026 einen ganzen Abend – deshalb steht es jetzt in der Meldung.
-    opted_in_to_all = bool(verdict == VERDICT_NO_PAGES and not selected and pages_permission_without_targets(diagnostics))
+    opted_in_to_all = bool(
+        verdict == VERDICT_NO_PAGES and not selected and pages_permission_without_targets(diagnostics)
+    )
 
     if platform == PlatformCredential.Platform.INSTAGRAM:
         if verdict == VERDICT_PAGES_WITHOUT_INSTAGRAM:
@@ -333,9 +335,7 @@ def _no_accounts_warning(provider, platform, access_token):
                 )
             if opted_in_to_all:
                 return _OPTED_IN_TO_ALL_WARNING.format(
-                    lead=(
-                        "Facebook returned no Page at all, so no Instagram account could be found"
-                    ),
+                    lead="Facebook returned no Page at all, so no Instagram account could be found",
                     extra=" and the Instagram account",
                 )
             return (

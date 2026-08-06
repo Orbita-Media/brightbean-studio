@@ -16,8 +16,9 @@ nirgends. Genau diese Lücke schliesst dieser Text.
 2. Zurück im `oauth_callback` wird der Code gegen ein Nutzertoken getauscht.
 3. `providers/instagram.py` → `get_user_pages` fragt
    `GET /me/accounts?fields=…,instagram_business_account{…}` ab.
-4. Kommt dabei **keine** Seite zurück, greift der Ausweichweg über die
-   Seitenkennungen im Token (`providers/meta_pages.py`, siehe unten).
+4. Kommt dabei **keine** Seite zurück, greifen zwei Ausweichwege nacheinander:
+   die Seitenkennungen im Token (`providers/meta_pages.py`) und, wenn auch die
+   fehlen, die Business-Portfolios (`providers/meta_business.py`, beides unten).
 5. **Jede Seite ohne `instagram_business_account` fällt raus.** Bleibt nichts
    übrig, sieht der Nutzer die Warnung und landet wieder in der Kanalliste.
 
@@ -61,12 +62,18 @@ ssh -i ~/.ssh/noah_desktop_hetzner root@5.75.158.30 \
 
 ## Die fünf Fälle und was jeweils zu tun ist
 
-**`verdict: no_pages`** – weder `/me/accounts` noch der Ausweichweg über die
-Seitenkennungen im Token finden eine Seite. Dann fehlt `pages_show_list`, oder im
-Anmeldedialog wurde im Schritt „Seiten" nichts ausgewählt. `granular_scopes`
-zeigt es: steht dort `pages_show_list` ohne `target_ids`, wurde zugestimmt, aber
-nichts ausgewählt. Stehen dort Kennungen und es kommt trotzdem nichts, liess sich
-keine der genannten Seiten laden – der Grund steht dann als Warnung im Protokoll.
+**`verdict: no_pages`** – keiner der drei Wege findet eine Seite. Drei
+Unterfälle, die `granular_scopes` auseinanderhält:
+
+- `pages_show_list` gar nicht erteilt: Der Seiten-Schritt im Dialog wurde
+  abgelehnt.
+- `pages_show_list` erteilt, aber **ohne** `target_ids`: Es wurde „alle
+  aktuellen und zukünftigen Seiten" gewählt. Das ist die weiter reichende
+  Zusage, lässt aber keine Kennung übrig – der Weg über das Portfolio ist dann
+  der einzige, und ohne `business_management` gibt es keinen. Die Meldung sagt
+  das inzwischen und verweist auf die andere Dialog-Option.
+- `target_ids` vorhanden und trotzdem nichts: Keine der genannten Seiten liess
+  sich laden – der Grund steht als Warnung im Protokoll.
 
 **`verdict: pages_without_instagram`** – Seiten kommen, keine trägt ein
 Instagram-Konto, **in keinem der beiden Felder**. Dann ist die Verknüpfung im
@@ -110,8 +117,11 @@ abgefragt, es wurde dort ohnehin verworfen.
 
 ## Seiten aus einem Business-Portfolio – warum `/me/accounts` schwieg
 
-Das war die tatsächliche Ursache bei `@orbitamedia_verlag`. Das Protokoll des
-dritten Versuchs (06.08.2026, 19:03:01) sagte es unmissverständlich:
+Das war die tatsächliche Ursache bei `@orbitamedia_verlag`. **Und sie steht,
+anders als hier zunächst vermutet, wörtlich in Metas Changelog** – siehe
+[Der eine Satz, der alles erklärt](#der-eine-satz-der-alles-erklärt) weiter
+unten. Das Protokoll des dritten Versuchs (06.08.2026, 19:03:01) sagte es
+unmissverständlich:
 
 ```
 "pages":  {"count": 0, "items": []},
@@ -164,11 +174,13 @@ anderes Verhalten.
 4. Eine Feldleiter von breit nach schmal fängt ab, dass ein einzelner Feldname
    den ganzen Aufruf scheitern lässt (Fehler 100, „nonexisting field").
 
-**Warum ausgerechnet dieser Weg und nicht `business_management`.** Die naheliegende
-Alternative wären `GET /{business-id}/owned_pages` bzw. `client_pages`. Beide
-verlangen die Berechtigung `business_management`, und die braucht eine
-App-Überprüfung. Der Weg über die einzelne Seite kommt mit genau den
-Berechtigungen aus, die bereits erteilt sind.
+**Warum dieser Weg zuerst und nicht `business_management`.** Die Alternative
+sind `GET /{business-id}/owned_pages` bzw. `client_pages`; beide verlangen
+`business_management`. Diese Berechtigung braucht **keine App-Überprüfung**,
+solange die anmeldende Person eine Rolle in der App hat (siehe unten,
+Zugriffsebenen) – sie ist aber eine Berechtigung mehr im Dialog und für fremde
+Kunden nicht erteilbar. Der Weg über die einzelne Seite kommt mit genau den
+Berechtigungen aus, die bereits erteilt sind, und läuft deshalb zuerst.
 
 **Warum es für Instagram besonders gut passt.** Das Feld
 `instagram_business_account` ist in der Referenz **aufgabenbasiert** formuliert
@@ -205,8 +217,10 @@ Instagram: 2 von 2 im Token genannten Seite(n) über den Ausweichweg granular_sc
 
 Steht dort `me_accounts`, lief alles über die Sammelabfrage. Steht dort
 `granular_scopes`, hat der Ausweichweg gegriffen – dann ist der Zugang über ein
-Business-Portfolio zugewiesen. Der Befund der Diagnose führt dasselbe unter
-`pages.source`. Zugangstoken stehen in keiner dieser Zeilen.
+Business-Portfolio zugewiesen. Steht dort `business_portfolios`, kam auch aus
+dem Token keine Kennung, und die Seiten stammen aus `/me/businesses` – das ist
+der Fall „alle aktuellen und zukünftigen Seiten". Der Befund der Diagnose führt
+dasselbe unter `pages.source`. Zugangstoken stehen in keiner dieser Zeilen.
 
 ### Wenn auch der Ausweichweg nichts findet
 
@@ -218,6 +232,119 @@ angehakt. Die Meldung nennt in diesem Fall die freigegebenen Kennungen und
 verweist auf den Zugriff im Business-Portfolio
 (`selected_page_ids` in `providers/meta_diagnostics.py`). Welche Seite genau
 scheiterte und warum, steht als Warnung im Protokoll.
+
+## Der eine Satz, der alles erklärt
+
+Die Vermutung oben („klassische Seitenrolle gegen Portfolio-Zuweisung") lag
+richtig, war aber geraten. Es gibt einen offiziellen Satz dazu, und er steht
+nicht in der Referenz, sondern im **Changelog vom 15.09.2023**
+([Non-Versioned
+Changes](https://developers.facebook.com/docs/graph-api/changelog/non-versioned-changes/nvc-2023#september-15--2023),
+Abschnitt „User Accounts"):
+
+> „The `GET /{user-id}/accounts` (aka `GET /me/accounts`) endpoint no longer
+> returns Facebook pages that have been linked to a Meta business account,
+> unless the app user has granted the business_management permission to the app
+> and has a role on the linked business account."
+
+Damit ist der Fall vollständig erklärt, und zwar in beiden Varianten: Noah hat
+die Rolle im Portfolio, aber die App hat `business_management` nie angefragt.
+Deshalb kam `/me/accounts` leer zurück – bei „nur ausgewählte" genauso wie bei
+„alle". Die Dialog-Option war nie die Ursache; sie entscheidet nur darüber, ob
+noch ein Ersatzanker übrig bleibt.
+
+Ursprung der Änderung ist der [Changelog zu
+v17.0](https://developers.facebook.com/docs/graph-api/changelog/version17.0#user-accounts);
+sie gilt laut derselben Seite „to v17.0 and later versions". Die Anbindung
+läuft auf v25.0, ist also betroffen.
+
+### Warum „alle Seiten" trotzdem scheiterte – und was leere Ziel-Listen bedeuten
+
+Naheliegend war die Lesart: leere `granular_scopes` heissen „hat nichts
+ausgewählt". **Das ist falsch, und die Referenz sagt es deutlich** ([Graph API
+Reference,
+debug_token](https://developers.facebook.com/docs/graph-api/reference/debug_token/),
+Feld `granular_scopes`):
+
+> „List of granular permissions that the user has granted for the app in this
+> access token. If permission applies to all, targets will not be shown."
+
+Eine leere Zielliste ist also die Darstellung von „gilt für alles" – die
+**weiter** reichende Zusage, nicht die schwächere. Praktisch bleibt trotzdem
+nichts übrig: Das Token dürfte jede Seite abfragen, nennt aber keine einzige
+Kennung, und ohne `business_management` gibt der Graph die Liste auch nicht
+her. Kein Anker, kein Ergebnis.
+
+Die frühere Protokollzeile „im Schritt Seiten nichts angehakt" behauptete das
+Gegenteil und ist seit dem 06.08.2026 korrigiert.
+
+### Der dritte Weg: über das Portfolio
+
+`providers/meta_business.py`, eingehängt hinter dem Weg über die
+Seitenkennungen (`pages_when_me_accounts_is_empty` bestimmt die Reihenfolge):
+
+1. `GET /me/businesses` nennt die Portfolios, auf die der Zugang reicht.
+2. `GET /{business-id}/owned_pages` und `GET /{business-id}/client_pages`
+   nennen deren Seiten – die eigenen und die betreuten.
+3. Fehlende Seitenschlüssel werden einzeln nachgefordert, ein Portfolio ohne
+   Auskunft übersprungen und protokolliert, die Feldleiter läuft wie überall
+   von breit nach schmal.
+
+Die Reihenfolge ist nicht beliebig: Der Weg über das Token kommt mit den
+ohnehin erteilten Berechtigungen aus, dieser hier braucht eine zusätzliche.
+
+### `business_management` – ausgeschaltet, mit Absicht
+
+Der Weg braucht `business_management`. Diese Berechtigung steht **nicht** im
+Standard-Dialog. Der Grund ist nicht Vorsicht vor Meta, sondern Vorsicht vor
+dem eigenen Erfolg: Der Weg über „Nur aktuelle Seiten auswählen" funktioniert
+nachweislich, und er darf nicht durch eine zusätzliche Berechtigung im Dialog
+gefährdet werden.
+
+Eingeschaltet wird sie über `META_REQUEST_BUSINESS_SCOPE=True` – eine
+Umgebungsvariable, kein Code. Sie wirkt nur im internen Verbinden-Weg, nie im
+Verbindungslink für Kunden: Wer keine Rolle in der App hat, kann sie ohnehin
+nicht erteilen, und dann hat sie im Dialog nichts zu suchen
+(`apps/social_accounts/views.py` → `_apply_oauth_scope_flags`).
+
+**Braucht das eine App-Überprüfung? Nein**, solange die anmeldende Person eine
+Rolle in der App hat ([Graph API,
+Zugriffsebenen](https://developers.facebook.com/docs/graph-api/overview/access-levels/)):
+
+> „Berechtigungen mit Standardzugriff können nur von App-Nutzer*innen
+> angefordert werden, die eine Rolle in der anfordernden App haben."
+
+Business-Apps sind für Standard Access „automatisch für alle Berechtigungen und
+Features … genehmigt"; App-Überprüfung und Unternehmensverifizierung hängen
+ausschliesslich am erweiterten Zugriff. Noah ist Administrator der App, erfüllt
+die Bedingung also. Für **fremde** Kunden gilt das nicht – für die bleibt „Nur
+aktuelle Seiten auswählen" der Weg, und genau deshalb rührt der Kundenlink den
+Schalter nicht an.
+
+Der Facebook-Anbieter fragt `business_management` seit Commit `4f79aca` ohnehin
+an; dort ist nichts verändert worden.
+
+### Muss bei jeder neuen Seite neu verbunden werden?
+
+Die praktische Frage, wenn weitere Marken dazukommen. Die Antwort hängt am
+Schalter:
+
+| Schalter | Neue Seite erscheint … | Preis |
+|---|---|---|
+| aus (Standard) | erst nach erneutem Durchlauf des Dialogs, mit „Nur aktuelle Seiten auswählen" und angehakter neuer Seite | ein Dialog pro neuer Seite |
+| an | ohne Zutun, sobald `/me/accounts` sie führt – das ist die Bedingung aus dem Changelog | eine Berechtigung mehr im Dialog |
+
+**Ein erneuter Durchlauf zerstört nichts.** Verbundene Konten hängen an
+`(workspace, platform, account_platform_id)` und werden per `update_or_create`
+aufgefrischt (`apps/social_accounts/views.py`). Ein zweiter Anlauf aktualisiert
+also das Token des bestehenden Kontos oder legt ein weiteres an; gelöscht oder
+abgeschaltet wird dabei nichts, und die Warteschlange eines bestehenden Kontos
+bleibt, wie sie ist.
+
+Eine Vorsichtsmassnahme trotzdem: Beim erneuten Durchlauf **alle** Seiten
+anhaken, auch die bereits verbundenen. Ob Meta die Auswahl eines neuen Logins
+zur bestehenden hinzufügt oder sie ersetzt, ist nirgends dokumentiert – gesucht
+wurde danach. Wer alle anhakt, muss die Frage nicht beantworten.
 
 ## Die zwei Seitenfelder – der eigentliche Stolperstein
 
