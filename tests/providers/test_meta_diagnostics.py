@@ -12,6 +12,7 @@ from providers.meta_diagnostics import (
     collect_diagnostics,
     instagram_links,
     page_names,
+    pages_without_content_role,
     redact,
 )
 
@@ -186,6 +187,27 @@ def test_a_failing_step_reports_a_redacted_message():
 
     assert "EAAG9ZBleakedtokenvalue1234" not in repr(diagnostics)
     assert "[entfernt]" in diagnostics["errors"][0]["error"]["message"]
+
+
+def test_pages_without_content_role_separates_missing_rights_from_missing_link():
+    diagnostics = {
+        "pages": {
+            "fields": "id,name,category,tasks,instagram_business_account{id,username}",
+            "items": [
+                {"id": "page-1", "name": "Nur Werbung", "tasks": ["ADVERTISE", "ANALYZE"]},
+                {"id": "page-2", "name": "Volle Rechte", "tasks": ["MANAGE", "CREATE_CONTENT"]},
+            ],
+        }
+    }
+
+    assert pages_without_content_role(diagnostics) == ["Nur Werbung"]
+
+
+def test_pages_without_content_role_says_nothing_when_tasks_were_not_asked_for():
+    """Ohne abgefragte tasks heisst leer "nicht erhoben", nicht "keine Rechte"."""
+    diagnostics = {"pages": {"fields": "id,name", "items": [{"id": "page-1", "name": "Seite"}]}}
+
+    assert pages_without_content_role(diagnostics) == []
 
 
 def test_instagram_links_lists_only_pages_that_carry_an_account():

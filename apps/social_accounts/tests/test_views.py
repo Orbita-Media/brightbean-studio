@@ -479,6 +479,30 @@ class TestNoAccountsWarning:
         assert "no Page at all" in warning
         assert "Linked accounts" not in warning
 
+    def test_instagram_without_a_page_role_says_so_instead_of_blaming_the_link(self):
+        """Fehlende Rolle sieht in der Antwort aus wie eine fehlende Verknüpfung."""
+        from apps.social_accounts.views import _no_accounts_warning
+
+        warning = _no_accounts_warning(
+            self._provider(
+                {
+                    "verdict": "pages_without_instagram",
+                    "pages": {
+                        "count": 1,
+                        "fields": "id,name,category,tasks,instagram_business_account{id,username}",
+                        "items": [
+                            {"id": "page-1", "name": "Orbita Media Verlag", "tasks": ["ADVERTISE"]},
+                        ],
+                    },
+                }
+            ),
+            "instagram",
+            "user-token",
+        )
+
+        assert "no role on them that may manage content" in warning
+        assert "Linked accounts" not in warning
+
     def test_instagram_with_a_linked_account_points_at_the_account_type(self):
         """Verknüpfung da, Konto trotzdem unbrauchbar: dann liegt es am Konto."""
         from apps.social_accounts.views import _no_accounts_warning

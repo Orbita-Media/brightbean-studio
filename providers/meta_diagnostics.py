@@ -52,6 +52,11 @@ PAGE_FIELD_SETS = (
 # dass eine Diagnose zur Datensammlung ausartet.
 PAGE_LIMIT = 100
 
+# Seitenrollen, die zum Verwalten von Inhalten berechtigen. Ohne mindestens eine
+# davon blendet Meta das verknüpfte Instagram-Konto aus, siehe
+# ``pages_without_content_role``.
+PAGE_TASKS_FOR_CONTENT = ("MANAGE", "CREATE_CONTENT")
+
 
 def collect_diagnostics(
     request_fn: Callable,
@@ -112,6 +117,30 @@ def page_names(diagnostics: dict, limit: int = 3) -> list[str]:
         return []
     names = [str(page.get("name") or page.get("id") or "") for page in pages.get("items") or []]
     return [name for name in names if name][:limit]
+
+
+def pages_without_content_role(diagnostics: dict, limit: int = 3) -> list[str]:
+    """Seiten, auf denen der Nutzer keine Rolle mit Inhaltsrechten hat.
+
+    Das Feld ``instagram_business_account`` verlangt laut Referenz "a User access
+    token from a User who is able to perform appropriate tasks on the Page"
+    (Graph API Reference, Page). Fehlt diese Rolle, bleibt das Feld leer – das
+    sieht von aussen aus wie eine fehlende Verknüpfung, ist aber eine fehlende
+    Berechtigung. Nur ``tasks`` unterscheidet die beiden Fälle.
+
+    Kamen die Seiten über eine Feldliste ohne ``tasks`` (Rückfall, siehe
+    ``PAGE_FIELD_SETS``), wird nichts behauptet: Eine leere Liste heisst dann
+    "nicht erhoben" und nicht "keine Rechte".
+    """
+    pages = diagnostics.get("pages")
+    if not isinstance(pages, dict) or "tasks" not in str(pages.get("fields") or ""):
+        return []
+    without: list[str] = []
+    for page in pages.get("items") or []:
+        tasks = {str(task).upper() for task in page.get("tasks") or []}
+        if not tasks & set(PAGE_TASKS_FOR_CONTENT):
+            without.append(str(page.get("name") or page.get("id") or ""))
+    return [name for name in without if name][:limit]
 
 
 def instagram_links(diagnostics: dict, limit: int = 3) -> list[tuple[str, str]]:

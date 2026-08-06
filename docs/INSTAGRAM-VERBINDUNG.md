@@ -57,7 +57,7 @@ ssh -i ~/.ssh/noah_desktop_hetzner root@5.75.158.30 \
    docker logs --since 30m $C 2>&1 | grep "OAuth connect returned no accounts"'
 ```
 
-## Die vier Fälle und was jeweils zu tun ist
+## Die fünf Fälle und was jeweils zu tun ist
 
 **`verdict: no_pages`** – `/me/accounts` liefert keine einzige Seite. Dann fehlt
 `pages_show_list`, oder im Anmeldedialog wurde im Schritt „Seiten" nichts
@@ -74,6 +74,14 @@ Suite → Einstellungen → **Verknüpfte Konten** → Instagram → **Konto ver
 Center](https://www.facebook.com/business/help/898752960195806)).
 Voraussetzung: Das Instagram-Konto ist professionell (Business oder Creator) und
 man ist Administrator der Seite.
+
+**`verdict: pages_without_instagram`, aber `tasks` ohne `MANAGE`/`CREATE_CONTENT`**
+– dann fehlt nicht die Verknüpfung, sondern die Rolle. Die Referenz sagt zum
+Feld `instagram_business_account`: „requires a User access token from a User who
+is able to perform appropriate tasks on the Page". Ohne solche Rolle blendet Meta
+das verknüpfte Konto aus, und die Antwort sieht exakt so aus, als wäre nichts
+verknüpft. Abhilfe: Vollzugriff (mindestens „Inhalte") in Meta Business Suite →
+Einstellungen → Personen. Die Meldung nennt diesen Fall inzwischen getrennt.
 
 **`verdict: pages_with_instagram`, aber trotzdem nichts anzubieten** – die
 Verknüpfung ist da, das Konto liess sich aber nicht bestätigen. Dann liegt es

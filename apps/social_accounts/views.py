@@ -247,6 +247,7 @@ def _no_accounts_warning(provider, platform, access_token):
         VERDICT_PAGES_WITHOUT_INSTAGRAM,
         instagram_links,
         page_names,
+        pages_without_content_role,
     )
 
     diagnostics = _run_page_diagnostics(provider, platform, access_token) or {}
@@ -256,6 +257,17 @@ def _no_accounts_warning(provider, platform, access_token):
     if platform == PlatformCredential.Platform.INSTAGRAM:
         if verdict == VERDICT_PAGES_WITHOUT_INSTAGRAM:
             names = ", ".join(page_names(diagnostics))
+            # Fehlende Seitenrolle sieht in der Antwort genauso aus wie eine
+            # fehlende Verknüpfung – nur "tasks" trennt die beiden Fälle.
+            without_role = pages_without_content_role(diagnostics)
+            if without_role and len(without_role) >= page_count:
+                return (
+                    f"Facebook returned {page_count} Page(s) ({names}), but your account has no "
+                    "role on them that may manage content, and Facebook only reveals the linked "
+                    "Instagram account to someone who has one. Ask a Page admin for Full control "
+                    "(or at least the Content task) in Meta Business Suite → Settings → People, "
+                    "then reconnect."
+                )
             return (
                 f"Facebook returned {page_count} Page(s) ({names}), but none of them has an "
                 "Instagram account linked to it. Linking the account inside your business "
