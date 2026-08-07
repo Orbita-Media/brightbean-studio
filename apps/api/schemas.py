@@ -293,6 +293,18 @@ class UpdatePostRequest(Schema):
         None,
         description="Set a draft's suggested publish time (UTC). Sending null is a no-op (cannot clear via PATCH).",
     )
+    platform_overrides: list[PlatformOverride] | None = Field(
+        None,
+        description=(
+            "Per-account overrides. OMIT the field to leave every stored override "
+            "untouched; send a list to replace the overrides of exactly the accounts "
+            "named in it. Within one entry the same rule applies field by field: an "
+            "omitted field keeps its stored value, an empty string (or empty list for "
+            "collaborators) removes the override on purpose. Reading an absent field "
+            "as an empty one is what used to delete a channel-specific caption "
+            "silently."
+        ),
+    )
 
 
 class ScheduleRequest(Schema):
@@ -332,6 +344,42 @@ class PlatformPostSummary(Schema):
         )
 
 
+class PlatformOverrideOut(Schema):
+    """Was fuer einen einzelnen Kanal wirklich gespeichert ist.
+
+    Bis zum 08.08.2026 fuehrte die Antwort diese Werte NICHT. Das war kein
+    Schoenheitsfehler, sondern machte jede Pruefung wertlos: Ein Werkzeug, das
+    nach den Mitwirkenden eines Beitrags fragte, bekam immer "nicht gefunden" -
+    unabhaengig davon, ob welche gesetzt waren. Es konnte nicht zwischen "fehlt"
+    und "kann ich nicht sehen" unterscheiden, und genau so etwas meldet
+    jahrelang Ruhe, obwohl es gar nicht anschlagen kann.
+
+    null heisst hier durchgaengig: kein Override, der Kanal benutzt den Wert
+    des Beitrags. Eine leere Liste bei collaborators heisst: ausdruecklich
+    keine Mitwirkenden.
+    """
+
+    social_account_id: uuid.UUID
+    platform: str
+    title: str | None = None
+    caption: str | None = None
+    first_comment: str | None = None
+    collaborators: list[str] | None = None
+
+    @classmethod
+    def from_platform_post(cls, pp: PlatformPost) -> PlatformOverrideOut:
+        extra = pp.platform_extra or {}
+        roh = extra.get("collaborators")
+        return cls(
+            social_account_id=pp.social_account_id,
+            platform=pp.social_account.platform,
+            title=pp.platform_specific_title,
+            caption=pp.platform_specific_caption,
+            first_comment=pp.platform_specific_first_comment,
+            collaborators=list(roh) if isinstance(roh, list) else None,
+        )
+
+
 class PostResponse(Schema):
     id: uuid.UUID
     workspace_id: uuid.UUID
@@ -344,6 +392,14 @@ class PostResponse(Schema):
     proposed_publish_at: dt.datetime | None
     status: str  # derived aggregate
     platform_posts: list[PlatformPostSummary]
+    platform_overrides: list[PlatformOverrideOut] = Field(
+        default_factory=list,
+        description=(
+            "Per-account overrides as they are actually stored. Present so that a "
+            "caller can VERIFY what it set - without it, no check could ever tell "
+            "'not set' from 'not visible'."
+        ),
+    )
     created_at: dt.datetime
     updated_at: dt.datetime
 
@@ -367,9 +423,12 @@ class PostResponse(Schema):
         It defaults to ``False`` so a new, unconverted call site fails closed —
         redacted — rather than leaking notes.
         """
-        platform_posts = [
-            PlatformPostSummary.from_platform_post(pp) for pp in post.platform_posts.select_related("social_account")
-        ]
+        # EINMAL abfragen und zweimal verwenden. Zwei getrennte Ausdruecke
+        # waeren zwei Datenbankabfragen fuer dieselbe Zeilenmenge - und die
+        # zweite haette das ``select_related`` genauso gebraucht, sonst holt
+        # jedes Kind sein Konto einzeln nach.
+        kinder = list(post.platform_posts.select_related("social_account"))
+        platform_posts = [PlatformPostSummary.from_platform_post(pp) for pp in kinder]
         return cls(
             id=post.id,
             workspace_id=post.workspace_id,
@@ -382,6 +441,7 @@ class PostResponse(Schema):
             proposed_publish_at=post.proposed_publish_at,
             status=post.status,
             platform_posts=platform_posts,
+            platform_overrides=[PlatformOverrideOut.from_platform_post(pp) for pp in kinder],
             created_at=post.created_at,
             updated_at=post.updated_at,
         )

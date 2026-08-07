@@ -333,6 +333,28 @@ def retrieve(request, post_id: uuid.UUID):
     return _post_to_response(request, post)
 
 
+def _gesetzte_felder(schema) -> set[str]:
+    """Welche Felder der Aufrufer WIRKLICH mitgeschickt hat.
+
+    Der Unterschied zwischen "Feld weggelassen" und "Feld mit null" ist hier
+    die ganze Frage. Pydantic merkt sich das in ``model_fields_set``; ohne
+    diese Unterscheidung wuerde jeder Aenderungsaufruf, der nur den Termin
+    verschiebt, nebenbei die kanalspezifische Fassung und die Mitwirkenden
+    loeschen - derselbe Fehler, den der Composer bis zum 08.08.2026 hatte.
+
+    Der Rueckfall auf ``__fields_set__`` deckt Pydantic v1 ab, falls das
+    Projekt dorthin zurueckgeht; ein leeres Set waere die gefaehrlichste
+    Antwort (dann wuerde gar nichts gesetzt), deshalb ist der Rueckfall
+    ausdruecklich und nicht stillschweigend.
+    """
+    felder = getattr(schema, "model_fields_set", None)
+    if felder is None:
+        felder = getattr(schema, "__fields_set__", None)
+    if felder is None:  # pragma: no cover - beide Pydantic-Generationen kennen eines davon
+        raise HttpError(500, "Cannot tell which fields were sent (unsupported schema library).")
+    return set(felder)
+
+
 @router.patch("/{post_id}", response=PostResponse, summary="Update draft fields")
 def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
     enforce_http_rate_limits(request, is_write=True)
@@ -381,6 +403,60 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
         if missing:
             raise HttpError(422, f"Media asset(s) not in workspace: {missing}")
 
+    # ---- Per-account overrides.
+    #
+    # ``platform_overrides`` used to be create-only. That gap forced callers
+    # into a detour: a draft created without collaborators could never get
+    # them, so eight finished drafts would have had to be re-created and the
+    # originals deleted by hand. Closing the gap here is cheaper than the
+    # detour and does not come back next time.
+    #
+    # The semantics mirror the composer fix of 2026-08-08 exactly, and the
+    # middle case is the whole point:
+    #   field absent  -> stored value stays
+    #   field present -> stored value is replaced ("" / [] removes it)
+    # Reading an absent field as an empty one is what silently deleted a
+    # Bluesky caption of 274 characters and let the post fall back to a text
+    # that busts the 300-character limit at publish time.
+    zu_setzen: list[tuple] = []
+    if payload.platform_overrides is not None:
+        kinder = {pp.social_account_id: pp for pp in post.platform_posts.select_related("social_account")}
+        for ov in payload.platform_overrides:
+            kind = kinder.get(ov.social_account_id)
+            if kind is None:
+                raise HttpError(
+                    422,
+                    (
+                        "platform_overrides[*].social_account_id must reference an account "
+                        f"of this post; {ov.social_account_id} is not one of "
+                        f"{sorted(str(k) for k in kinder)}."
+                    ),
+                )
+            gesetzt = _gesetzte_felder(ov)
+            namen: list[str] | None = None
+            if "collaborators" in gesetzt and ov.collaborators is not None:
+                # Same reasoning as on create: Instagram is the only channel
+                # whose API knows co-authors, so accepting the field elsewhere
+                # would store a setting that quietly does nothing at publish
+                # time.
+                if kind.social_account.platform != "instagram":
+                    raise HttpError(
+                        422,
+                        (
+                            "collaborators is only valid for Instagram accounts; "
+                            f"this account is on {kind.social_account.platform}."
+                        ),
+                    )
+                # Normalising here as well as in the provider is deliberate:
+                # the stored value is what a human later reads in the composer,
+                # and "@name " with a stray space reads like a different name.
+                namen = []
+                for raw in ov.collaborators:
+                    name = str(raw or "").strip().lstrip("@").strip()
+                    if name and name.lower() not in {n.lower() for n in namen}:
+                        namen.append(name)
+            zu_setzen.append((kind, gesetzt, ov, namen))
+
     with transaction.atomic():
         update_fields: list[str] = []
         if payload.caption is not None:
@@ -425,6 +501,33 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                     media_asset=resolved_assets[mid],
                     position=position,
                 )
+
+        for kind, gesetzt, ov, namen in zu_setzen:
+            kind_fields: list[str] = []
+            for feld, spalte in (
+                ("title", "platform_specific_title"),
+                ("caption", "platform_specific_caption"),
+                ("first_comment", "platform_specific_first_comment"),
+            ):
+                if feld not in gesetzt:
+                    continue
+                wert = getattr(ov, feld)
+                # "" ist eine bewusste Loeschung, None ebenfalls - beide landen
+                # als NULL, damit ``effective_*`` wieder auf den Beitrag
+                # zurueckfaellt. Ein Leerstring als Override waere ein Beitrag
+                # ohne Text auf genau einem Kanal; das will niemand.
+                setattr(kind, spalte, wert or None)
+                kind_fields.append(spalte)
+            if namen is not None:
+                extra = dict(kind.platform_extra or {})
+                if namen:
+                    extra["collaborators"] = namen
+                else:
+                    extra.pop("collaborators", None)
+                kind.platform_extra = extra
+                kind_fields.append("platform_extra")
+            if kind_fields:
+                kind.save(update_fields=[*kind_fields, "updated_at"])
 
         if update_fields:
             post.save(update_fields=[*update_fields, "updated_at"])

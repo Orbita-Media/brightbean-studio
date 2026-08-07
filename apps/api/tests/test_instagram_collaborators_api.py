@@ -138,3 +138,182 @@ class TestCollaboratorsOnCreate:
 
         assert r.status_code == 201, r.content
         assert PlatformPost.objects.get().platform_extra == {"collaborators": []}
+
+
+def _patch(client, post_id, body: dict):
+    return client.patch(
+        f"/api/v1/posts/{post_id}", data=json.dumps(body), content_type="application/json"
+    )
+
+
+@pytest.mark.django_db
+class TestCollaboratorsOnUpdate:
+    """Mitwirkende nachtraeglich setzen.
+
+    ``platform_overrides`` war bis zum 08.08.2026 create-only. Das zwang
+    Aufrufer in einen Umweg: Acht fertige Entwuerfe, die ohne Mitwirkende
+    angelegt worden waren, haetten neu angelegt und die alten von Hand
+    geloescht werden muessen. Die Luecke zu schliessen ist billiger als der
+    Umweg - und sie steht beim naechsten Mal nicht wieder da.
+    """
+
+    def _entwurf(self, client, account_id):
+        r = _post(client, {"social_account_id": str(account_id), "caption": "Erst ohne", "action": "draft"})
+        assert r.status_code == 201, r.content
+        return r.json()["id"]
+
+    def test_mitwirkende_lassen_sich_nachtraeglich_setzen(self, client_with_token, instagram_account):
+        post_id = self._entwurf(client_with_token, instagram_account.id)
+        assert PlatformPost.objects.get().platform_extra in ({}, None)
+
+        r = _patch(
+            client_with_token,
+            post_id,
+            {
+                "platform_overrides": [
+                    {"social_account_id": str(instagram_account.id), "collaborators": ["@kyocreepy"]}
+                ]
+            },
+        )
+
+        assert r.status_code == 200, r.content
+        assert PlatformPost.objects.get().platform_extra["collaborators"] == ["kyocreepy"]
+
+    def test_die_antwort_zeigt_die_mitwirkenden(self, client_with_token, instagram_account):
+        """Ohne das Feld in der Antwort kann keine Pruefung je einen Erfolg belegen.
+
+        Genau daran ist der erste Pruefversuch gescheitert: Er las alle
+        Entwuerfe zurueck, bekam ueberall "nicht gefunden" - und haette
+        dasselbe auch bei perfektem Zustand gemeldet.
+        """
+        post_id = self._entwurf(client_with_token, instagram_account.id)
+        _patch(
+            client_with_token,
+            post_id,
+            {
+                "platform_overrides": [
+                    {"social_account_id": str(instagram_account.id), "collaborators": ["kyocreepy"]}
+                ]
+            },
+        )
+
+        r = client_with_token.get(f"/api/v1/posts/{post_id}")
+
+        assert r.status_code == 200, r.content
+        overrides = r.json()["platform_overrides"]
+        assert len(overrides) == 1
+        assert overrides[0]["collaborators"] == ["kyocreepy"]
+        assert overrides[0]["platform"] == "instagram"
+
+    def test_ein_aufruf_ohne_das_feld_laesst_sie_stehen(self, client_with_token, instagram_account):
+        """Der wichtigste Test des Moduls.
+
+        Ohne diese Unterscheidung wuerde jeder Aenderungsaufruf, der nur den
+        Termin verschiebt, nebenbei die Mitwirkenden loeschen - derselbe
+        Fehler, den der Composer bis zum 08.08.2026 hatte.
+        """
+        post_id = self._entwurf(client_with_token, instagram_account.id)
+        _patch(
+            client_with_token,
+            post_id,
+            {
+                "platform_overrides": [
+                    {"social_account_id": str(instagram_account.id), "collaborators": ["kyocreepy"]}
+                ]
+            },
+        )
+
+        r = _patch(client_with_token, post_id, {"internal_notes": "nur eine Notiz"})
+
+        assert r.status_code == 200, r.content
+        assert PlatformPost.objects.get().platform_extra["collaborators"] == ["kyocreepy"]
+
+    def test_eine_leere_liste_entfernt_sie_bewusst(self, client_with_token, instagram_account):
+        post_id = self._entwurf(client_with_token, instagram_account.id)
+        _patch(
+            client_with_token,
+            post_id,
+            {
+                "platform_overrides": [
+                    {"social_account_id": str(instagram_account.id), "collaborators": ["kyocreepy"]}
+                ]
+            },
+        )
+
+        r = _patch(
+            client_with_token,
+            post_id,
+            {"platform_overrides": [{"social_account_id": str(instagram_account.id), "collaborators": []}]},
+        )
+
+        assert r.status_code == 200, r.content
+        assert "collaborators" not in (PlatformPost.objects.get().platform_extra or {})
+
+    def test_eine_kanalfassung_ueberlebt_das_setzen_der_mitwirkenden(
+        self, client_with_token, instagram_account
+    ):
+        """Die Felder eines Overrides sind einzeln zu betrachten.
+
+        Wer nur die Mitwirkenden setzt, darf die kanalspezifische Fassung
+        nicht verlieren - sonst faellt der Beitrag auf den Basistext zurueck
+        und reisst auf einem Kanal mit hartem Limit die Grenze.
+        """
+        r = _post(
+            client_with_token,
+            {
+                "social_account_id": str(instagram_account.id),
+                "caption": "Langer Basistext",
+                "platform_overrides": [
+                    {"social_account_id": str(instagram_account.id), "caption": "Kurze Fassung"}
+                ],
+                "action": "draft",
+            },
+        )
+        post_id = r.json()["id"]
+
+        _patch(
+            client_with_token,
+            post_id,
+            {
+                "platform_overrides": [
+                    {"social_account_id": str(instagram_account.id), "collaborators": ["kyocreepy"]}
+                ]
+            },
+        )
+
+        pp = PlatformPost.objects.get()
+        assert pp.platform_specific_caption == "Kurze Fassung"
+        assert pp.platform_extra["collaborators"] == ["kyocreepy"]
+
+    def test_ein_fremder_kanal_wird_abgewiesen(self, client_with_token, instagram_account, bluesky_account):
+        post_id = self._entwurf(client_with_token, instagram_account.id)
+
+        r = _patch(
+            client_with_token,
+            post_id,
+            {
+                "platform_overrides": [
+                    {"social_account_id": str(bluesky_account.id), "collaborators": ["irgendwer"]}
+                ]
+            },
+        )
+
+        assert r.status_code == 422, r.content
+        assert "must reference an account of this post" in r.content.decode()
+
+    def test_mitwirkende_bleiben_instagram_vorbehalten(self, client_with_token, bluesky_account):
+        r = _post(client_with_token, {"social_account_id": str(bluesky_account.id), "caption": "Text", "action": "draft"})
+        post_id = r.json()["id"]
+
+        r = _patch(
+            client_with_token,
+            post_id,
+            {
+                "platform_overrides": [
+                    {"social_account_id": str(bluesky_account.id), "collaborators": ["irgendwer"]}
+                ]
+            },
+        )
+
+        assert r.status_code == 422, r.content
+        assert "only valid for Instagram" in r.content.decode()
