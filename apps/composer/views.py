@@ -170,6 +170,38 @@ def _instagram_audio_extra(request, acc_id, current_extra):
     return extra
 
 
+#: Form field ↔ model field for the three per-platform text overrides.
+PLATFORM_OVERRIDE_FIELDS = (
+    ("override_title_", "platform_specific_title"),
+    ("override_caption_", "platform_specific_caption"),
+    ("override_comment_", "platform_specific_first_comment"),
+)
+
+
+def _apply_platform_overrides(request, platform_post, acc_id):
+    """Copy the per-platform text overrides from the form onto *platform_post*.
+
+    Three cases, and the middle one is the whole point:
+
+    * field present and filled → store it
+    * field present and empty  → the user removed the override on purpose
+    * field **absent**         → the form never carried it, so whatever is
+      stored stays put
+
+    Reading an absent field as an empty one used to delete the stored
+    version silently: a Bluesky post carrying a 274-character version for a
+    300-character limit fell back to the shared caption and would have run
+    into the limit at publish time. Same guard as the Instagram and TikTok
+    extras below.
+    """
+    for prefix, model_field in PLATFORM_OVERRIDE_FIELDS:
+        form_key = f"{prefix}{acc_id}"
+        if form_key not in request.POST:
+            continue
+        value = request.POST[form_key].strip()
+        setattr(platform_post, model_field, value or None)
+
+
 def _sync_platform_posts(request, post, workspace, initial_status=None):
     """Sync platform post selections from form data.
 
@@ -193,12 +225,7 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
             social_account=account,
             defaults=defaults,
         )
-        override_title = request.POST.get(f"override_title_{acc_id}", "").strip()
-        override_caption = request.POST.get(f"override_caption_{acc_id}", "").strip()
-        override_comment = request.POST.get(f"override_comment_{acc_id}", "").strip()
-        pp.platform_specific_title = override_title if override_title else None
-        pp.platform_specific_caption = override_caption if override_caption else None
-        pp.platform_specific_first_comment = override_comment if override_comment else None
+        _apply_platform_overrides(request, pp, acc_id)
 
         # Per-platform extras
         if account.platform == "youtube":
@@ -452,6 +479,11 @@ def compose(request, workspace_id, post_id=None):
             selected_account_ids = [pp.social_account_id for pp in platform_post_list]
         media_attachments = post.media_attachments.select_related("media_asset").all()
         platform_extras = {str(pp.social_account_id): (pp.platform_extra or {}) for pp in platform_post_list}
+        # The stored per-platform versions travel into the form. Without them
+        # the boxes render empty, the save reads that as "removed", and the
+        # preview measures the shared caption against the platform's limit.
+        override_titles = {str(pp.social_account_id): pp.platform_specific_title or "" for pp in platform_post_list}
+        override_captions = {str(pp.social_account_id): pp.platform_specific_caption or "" for pp in platform_post_list}
         template_data = None
     else:
         post = None
@@ -482,6 +514,8 @@ def compose(request, workspace_id, post_id=None):
         selected_account_ids = []
         media_attachments = []
         platform_extras = {}
+        override_titles = {}
+        override_captions = {}
 
     # Clear any stale pending media from previous compose sessions.
     # Each compose page load starts fresh; the upload flow re-populates
@@ -640,6 +674,8 @@ def compose(request, workspace_id, post_id=None):
         "social_accounts": social_accounts,
         "selected_account_ids": [str(aid) for aid in selected_account_ids],
         "platform_extras": platform_extras,
+        "override_titles": override_titles,
+        "override_captions": override_captions,
         "media_attachments": media_attachments,
         "media_items": media_items,
         "char_limits": char_limits,
@@ -1221,19 +1257,46 @@ def autosave(request, workspace_id, post_id=None):
     )
 
 
+def _override_for_preview(request, form_key, stored_value):
+    """Which override text the preview has to show for one field.
+
+    The form wins whenever it carries the field – including an empty value,
+    which means the box is open and the user cleared it. Only an absent field
+    falls back to what is stored, because then the box was never rendered and
+    the stored text is what would publish.
+    """
+    if form_key in request.POST:
+        return request.POST[form_key]
+    return stored_value or ""
+
+
 @login_required
 @require_POST
 def preview(request, workspace_id):
     """Live preview endpoint - renders platform-specific preview from form state.
 
-    Called via HTMX with debounced POST from the composer.
-    Stateless - no DB queries except social account lookup.
+    Called via HTMX with debounced POST from the composer. The form is the
+    source of truth for everything it carries; for an override field it left
+    out, the stored version fills in, because that is the text that would
+    really publish.
     """
     workspace = _get_workspace(request, workspace_id)
     title = request.POST.get("title", "")
     caption = request.POST.get("caption", "")
     first_comment = request.POST.get("first_comment", "")
     selected_ids = _parse_selected_account_ids(request.POST.get("selected_accounts", ""))
+
+    # The post behind the composer, if it has been saved once. Serves both the
+    # stored overrides below and the media further down.
+    post_obj = None
+    post_id_str = request.POST.get("_autosave_post_id", "")
+    if post_id_str:
+        # A malformed id is a preview, not a save – degrade to "no post yet".
+        with contextlib.suppress(ValidationError, ValueError):
+            post_obj = Post.objects.filter(id=post_id_str, workspace=workspace).first()
+    stored_overrides = (
+        {str(pp.social_account_id): pp for pp in post_obj.platform_posts.all()} if post_obj is not None else {}
+    )
 
     # Build preview data per platform
     previews = []
@@ -1243,10 +1306,27 @@ def preview(request, workspace_id):
             workspace=workspace,
         ).order_by("platform")
         for account in accounts:
-            override_title_key = f"override_title_{account.id}"
-            override_key = f"override_caption_{account.id}"
-            effective_title = request.POST.get(override_title_key, "") or title
-            effective_caption = request.POST.get(override_key, "") or caption
+            stored = stored_overrides.get(str(account.id))
+            # Counting the shared caption against a platform limit that the
+            # stored version already respects produces a warning about a text
+            # nobody would publish – and invites shortening the shared caption,
+            # which is exactly the text the other channels do publish.
+            effective_title = (
+                _override_for_preview(
+                    request,
+                    f"override_title_{account.id}",
+                    stored.platform_specific_title if stored else None,
+                )
+                or title
+            )
+            effective_caption = (
+                _override_for_preview(
+                    request,
+                    f"override_caption_{account.id}",
+                    stored.platform_specific_caption if stored else None,
+                )
+                or caption
+            )
             char_limit = account.char_limit
             field_config = account.field_config
             previews.append(
@@ -1269,22 +1349,17 @@ def preview(request, workspace_id):
     from apps.media_library.models import MediaAsset
 
     media_items = []
-    post_id_str = request.POST.get("_autosave_post_id", "")
 
-    if post_id_str:
-        try:
-            post_obj = Post.objects.get(id=post_id_str, workspace=workspace)
-            for att in post_obj.media_attachments.select_related("media_asset").all():
-                asset = att.media_asset
-                media_items.append(
-                    {
-                        "url": asset.file.url if asset.file else "",
-                        "is_video": asset.is_video,
-                        "filename": asset.filename,
-                    }
-                )
-        except Post.DoesNotExist:
-            pass
+    if post_obj is not None:
+        for att in post_obj.media_attachments.select_related("media_asset").all():
+            asset = att.media_asset
+            media_items.append(
+                {
+                    "url": asset.file.url if asset.file else "",
+                    "is_video": asset.is_video,
+                    "filename": asset.filename,
+                }
+            )
 
     if not media_items:
         # Check session pending media

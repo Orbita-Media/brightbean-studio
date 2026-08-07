@@ -1252,7 +1252,7 @@
                                   :class="'pi-' + (charLimits[accId]?.platform || '')"
                                   x-html="platformIconSvg(charLimits[accId]?.platform || '')"></span>
                             <span class="text-xs font-semibold text-stone-600" x-text="charLimits[accId]?.name + ' - Custom Override'"></span>
-                            <button type="button" class="ml-auto text-xs text-red-400 hover:text-red-500 cursor-pointer" @click="overrides[accId] = false">Remove override</button>
+                            <button type="button" class="ml-auto text-xs text-red-400 hover:text-red-500 cursor-pointer" @click="removeOverride(accId)">Remove override</button>
                         </div>
                         <!-- Title override (only for platforms that need it) -->
                         <template x-if="charLimits[accId]?.needs_title">
@@ -1262,14 +1262,22 @@
                                 <input type="text" :name="'override_title_' + accId"
                                        class="w-full text-sm px-3 py-2 rounded-lg border border-stone-200 bg-white outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 transition-all"
                                        :placeholder="'Custom ' + (charLimits[accId]?.title_label || 'title') + '…'"
-                                       :maxlength="charLimits[accId]?.title_max_length || 255">
+                                       :maxlength="charLimits[accId]?.title_max_length || 255"
+                                       x-model="overrideTitles[accId]"
+                                       @input="debouncedPreviewUpdate()">
                             </div>
                         </template>
                         <textarea :name="'override_caption_' + accId"
                                   class="w-full text-sm px-3 py-2 rounded-lg border border-stone-200 bg-white outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 transition-all resize-none"
                                   style="font-family: system-ui, -apple-system, sans-serif;"
                                   :placeholder="'Custom ' + (charLimits[accId]?.caption_label || 'caption') + ' for this platform...'"
-                                  rows="3"></textarea>
+                                  rows="3"
+                                  x-model="overrideCaptions[accId]"
+                                  @input="debouncedPreviewUpdate()"></textarea>
+                        <!-- Counted against this channel's own limit, not the shared caption's. -->
+                        <p class="mt-1.5 text-[11px] text-right"
+                           :class="(overrideCaptions[accId] || '').length > (charLimits[accId]?.limit || 0) ? 'text-red-500 font-semibold' : 'text-stone-400'"
+                           x-text="(overrideCaptions[accId] || '').length + ' / ' + (charLimits[accId]?.limit || 0)"></p>
 
                     </div>
                 </template>
@@ -2113,6 +2121,8 @@
 {{ selected_account_ids|json_script:"composer-selected-accounts" }}
 {{ char_limits|json_script:"composer-char-limits" }}
 {{ platform_extras|json_script:"composer-platform-extras" }}
+{{ override_titles|json_script:"composer-override-titles" }}
+{{ override_captions|json_script:"composer-override-captions" }}
 {{ media_items|json_script:"composer-media-items" }}
 <script nonce="{{ request.csp_nonce }}">
 function composerApp() {
@@ -2123,6 +2133,11 @@ function composerApp() {
         selectedAccounts: JSON.parse(document.getElementById('composer-selected-accounts').textContent),
         charLimits: JSON.parse(document.getElementById('composer-char-limits').textContent),
         overrides: {},
+        // The per-platform versions as they are stored. They ride in the form
+        // from the first render on, so a save round-trips them instead of
+        // reading an empty box as "override removed".
+        overrideTitles: JSON.parse(document.getElementById('composer-override-titles').textContent) || {},
+        overrideCaptions: JSON.parse(document.getElementById('composer-override-captions').textContent) || {},
         advancedOpen: {},
         platformExtras: JSON.parse(document.getElementById('composer-platform-extras').textContent) || {},
         showMediaPicker: false,
@@ -2225,7 +2240,12 @@ function composerApp() {
         init() {
             // Initialize overrides map
             this.selectedAccounts.forEach(id => {
-                this.overrides[id] = false;
+                if (typeof this.overrideTitles[id] !== 'string') this.overrideTitles[id] = '';
+                if (typeof this.overrideCaptions[id] !== 'string') this.overrideCaptions[id] = '';
+                // A channel that carries its own version opens with the box on
+                // screen: hiding the text is what made it invisible and easy
+                // to lose without noticing.
+                this.overrides[id] = this.hasOverride(id);
                 this.advancedOpen[id] = false;
                 if (!this.platformExtras[id]) this.platformExtras[id] = {};
             });
@@ -2285,16 +2305,36 @@ function composerApp() {
             });
         },
 
+        hasOverride(id) {
+            return !!(this.overrideTitles[id] || this.overrideCaptions[id]);
+        },
+
+        removeOverride(id) {
+            // Closing the box alone would leave the text in the (hidden) field
+            // and save it again – the button has to clear the value itself.
+            this.overrideTitles[id] = '';
+            this.overrideCaptions[id] = '';
+            this.overrides[id] = false;
+            this.$nextTick(() => this.triggerPreviewUpdate());
+        },
+
         toggleAccount(id) {
             const idx = this.selectedAccounts.indexOf(id);
             if (idx > -1) {
+                // Deselecting drops the channel's row, and its own version
+                // with it – leaving the text behind would resurrect it on the
+                // next save.
                 this.selectedAccounts.splice(idx, 1);
                 delete this.overrides[id];
                 delete this.advancedOpen[id];
+                delete this.overrideTitles[id];
+                delete this.overrideCaptions[id];
             } else {
                 this.selectedAccounts.push(id);
                 this.overrides[id] = false;
                 this.advancedOpen[id] = false;
+                if (typeof this.overrideTitles[id] !== 'string') this.overrideTitles[id] = '';
+                if (typeof this.overrideCaptions[id] !== 'string') this.overrideCaptions[id] = '';
                 if (!this.platformExtras[id]) this.platformExtras[id] = {};
             }
             // Wait for Alpine to flush :value bindings before triggering HTMX
