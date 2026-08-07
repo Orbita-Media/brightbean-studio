@@ -211,6 +211,20 @@ class ComposerLaedtDieFassung(PlattformFassungBasis):
         # lassen – er ginge beim nächsten Speichern wieder mit.
         self.assertIn('@click="removeOverride(accId)"', vorlage)
 
+    def test_der_zaehler_am_basistext_ueberspringt_kanaele_mit_eigener_fassung(self):
+        """Sonst steht dort rot eine Grenze, die für diesen Text nicht gilt.
+
+        Genau diese Meldung verleitet dazu, den Basistext zu kürzen – und der
+        geht auf Instagram und Facebook raus.
+        """
+        vorlage = Path("templates/composer/compose.html").read_text(encoding="utf-8")
+
+        self.assertIn("sharedCaptionLimit()", vorlage)
+        self.assertIn("filter(id => !this.overrideCaptions[id])", vorlage)
+        # Die alte Rechnung nahm das kleinste Limit aller gewählten Kanäle,
+        # ohne zu fragen, ob der Kanal den Basistext überhaupt verwendet.
+        self.assertNotIn("charLimits[id]?.limit || 9999", vorlage)
+
 
 class VorschauZeigtDenGespeichertenStand(PlattformFassungBasis):
     """Die Vorschau darf keine Überschreitung melden, die es nicht gibt."""

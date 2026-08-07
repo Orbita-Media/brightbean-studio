@@ -522,8 +522,8 @@
                                 Media Library
                             </button>
                             <span class="text-xs tabular-nums font-medium"
-                                  :class="(() => { const min = Math.min(...selectedAccounts.map(id => charLimits[id]?.limit || 9999)); return caption.length > min ? 'text-red-500' : 'text-stone-400'; })()"
-                                  x-text="(() => { const limits = selectedAccounts.map(id => charLimits[id]?.limit).filter(Boolean); const min = limits.length ? Math.min(...limits) : null; return min ? caption.length + ' / ' + min : caption.length; })()">
+                                  :class="sharedCaptionLimit() !== null && caption.length > sharedCaptionLimit() ? 'text-red-500' : 'text-stone-400'"
+                                  x-text="sharedCaptionLimit() !== null ? caption.length + ' / ' + sharedCaptionLimit() : caption.length">
                             </span>
                         </div>
                     </div>
@@ -2307,6 +2307,20 @@ function composerApp() {
 
         hasOverride(id) {
             return !!(this.overrideTitles[id] || this.overrideCaptions[id]);
+        },
+
+        sharedCaptionLimit() {
+            // The tightest limit the SHARED caption actually has to respect.
+            // A channel with its own version is not bound by its limit here –
+            // counting it anyway reports an overrun for a text that channel
+            // never publishes, and invites shortening the caption that DOES go
+            // out everywhere else. Null when every selected channel carries its
+            // own version (then the shared text has no limit to meet).
+            const limits = this.selectedAccounts
+                .filter(id => !this.overrideCaptions[id])
+                .map(id => this.charLimits[id]?.limit)
+                .filter(Boolean);
+            return limits.length ? Math.min(...limits) : null;
         },
 
         removeOverride(id) {
