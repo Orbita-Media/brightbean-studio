@@ -121,6 +121,30 @@ MAX_ALT_TEXT_LENGTH = 1000
 MAX_CAROUSEL_ITEMS = 10
 
 # ---------------------------------------------------------------------------
+# Collaborators (Kollaborations-Beiträge)
+# ---------------------------------------------------------------------------
+# ``collaborators`` on POST /{ig-user-id}/media: "For Feed image, Reels and
+# Carousels only. A list of up to 3 instagram usernames as collaborators."
+# https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/media
+#
+# Why this field matters more than any other on this page: tagging someone does
+# NOT put the post in front of their followers, collaborating does. Instagram
+# says so itself: "If someone tags or mentions you in a photo or video, that
+# photo or video won't be shared with your followers. If you collaborate on a
+# post, that post will be shared with your followers."
+# https://help.instagram.com/5861247717337470
+#
+# Two traps:
+#   1. It takes USERNAMES, not numeric IDs (unlike branded_content_sponsor_ids).
+#   2. Like audio_configuration it must go over the wire as a JSON *string*.
+#      A native Python list in the JSON body is accepted with a 200 and the
+#      post simply appears without collaborators — it does not fail loudly.
+#
+# The invitation still has to be accepted by the other account. Until then the
+# post is live on our profile only; there is no API for the acceptance.
+MAX_COLLABORATORS = 3
+
+# ---------------------------------------------------------------------------
 # Instagram Audio API
 # ---------------------------------------------------------------------------
 # Opened by Meta on 2026-06-01 for apps using Facebook Login. It is documented
@@ -192,6 +216,57 @@ def build_audio_configuration(extra: dict | None) -> dict | None:
         "audio_volume": clamp_volume(extra.get("audio_volume"), DEFAULT_AUDIO_VOLUME),
         "video_volume": clamp_volume(extra.get("video_volume"), DEFAULT_VIDEO_VOLUME),
     }
+
+
+def build_collaborators(extra: dict | None) -> list[str] | None:
+    """Build the ``collaborators`` list from per-platform settings.
+
+    Reads ``collaborators`` out of ``PlatformPost.platform_extra``. Accepts a
+    list or a comma-separated string, because both shapes reach us: the
+    composer sends a list, an imported plan sends one field of text.
+
+    Normalises what humans type: a leading ``@``, stray whitespace, an empty
+    entry, the same name twice. Keeps the original order, because the first
+    name is the one the author reads first in the post header.
+
+    Returns ``None`` when nobody was named, which is the normal case. Anything
+    beyond the documented maximum of three is dropped rather than sent: Graph
+    rejects the whole container for a fourth name and would take a fully
+    produced reel down with it.
+    """
+    if not extra:
+        return None
+    raw = extra.get("collaborators")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        candidates = raw.replace(",", " ").split()
+    else:
+        try:
+            candidates = list(raw)
+        except TypeError:
+            return None
+
+    names: list[str] = []
+    for candidate in candidates:
+        name = str(candidate or "").strip().lstrip("@").strip()
+        if not name:
+            continue
+        if name.lower() in {existing.lower() for existing in names}:
+            continue
+        names.append(name)
+
+    if not names:
+        return None
+    if len(names) > MAX_COLLABORATORS:
+        logger.warning(
+            "Instagram: %d collaborators given, Graph allows %d, dropping %s",
+            len(names),
+            MAX_COLLABORATORS,
+            ", ".join(names[MAX_COLLABORATORS:]),
+        )
+        names = names[:MAX_COLLABORATORS]
+    return names
 
 
 class InstagramProvider(SocialProvider):
@@ -594,6 +669,21 @@ class InstagramProvider(SocialProvider):
                 content.post_type.value,
             )
 
+        collaborators = build_collaborators(content.extra)
+        if collaborators:
+            if content.post_type == PostType.STORY:
+                # "For Feed image, Reels and Carousels only". Sending it on a
+                # story container is rejected, so it is dropped with a word
+                # rather than losing the story.
+                logger.warning(
+                    "Instagram: ignoring collaborators %s on a story, Graph allows them on feed image, reels and carousels only",
+                    ", ".join(collaborators),
+                )
+            else:
+                # JSON *string*, same reason as audio_configuration: a native
+                # list in the body is accepted with a 200 and silently ignored.
+                payload["collaborators"] = json.dumps(collaborators)
+
         # Step 1: create container
         container_id, audio_dropped = self._create_container_with_audio(access_token, ig_user_id, payload)
 
@@ -646,6 +736,13 @@ class InstagramProvider(SocialProvider):
         }
         if content.text:
             carousel_payload["caption"] = content.text
+
+        collaborators = build_collaborators(content.extra)
+        if collaborators:
+            # Belongs on the parent container only. The children are staged
+            # uploads and carry no authorship, exactly like alt_text sits on
+            # the child and the caption on the parent.
+            carousel_payload["collaborators"] = json.dumps(collaborators)
 
         carousel_id = self._create_container(access_token, ig_user_id, carousel_payload)
         self._wait_for_container(access_token, carousel_id)
