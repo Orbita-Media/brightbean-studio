@@ -53,6 +53,20 @@ With coverage:
 pytest --cov=apps --cov-report=term-missing
 ```
 
+**Only one pytest run at a time on a machine.** The test database name is fixed
+(`brightbean_test` in `config/settings/test.py`), so two runs in parallel fight
+over creating it. The second one fails at `django_db_setup` with
+
+```
+psycopg.errors.UniqueViolation: duplicate key value violates unique constraint
+"pg_type_typname_nsp_index"
+```
+
+and then every test in the run reports as an ERROR, including tests that have
+nothing to do with the change under test. It looks like a broken branch and is
+not one. Before believing a suite-wide failure, check for a second
+`python -m pytest` process.
+
 ### Code style
 
 We use [Ruff](https://docs.astral.sh/ruff/) for linting and formatting, and [mypy](https://mypy-lang.org/) for type checking. Run these before submitting a PR:

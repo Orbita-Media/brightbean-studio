@@ -199,6 +199,27 @@ def create(request, payload: CreatePostRequest):
                 "audio_volume": ov.instagram_audio.audio_volume,
                 "video_volume": ov.instagram_audio.video_volume,
             }
+        if ov.collaborators is not None:
+            # Same reasoning as the sound above: Instagram is the only channel
+            # whose API knows co-authors, so accepting the field elsewhere
+            # would store a setting that quietly does nothing at publish time.
+            if social_account.platform != "instagram":
+                raise HttpError(
+                    422,
+                    (
+                        "collaborators is only valid for Instagram accounts; "
+                        f"this account is on {social_account.platform}."
+                    ),
+                )
+            # Normalising here as well as in the provider is deliberate: the
+            # stored value is what a human later reads in the composer, and
+            # "@name " with a stray space reads like a different name.
+            names: list[str] = []
+            for raw in ov.collaborators:
+                name = str(raw or "").strip().lstrip("@").strip()
+                if name and name.lower() not in {n.lower() for n in names}:
+                    names.append(name)
+            override.setdefault("platform_extra", {})["collaborators"] = names
         platform_overrides[ov.social_account_id] = override
 
     # ---- Atomic claim-first idempotency. Three early-out branches

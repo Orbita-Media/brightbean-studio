@@ -188,6 +188,17 @@ class PlatformOverride(Schema):
             "other platform, where the sound has to be inside the uploaded file."
         ),
     )
+    collaborators: list[str] | None = Field(
+        None,
+        max_length=3,
+        description=(
+            "Instagram only: up to 3 usernames invited as co-authors. Unlike a "
+            "tag, a collaboration puts the post in front of THEIR followers too. "
+            "Usernames, not numeric IDs; a leading @ is stripped. Not supported "
+            "on stories. The invitation arrives as a DM without a notification, "
+            "so tell the partner through another channel that it is waiting."
+        ),
+    )
 
 
 class CreatePostRequest(Schema):
