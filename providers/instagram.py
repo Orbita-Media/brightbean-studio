@@ -329,6 +329,16 @@ class InstagramProvider(SocialProvider):
         # ohne dass dafür Code geändert werden muss.
         if self.include_business_scope:
             scopes.append("business_management")
+        # ``instagram_manage_messages`` ebenfalls nur auf Anforderung: Es wird
+        # allein zum LESEN des Instagram-Postfachs gebraucht (Conversations
+        # API). Ohne die Berechtigung antwortet der Endpunkt mit
+        # ``(#230) Requires instagram_manage_messages permission`` – geprüft am
+        # 13.08.2026 mit dem bestehenden Seiten-Token von @orbitamedia_verlag,
+        # der alle übrigen Rechte bereits hatte. Wer sie einschaltet, muss den
+        # Kanal einmal neu verbinden; ein bestehender Token bekommt eine
+        # nachträglich hinzugefügte Berechtigung nicht von selbst.
+        if self.include_messages_scope:
+            scopes.append("instagram_manage_messages")
         return scopes
 
     @property

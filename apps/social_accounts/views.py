@@ -87,12 +87,19 @@ def _apply_oauth_scope_flags(provider, platform):
     Verbinden-Weg: Der Verbindungslink für Kunden lässt das Flag unberührt,
     damit dort nie eine Berechtigung im Dialog steht, die ein Nutzer ohne Rolle
     in der App gar nicht erteilen kann.
+
+    ``include_messages_scope`` folgt ``META_REQUEST_MESSAGES_SCOPE``, ebenfalls
+    standardmässig aus, und fügt ``instagram_manage_messages`` hinzu. Damit
+    lässt sich das Instagram-Postfach LESEN (Conversations API) – gebraucht für
+    die Verlaufs-Ansicht im Dashboard, die festhält, wann ein Influencer
+    angeschrieben wurde. Aus demselben Grund wie oben nur im internen Weg.
     """
     from apps.social_accounts.models import AnalyticsPlatformConfig
 
     enabled = AnalyticsPlatformConfig.enabled_platforms()
     provider.include_analytics_scopes = platform in enabled
     provider.include_business_scope = bool(getattr(settings, "META_REQUEST_BUSINESS_SCOPE", False))
+    provider.include_messages_scope = bool(getattr(settings, "META_REQUEST_MESSAGES_SCOPE", False))
 
 
 def _get_configured_platforms(org_id):

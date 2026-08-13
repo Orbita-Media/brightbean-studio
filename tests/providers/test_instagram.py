@@ -59,6 +59,36 @@ def test_business_management_is_added_only_when_it_is_switched_on():
     assert "business_management" in provider.get_auth_url("https://example.com/cb", "state")
 
 
+def test_manage_messages_is_absent_by_default():
+    """Gegenprobe zum Test darunter: ohne Schalter darf die Berechtigung
+    weder in der Liste noch im Dialog auftauchen. Sie wird nur zum LESEN des
+    Postfachs gebraucht, nicht zum Veroeffentlichen."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+
+    assert "instagram_manage_messages" not in provider.required_scopes
+    assert "instagram_manage_messages" not in provider.get_auth_url(
+        "https://example.com/cb", "state")
+
+
+def test_manage_messages_is_added_only_when_it_is_switched_on():
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider.include_messages_scope = True
+
+    assert "instagram_manage_messages" in provider.required_scopes
+    assert "instagram_manage_messages" in provider.get_auth_url(
+        "https://example.com/cb", "state")
+
+
+def test_both_optional_scopes_can_be_switched_on_together():
+    """Die beiden Schalter duerfen sich nicht gegenseitig verdraengen."""
+    provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
+    provider.include_business_scope = True
+    provider.include_messages_scope = True
+
+    assert "business_management" in provider.required_scopes
+    assert "instagram_manage_messages" in provider.required_scopes
+
+
 def test_get_user_pages_returns_linked_instagram_business_accounts():
     provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
     provider._request = MagicMock(

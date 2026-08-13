@@ -101,6 +101,14 @@ class SocialProvider(ABC):
     # ``providers/meta_business.py`` and ``META_REQUEST_BUSINESS_SCOPE``.
     include_business_scope: bool = False
 
+    # Instagram only: request ``instagram_manage_messages`` on top of the usual
+    # scopes. Default False on purpose, same reasoning as above – publishing
+    # works without it and no login dialog should carry a permission it does
+    # not need. Flip it on to read the Instagram inbox (Conversations API);
+    # without it that endpoint answers ``(#230) Requires
+    # instagram_manage_messages permission``. See ``META_REQUEST_MESSAGES_SCOPE``.
+    include_messages_scope: bool = False
+
     # OAuth providers that require PKCE flip this to True. The connect view then
     # generates a code_verifier, stashes it in the session, sends the derived
     # code_challenge on the authorize URL, and replays the verifier on token

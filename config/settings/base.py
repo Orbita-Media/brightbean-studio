@@ -440,6 +440,25 @@ else:
 # (see ``apps.social_accounts.views._apply_oauth_scope_flags``).
 META_REQUEST_BUSINESS_SCOPE = env.bool("META_REQUEST_BUSINESS_SCOPE", default=False)
 
+# Adds ``instagram_manage_messages`` to the Instagram login dialog. Off by
+# default: publishing does not need it, and no dialog should carry a permission
+# it does not use.
+#
+# Turn it on to READ the Instagram inbox via the Conversations API
+# (``/{page-id}/conversations?platform=instagram``). Without it that endpoint
+# answers ``(#230) Requires instagram_manage_messages permission`` – verified
+# on 2026-08-13 against the existing @orbitamedia_verlag Page token, which
+# already carried every other Instagram scope.
+#
+# Same App Review situation as the business scope above: Standard Access is
+# enough for accounts whose Page the connecting person administers and who has
+# a role on the app. Advanced Access (and thus review) is only needed to read
+# inboxes of Pages outside the app's own roles.
+#
+# Whoever flips this on must reconnect the Instagram channel once – an existing
+# token never gains a permission that was added after it was issued.
+META_REQUEST_MESSAGES_SCOPE = env.bool("META_REQUEST_MESSAGES_SCOPE", default=False)
+
 PLATFORM_CREDENTIALS_FROM_ENV = {
     # Meta platforms - Facebook and Instagram share the same Facebook app.
     # Threads sits in the same app but has its own app id/secret, see above.
