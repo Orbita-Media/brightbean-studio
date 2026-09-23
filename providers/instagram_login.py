@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
+from .instagram_trial import build_trial_params, trial_params_field
 from .meta_insights import fetch_insights_safe
 from .types import (
     AccountMetrics,
@@ -313,9 +314,19 @@ class InstagramLoginProvider(SocialProvider):
         if content.text:
             payload["caption"] = content.text
 
-        if content.post_type == PostType.REEL:
+        # Same rule set as the Facebook-Login path (providers/instagram_trial.py):
+        # a trial on anything but a reel raises before any upload.
+        trial_params = build_trial_params(content.extra, content.post_type, platform=self.platform_name)
+
+        if content.post_type in (PostType.REEL, PostType.VIDEO):
+            # PostType.VIDEO is the engine's fallback for a lone video. Instagram
+            # has no standalone feed video any more, so it must take the REELS
+            # path – otherwise the .mp4 went out as image_url and failed with
+            # "The image format is not supported" (same fix as InstagramProvider).
             payload["media_type"] = "REELS"
             payload["video_url"] = content.media_urls[0]
+            if trial_params:
+                payload["trial_params"] = trial_params_field(trial_params)
         elif content.post_type == PostType.STORY:
             url = content.media_urls[0]
             payload["media_type"] = "STORIES"
@@ -335,6 +346,8 @@ class InstagramLoginProvider(SocialProvider):
         return self._publish_container(access_token, container_id)
 
     def _publish_carousel(self, access_token: str, content: PublishContent) -> PublishResult:
+        # A carousel can never be a trial reel; raises before the first upload.
+        build_trial_params(content.extra, content.post_type, platform=self.platform_name)
         if len(content.media_urls) > MAX_CAROUSEL_ITEMS:
             raise PublishError(
                 f"Instagram carousels hold at most {MAX_CAROUSEL_ITEMS} items "

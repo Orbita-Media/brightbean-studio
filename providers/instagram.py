@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
+from .instagram_trial import build_trial_params, trial_params_field
 from .meta_business import pages_when_me_accounts_is_empty
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe
@@ -637,6 +638,10 @@ class InstagramProvider(SocialProvider):
         if content.text:
             payload["caption"] = content.text
 
+        # Checked before anything is uploaded: a trial asked for on a story or
+        # an image raises here instead of reaching every follower.
+        trial_params = build_trial_params(content.extra, content.post_type, platform=self.platform_name)
+
         audio_configuration = build_audio_configuration(content.extra)
 
         if content.post_type in (PostType.REEL, PostType.VIDEO):
@@ -652,6 +657,9 @@ class InstagramProvider(SocialProvider):
                 # does (-d 'audio_configuration={…}'). Graph does not reliably
                 # unpack a nested object out of a JSON body.
                 payload["audio_configuration"] = json.dumps(audio_configuration)
+            if trial_params:
+                # Trial reel: non-followers only until it graduates.
+                payload["trial_params"] = trial_params_field(trial_params)
         elif content.post_type == PostType.STORY:
             if content.media_urls and content.media_urls[0].endswith((".mp4", ".mov")):
                 payload["media_type"] = "STORIES"
@@ -706,6 +714,8 @@ class InstagramProvider(SocialProvider):
             result_extra["audio_id"] = audio_configuration["audio_id"]
         if audio_dropped:
             result_extra["audio_dropped"] = True
+        if trial_params:
+            result_extra["trial_graduation"] = trial_params["graduation_strategy"]
         return self._publish_container(access_token, ig_user_id, container_id, result_extra=result_extra)
 
     def _publish_carousel(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
@@ -716,6 +726,9 @@ class InstagramProvider(SocialProvider):
                 f"(got {len(content.media_urls)}); split the post instead of losing slides",
                 platform=self.platform_name,
             )
+
+        # A carousel can never be a trial reel; raises before the first upload.
+        build_trial_params(content.extra, content.post_type, platform=self.platform_name)
 
         child_ids: list[str] = []
 
