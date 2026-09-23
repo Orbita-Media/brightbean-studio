@@ -41,6 +41,16 @@ from providers.instagram import (
     DEFAULT_VIDEO_VOLUME,
     clamp_volume,
 )
+from providers.instagram_trial import (
+    DEFAULT_GRADUATION as TRIAL_DEFAULT_GRADUATION,
+)
+from providers.instagram_trial import (
+    EXTRA_GRADUATION as TRIAL_EXTRA_GRADUATION,
+)
+from providers.instagram_trial import (
+    EXTRA_TRIAL,
+    normalize_graduation,
+)
 from providers.tiktok import VALID_PRIVACY_LEVELS as TIKTOK_PRIVACY_LEVELS
 
 from .forms import ContentCategoryForm, PostForm
@@ -170,6 +180,34 @@ def _instagram_audio_extra(request, acc_id, current_extra):
     return extra
 
 
+#: Both ways to reach an Instagram account can publish a trial reel.
+TRIAL_PLATFORMS = ("instagram", "instagram_login")
+
+
+def _instagram_trial_extra(request, acc_id, current_extra):
+    """Read the "Test-Reel" switch into ``platform_extra``.
+
+    The hidden fields always submit ("true"/"false"), so switching the trial
+    off really removes it, and a save from a form without the panel never
+    reaches this function (see the guard at the call site). Everything else
+    already in ``platform_extra`` – sound, collaborators – survives.
+
+    An unknown strategy falls back to the default instead of storing junk;
+    the choice comes from two fixed buttons, so that only happens to a
+    hand-made request.
+    """
+    extra = dict(current_extra or {})
+    extra.pop(EXTRA_TRIAL, None)
+    extra.pop(TRIAL_EXTRA_GRADUATION, None)
+    if request.POST.get(f"ig_trial_{acc_id}", "").strip().lower() != "true":
+        return extra
+    extra[EXTRA_TRIAL] = True
+    extra[TRIAL_EXTRA_GRADUATION] = (
+        normalize_graduation(request.POST.get(f"ig_trial_graduation_{acc_id}", "")) or TRIAL_DEFAULT_GRADUATION
+    )
+    return extra
+
+
 #: Form field ↔ model field for the three per-platform text overrides.
 PLATFORM_OVERRIDE_FIELDS = (
     ("override_title_", "platform_specific_title"),
@@ -295,6 +333,11 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
                 if cover_ms_val >= 0:
                     extra["video_cover_timestamp_ms"] = cover_ms_val
             pp.platform_extra = extra
+
+        if account.platform in TRIAL_PLATFORMS and f"ig_trial_{acc_id}" in request.POST:
+            # Separate from the sound panel above on purpose: the Instagram-
+            # Login path has no sound panel but publishes trial reels as well.
+            pp.platform_extra = _instagram_trial_extra(request, acc_id, pp.platform_extra)
 
         pp.save()
 
