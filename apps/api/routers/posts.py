@@ -139,6 +139,55 @@ def _get_workspace_post(request: HttpRequest, post_id: uuid.UUID) -> Post:
 # ---------------------------------------------------------------------------
 
 
+#: Both ways to reach an Instagram account can publish a trial reel
+#: ("trial_params" is documented for /{ig-user-id}/media and /me/media).
+TRIAL_PLATFORMS = ("instagram", "instagram_login")
+
+
+def _check_trial_platform(platform: str) -> None:
+    if platform not in TRIAL_PLATFORMS:
+        raise HttpError(
+            422,
+            f"trial is only valid for Instagram accounts; this account is on {platform}.",
+        )
+
+
+def _check_trial_media(assets: list) -> None:
+    """A trial reel is a reel: exactly one video.
+
+    Meta: "The media_type must be REELS if this parameter is included". An
+    image, a story or a carousel with the switch on would otherwise fail at
+    publish time, hours later and without anyone watching. No media yet is
+    fine – the video may be attached afterwards.
+    """
+    if not assets:
+        return
+    if len(assets) != 1 or not getattr(assets[0], "is_video", False):
+        raise HttpError(
+            422,
+            (
+                "trial (Test-Reel) needs exactly one video, because Instagram only accepts "
+                f"trial_params on a REELS container; this post has {len(assets)} media item(s)"
+                + ("" if len(assets) != 1 else " and it is not a video")
+                + "."
+            ),
+        )
+
+
+def _trial_extra(extra: dict, ov) -> dict:
+    """Write ``trial`` / ``trial_graduation`` of one override into *extra*."""
+    from providers.instagram_trial import DEFAULT_GRADUATION, EXTRA_GRADUATION, EXTRA_TRIAL
+
+    extra = dict(extra or {})
+    if ov.trial:
+        extra[EXTRA_TRIAL] = True
+        extra[EXTRA_GRADUATION] = ov.trial_graduation or extra.get(EXTRA_GRADUATION) or DEFAULT_GRADUATION
+    else:
+        extra.pop(EXTRA_TRIAL, None)
+        extra.pop(EXTRA_GRADUATION, None)
+    return extra
+
+
 @router.post("/", response={201: PostResponse, 200: PostResponse}, summary="Create a draft or scheduled post")
 def create(request, payload: CreatePostRequest):
     enforce_http_rate_limits(request, is_write=True)
@@ -220,6 +269,16 @@ def create(request, payload: CreatePostRequest):
                 if name and name.lower() not in {n.lower() for n in names}:
                     names.append(name)
             override.setdefault("platform_extra", {})["collaborators"] = names
+        if ov.trial is not None:
+            _check_trial_platform(social_account.platform)
+            if ov.trial:
+                from apps.media_library.models import MediaAsset
+
+                wanted = list(payload.media_asset_ids)
+                found = {a.id: a for a in MediaAsset.objects.filter(id__in=wanted, workspace=request.api_key.workspace)}
+                # Unknown IDs are create_post's job to reject; only judge what exists.
+                _check_trial_media([found[i] for i in wanted if i in found])
+            override["platform_extra"] = _trial_extra(override.get("platform_extra") or {}, ov)
         platform_overrides[ov.social_account_id] = override
 
     # ---- Atomic claim-first idempotency. Three early-out branches
@@ -455,6 +514,15 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                     name = str(raw or "").strip().lstrip("@").strip()
                     if name and name.lower() not in {n.lower() for n in namen}:
                         namen.append(name)
+            if "trial" in gesetzt and ov.trial is not None:
+                _check_trial_platform(kind.social_account.platform)
+                if ov.trial:
+                    if payload.media_asset_ids is not None:
+                        _check_trial_media([resolved_assets[i] for i in wanted_media])
+                    else:
+                        _check_trial_media(
+                            [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
+                        )
             zu_setzen.append((kind, gesetzt, ov, namen))
 
     with transaction.atomic():
@@ -526,6 +594,10 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                     extra.pop("collaborators", None)
                 kind.platform_extra = extra
                 kind_fields.append("platform_extra")
+            if "trial" in gesetzt and ov.trial is not None:
+                kind.platform_extra = _trial_extra(kind.platform_extra or {}, ov)
+                if "platform_extra" not in kind_fields:
+                    kind_fields.append("platform_extra")
             if kind_fields:
                 kind.save(update_fields=[*kind_fields, "updated_at"])
 

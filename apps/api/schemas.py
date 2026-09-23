@@ -199,6 +199,26 @@ class PlatformOverride(Schema):
             "so tell the partner through another channel that it is waiting."
         ),
     )
+    trial: bool | None = Field(
+        None,
+        description=(
+            "Instagram only (both connection types): publish the reel as a TRIAL REEL "
+            "(in the app: 'Test-Reel'). It is shown to non-followers first; followers do "
+            "not see it in feed or Reels and it stays off the profile until it graduates. "
+            "Meta: the media_type must be REELS, so the post needs exactly one video. A "
+            "trial on an image, story or carousel is refused (422 here, and the publisher "
+            "fails the post instead of sending it to every follower). ``false`` removes it."
+        ),
+    )
+    trial_graduation: Literal["SS_PERFORMANCE", "MANUAL"] | None = Field(
+        None,
+        description=(
+            "How the trial reel graduates to all followers. ``SS_PERFORMANCE`` (default "
+            "when ``trial`` is true): automatically if it performs well. ``MANUAL``: only "
+            "when someone shares it to everyone in the Instagram app. Ignored without "
+            "``trial``."
+        ),
+    )
 
 
 class CreatePostRequest(Schema):
@@ -300,7 +320,7 @@ class UpdatePostRequest(Schema):
             "untouched; send a list to replace the overrides of exactly the accounts "
             "named in it. Within one entry the same rule applies field by field: an "
             "omitted field keeps its stored value, an empty string (or empty list for "
-            "collaborators) removes the override on purpose. Reading an absent field "
+            "collaborators, or trial=false) removes the override on purpose. Reading an absent field "
             "as an empty one is what used to delete a channel-specific caption "
             "silently."
         ),
@@ -365,11 +385,18 @@ class PlatformOverrideOut(Schema):
     caption: str | None = None
     first_comment: str | None = None
     collaborators: list[str] | None = None
+    #: true = Test-Reel, null = normales Reel (kein Schalter gesetzt).
+    trial: bool | None = None
+    #: Nur zusammen mit trial=true gesetzt: SS_PERFORMANCE oder MANUAL.
+    trial_graduation: str | None = None
 
     @classmethod
     def from_platform_post(cls, pp: PlatformPost) -> PlatformOverrideOut:
+        from providers.instagram_trial import EXTRA_GRADUATION, is_trial, normalize_graduation
+
         extra = pp.platform_extra or {}
         roh = extra.get("collaborators")
+        test_reel = is_trial(extra)
         return cls(
             social_account_id=pp.social_account_id,
             platform=pp.social_account.platform,
@@ -377,6 +404,8 @@ class PlatformOverrideOut(Schema):
             caption=pp.platform_specific_caption,
             first_comment=pp.platform_specific_first_comment,
             collaborators=list(roh) if isinstance(roh, list) else None,
+            trial=True if test_reel else None,
+            trial_graduation=normalize_graduation(extra.get(EXTRA_GRADUATION)) if test_reel else None,
         )
 
 
