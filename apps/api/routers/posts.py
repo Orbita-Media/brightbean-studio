@@ -698,12 +698,10 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                             [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
                         )
             cover = _cover_change(ov, gesetzt, post.workspace, create=False)
-            if cover is not None:
-                if payload.media_asset_ids is not None:
-                    medien = [resolved_assets[i] for i in wanted_media]
-                else:
-                    medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
-                _check_cover_for_channel(kind.social_account.platform, cover, medien)
+            if payload.media_asset_ids is not None:
+                medien = [resolved_assets[i] for i in wanted_media]
+            else:
+                medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
             story_gesendet = "post_type" in gesetzt
             # The state this channel will have after the request, to judge a
             # story against it: a cover stored earlier conflicts just like
@@ -725,12 +723,12 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
             beruehrt = story_gesendet or payload.media_asset_ids is not None or cover is not None
             beruehrt = beruehrt or ("trial" in gesetzt and bool(ov.trial)) or bool(namen)
             if is_story(simuliert) and beruehrt:
-                if payload.media_asset_ids is not None:
-                    medien = [resolved_assets[i] for i in wanted_media]
-                else:
-                    medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
+                # Before the cover check: on a story the helpful answer is
+                # "a story has no cover", not "a cover needs a video".
                 _check_story(kind.social_account.platform, medien, simuliert)
                 story_geprueft.add(kind.social_account_id)
+            if cover is not None:
+                _check_cover_for_channel(kind.social_account.platform, cover, medien)
             zu_setzen.append((kind, gesetzt, ov, namen, cover))
 
     # New media on a post whose channel is a story (and not named in the

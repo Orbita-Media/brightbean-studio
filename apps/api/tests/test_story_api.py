@@ -390,6 +390,13 @@ class TestStoryOnPatch:
         assert r.status_code == 422
         assert "thumb_offset_ms" not in post.platform_posts.get().platform_extra
 
+    def test_cover_on_a_stored_image_story_names_the_story(self, client, workspace, accounts, jpeg):
+        ig = accounts["instagram"]
+        post = _draft(workspace, ig, [jpeg], extra={"post_type": "story"})
+        r = _patch(client, post.id, {"platform_overrides": [{"social_account_id": str(ig.id), "cover_offset_ms": 500}]})
+        assert r.status_code == 422
+        assert "Eine Story hat kein" in r.json()["detail"]
+
     def test_story_on_youtube_is_refused_on_patch(self, client, workspace, accounts, video):
         yt = accounts["youtube"]
         post = _draft(workspace, yt, [video])
