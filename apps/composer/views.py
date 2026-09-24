@@ -52,6 +52,7 @@ from providers.instagram_trial import (
     normalize_graduation,
 )
 from providers.tiktok import VALID_PRIVACY_LEVELS as TIKTOK_PRIVACY_LEVELS
+from providers.video_cover import COVER_IMAGE_PLATFORMS, COVER_OFFSET_PLATFORMS, apply_cover_to_extra, parse_offset_ms
 
 from .forms import ContentCategoryForm, PostForm
 from .models import (
@@ -208,6 +209,52 @@ def _instagram_trial_extra(request, acc_id, current_extra):
     return extra
 
 
+#: Channels with the composer's "Titelbild" panel (YouTube keeps its own
+#: thumbnail block, TikTok its cover frame inside the TikTok settings).
+COVER_PANEL_PLATFORMS = ("instagram", "instagram_login", "facebook")
+
+
+def _cover_extra(request, acc_id, current_extra, platform, workspace):
+    """Read the "Titelbild" panel into ``platform_extra``.
+
+    The hidden fields always submit, so clearing really clears. Only called
+    when the panel was part of the form (guard at the call site), and every
+    other key – sound, collaborators, trial – survives, same as
+    ``_instagram_trial_extra``.
+
+    An asset id that is not an image of this workspace is dropped instead of
+    stored: the field is hidden and filled by the picker, so that only
+    happens to a hand-made request.
+    """
+    from apps.media_library.models import MediaAsset
+
+    asset_id = request.POST.get(f"cover_asset_id_{acc_id}", "").strip() or None
+    if asset_id and platform in COVER_IMAGE_PLATFORMS:
+        try:
+            ok = (
+                MediaAsset.objects.for_workspace(workspace.id)
+                .filter(id=asset_id, media_type=MediaAsset.MediaType.IMAGE)
+                .exists()
+            )
+        except (ValueError, ValidationError):
+            ok = False
+        if not ok:
+            asset_id = None
+    else:
+        asset_id = None
+    offset = parse_offset_ms(request.POST.get(f"cover_offset_ms_{acc_id}", "").strip() or None)
+    if platform not in COVER_OFFSET_PLATFORMS:
+        offset = None
+    return apply_cover_to_extra(
+        current_extra,
+        platform,
+        set_asset=True,
+        asset_id=asset_id,
+        set_offset=True,
+        offset_ms=offset,
+    )
+
+
 #: Form field ↔ model field for the three per-platform text overrides.
 PLATFORM_OVERRIDE_FIELDS = (
     ("override_title_", "platform_specific_title"),
@@ -332,12 +379,20 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
                     cover_ms_val = -1
                 if cover_ms_val >= 0:
                     extra["video_cover_timestamp_ms"] = cover_ms_val
+            # Mirror the frame into the channel-neutral key the Agent-API
+            # reads and writes (providers/video_cover.py), or clear both.
+            extra = apply_cover_to_extra(
+                extra, "tiktok", set_offset=True, offset_ms=extra.get("video_cover_timestamp_ms")
+            )
             pp.platform_extra = extra
 
         if account.platform in TRIAL_PLATFORMS and f"ig_trial_{acc_id}" in request.POST:
             # Separate from the sound panel above on purpose: the Instagram-
             # Login path has no sound panel but publishes trial reels as well.
             pp.platform_extra = _instagram_trial_extra(request, acc_id, pp.platform_extra)
+
+        if account.platform in COVER_PANEL_PLATFORMS and f"cover_panel_{acc_id}" in request.POST:
+            pp.platform_extra = _cover_extra(request, acc_id, pp.platform_extra, account.platform, workspace)
 
         pp.save()
 
@@ -694,6 +749,7 @@ def compose(request, workspace_id, post_id=None):
     ]
     all_asset_ids = [aid for aid in thumb_ids + cover_ids if aid]
     asset_url_map = {}
+    asset_mime_map = {}
     if all_asset_ids:
         for asset in MediaAsset.objects.filter(id__in=all_asset_ids, workspace=workspace):
             url = ""
@@ -702,10 +758,13 @@ def compose(request, workspace_id, post_id=None):
             elif asset.file:
                 url = asset.file.url
             asset_url_map[str(asset.id)] = url
+            asset_mime_map[str(asset.id)] = asset.mime_type or ""
     for _acc_id, extra in platform_extras.items():
         tid = extra.get("thumbnail_asset_id")
         if tid and tid in asset_url_map:
             extra["thumbnail_url"] = asset_url_map[tid]
+            # The Titelbild panel warns when Instagram gets something other than a JPEG.
+            extra["thumbnail_mime"] = asset_mime_map.get(tid, "")
         cid = extra.get("cover_image_asset_id")
         if cid and cid in asset_url_map:
             extra["cover_image_url"] = asset_url_map[cid]
@@ -1520,6 +1579,7 @@ def thumbnail_upload(request, workspace_id):
             "asset_id": str(asset.id),
             "url": url,
             "filename": asset.filename,
+            "mime_type": asset.mime_type,
         }
     )
 
