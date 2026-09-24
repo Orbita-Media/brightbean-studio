@@ -1,1 +1,6 @@
-{% comment %}Kennzeichnung „Story“ für einen Kanal, der als Instagram- oder Facebook-Story veröffentlicht wird (platform_extra.post_type = "story").{% endcomment %}<span class="inline-flex items-center flex-shrink-0 text-[10px] font-semibold uppercase tracking-wider leading-4 px-1.5 rounded bg-orange-50 text-orange-600 border border-orange-200" title="Wird als Story veröffentlicht" data-story-badge>Story</span>
+{% comment %}
+Kennzeichnung „Story“ für einen Kanal, der als Instagram- oder Facebook-Story
+veröffentlicht wird (platform_extra.post_type = "story").
+compact=True (Kalenderraster): unter 640 px ist die Kachel zu schmal für das
+Wort, dort steht ein orangefarbener Punkt mit Tooltip.
+{% endcomment %}{% if compact %}<span class="sm:hidden inline-block w-2 h-2 rounded-full bg-orange-500 flex-shrink-0" title="Story" aria-label="Story" data-story-badge></span>{% endif %}<span class="{% if compact %}hidden sm:inline-flex{% else %}inline-flex{% endif %} items-center flex-shrink-0 text-[10px] font-semibold uppercase tracking-wider leading-4 px-1.5 rounded bg-orange-50 text-orange-600 border border-orange-200" title="Wird als Story veröffentlicht" data-story-badge>Story</span>
