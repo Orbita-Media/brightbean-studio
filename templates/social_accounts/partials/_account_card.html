@@ -129,7 +129,7 @@ Usage: {% include "social_accounts/partials/_account_card.html" with account=acc
                         :aria-checked="current === board.id"
                         :disabled="saving"
                         @click="choose(board.id)"
-                        class="h-10 px-3 rounded-lg border text-sm font-medium transition-colors cursor-pointer disabled:opacity-50"
+                        class="min-h-10 max-w-full px-3 py-1.5 rounded-lg border text-sm font-medium text-left break-words transition-colors cursor-pointer disabled:opacity-50"
                         :class="current === board.id ? 'border-orange-400 bg-orange-50 text-orange-600' : 'border-stone-200 text-stone-700 hover:border-orange-400'"
                         x-text="board.name"></button>
             </template>
