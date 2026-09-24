@@ -219,6 +219,29 @@ class PlatformOverride(Schema):
             "``trial``."
         ),
     )
+    cover_asset_id: uuid.UUID | None = Field(
+        None,
+        description=(
+            "Cover image (Titelbild) of a video post: ID of an IMAGE media asset in this "
+            "workspace. Valid for youtube (thumbnails.set), instagram / instagram_login "
+            "(reel ``cover_url`` – must be a JPEG of at most 8 MB, 9:16 recommended; the "
+            "profile grid shows the middle 3:4, so keep the hook out of the top and bottom "
+            "eighth) and facebook (``/{video_id}/thumbnails``, at most 10 MB). Anything "
+            "else answers 422. On Instagram the image wins over ``cover_offset_ms``. "
+            "On PATCH, ``null`` removes it; omitting the field keeps the stored value. "
+            "For an already scheduled or published post use ``POST /posts/{id}/cover``."
+        ),
+    )
+    cover_offset_ms: int | None = Field(
+        None,
+        ge=0,
+        description=(
+            "Cover frame of a video post: position in the video in milliseconds (0 = first "
+            "frame). Valid for instagram / instagram_login (``thumb_offset``, used when no "
+            "``cover_asset_id`` is set) and tiktok (``video_cover_timestamp_ms``). Anything "
+            "else answers 422. On PATCH, ``null`` removes it; omitting the field keeps it."
+        ),
+    )
 
 
 class CreatePostRequest(Schema):
@@ -331,6 +354,65 @@ class ScheduleRequest(Schema):
     scheduled_at: dt.datetime = Field(..., description="UTC timestamp at which the publisher should fire the post.")
 
 
+class CoverRequest(Schema):
+    """Set the cover (Titelbild) of a video post in ANY state.
+
+    Unlike ``PATCH`` this also works on scheduled and published posts. Send at
+    least one of the two cover fields; a field you omit stays as stored, a
+    field sent as ``null`` removes it (not possible on an already published
+    video – the platforms cannot drop a custom cover, only replace it).
+    """
+
+    social_account_id: uuid.UUID | None = Field(
+        None,
+        description=(
+            "Only this channel of the post. Omitted: every channel of the post; channels "
+            "without a video cover (Bluesky, LinkedIn …) are skipped and reported with "
+            "``result='unsupported'``. With an explicit channel, a field that channel "
+            "cannot use answers 422 instead."
+        ),
+    )
+    cover_asset_id: uuid.UUID | None = Field(
+        None,
+        description=(
+            "ID of an IMAGE media asset in this workspace. youtube, facebook, instagram, "
+            "instagram_login (Instagram: JPEG, at most 8 MB, 9:16; the profile grid shows "
+            "the middle 3:4)."
+        ),
+    )
+    cover_offset_ms: int | None = Field(
+        None,
+        ge=0,
+        description="Frame of the video in milliseconds. instagram, instagram_login, tiktok.",
+    )
+
+
+CoverResult = Literal["saved", "updated", "unchanged", "unsupported", "error"]
+
+
+class CoverChannelResult(Schema):
+    social_account_id: uuid.UUID
+    platform: str
+    #: Status of this channel's PlatformPost (draft, scheduled, published …).
+    status: str
+    result: CoverResult = Field(
+        ...,
+        description=(
+            "``saved``: stored, applied when the post is published (date and status "
+            "untouched). ``updated``: changed on the already published video (YouTube, "
+            "Facebook). ``unchanged``: identical request, nothing to do. ``unsupported``: "
+            "the platform cannot do it (Instagram and TikTok after publishing, channels "
+            "without video covers). ``error``: tried and failed, nothing stored."
+        ),
+    )
+    message: str = Field(..., description="Plain-text explanation in German.")
+
+
+class CoverResponse(Schema):
+    post_id: uuid.UUID
+    results: list[CoverChannelResult]
+
+
 # ---------------------------------------------------------------------------
 # /posts — read
 # ---------------------------------------------------------------------------
@@ -389,14 +471,25 @@ class PlatformOverrideOut(Schema):
     trial: bool | None = None
     #: Nur zusammen mit trial=true gesetzt: SS_PERFORMANCE oder MANUAL.
     trial_graduation: str | None = None
+    #: Titelbild als Bild (thumbnail_asset_id), null = keins gesetzt.
+    cover_asset_id: uuid.UUID | None = None
+    #: Titelbild als Frame in Millisekunden (thumb_offset_ms), null = keins gesetzt.
+    cover_offset_ms: int | None = None
 
     @classmethod
     def from_platform_post(cls, pp: PlatformPost) -> PlatformOverrideOut:
         from providers.instagram_trial import EXTRA_GRADUATION, is_trial, normalize_graduation
+        from providers.video_cover import EXTRA_COVER_ASSET, cover_offset_from_extra
 
         extra = pp.platform_extra or {}
         roh = extra.get("collaborators")
         test_reel = is_trial(extra)
+        cover_asset_id = None
+        try:
+            cover_asset_id = uuid.UUID(str(extra.get(EXTRA_COVER_ASSET))) if extra.get(EXTRA_COVER_ASSET) else None
+        except ValueError:
+            # A hand-edited, malformed value: report "none" rather than a 500.
+            cover_asset_id = None
         return cls(
             social_account_id=pp.social_account_id,
             platform=pp.social_account.platform,
@@ -406,6 +499,8 @@ class PlatformOverrideOut(Schema):
             collaborators=list(roh) if isinstance(roh, list) else None,
             trial=True if test_reel else None,
             trial_graduation=normalize_graduation(extra.get(EXTRA_GRADUATION)) if test_reel else None,
+            cover_asset_id=cover_asset_id,
+            cover_offset_ms=cover_offset_from_extra(extra),
         )
 
 

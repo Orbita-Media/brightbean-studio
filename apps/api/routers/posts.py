@@ -34,6 +34,8 @@ from apps.api.middleware import (
     release_idempotent_claim,
 )
 from apps.api.schemas import (
+    CoverRequest,
+    CoverResponse,
     CreatePostRequest,
     PostResponse,
     ScheduleRequest,
@@ -188,6 +190,88 @@ def _trial_extra(extra: dict, ov) -> dict:
     return extra
 
 
+def _resolve_cover_asset(workspace, asset_id):
+    """The cover must be an IMAGE asset of this workspace (422 otherwise)."""
+    from apps.media_library.models import MediaAsset
+
+    asset = MediaAsset.objects.filter(id=asset_id, workspace=workspace).first()
+    if asset is None:
+        raise HttpError(422, f"cover_asset_id {asset_id} is not a media asset of this workspace.")
+    if asset.media_type != MediaAsset.MediaType.IMAGE:
+        raise HttpError(422, f"cover_asset_id must be an image; {asset_id} is a {asset.media_type}.")
+    return asset
+
+
+def _cover_change(obj, gesetzt: set[str], workspace, *, create: bool):
+    """Read ``cover_asset_id`` / ``cover_offset_ms`` of one override or request.
+
+    On create, ``null`` means "nothing"; on PATCH and on /cover, a field sent
+    as ``null`` removes the stored value and an omitted field keeps it.
+    Returns None when neither field was sent.
+    """
+    from apps.publisher.cover import CoverChange
+
+    asset_id = getattr(obj, "cover_asset_id", None)
+    offset = getattr(obj, "cover_offset_ms", None)
+    if create:
+        set_asset, set_offset = asset_id is not None, offset is not None
+    else:
+        set_asset, set_offset = "cover_asset_id" in gesetzt, "cover_offset_ms" in gesetzt
+    if not (set_asset or set_offset):
+        return None
+    asset = _resolve_cover_asset(workspace, asset_id) if set_asset and asset_id is not None else None
+    return CoverChange(set_asset=set_asset, asset=asset, set_offset=set_offset, offset_ms=offset)
+
+
+def _check_cover_for_channel(platform: str, change, media_assets: list) -> None:
+    """422 when a cover VALUE does not fit this channel or this post's media.
+
+    Only values are judged: removing a value (``null``) is always fine.
+    """
+    from apps.publisher.cover import CoverChange, asset_problem, unsupported_fields_message
+
+    wanted = CoverChange(
+        set_asset=change.asset is not None,
+        asset=change.asset,
+        set_offset=change.offset_ms is not None,
+        offset_ms=change.offset_ms,
+    )
+    if wanted.is_empty:
+        return
+    problem = unsupported_fields_message(platform, wanted) or asset_problem(platform, wanted.asset)
+    if problem:
+        raise HttpError(422, problem)
+    _check_cover_media(wanted.offset_ms, media_assets)
+
+
+def _check_cover_media(offset_ms: int | None, media_assets: list) -> None:
+    """A cover needs a video; a frame must lie inside it (when its length is known).
+
+    No media yet is fine – the video may be attached afterwards.
+    """
+    from apps.publisher.cover import offset_problem
+
+    videos = [a for a in media_assets if getattr(a, "is_video", False)]
+    if media_assets and not videos:
+        raise HttpError(422, "Ein Titelbild gibt es nur für Video-Beiträge; dieser Beitrag hat kein Video.")
+    problem = offset_problem(offset_ms, videos)
+    if problem:
+        raise HttpError(422, problem)
+
+
+def _apply_cover_extra(extra: dict, platform: str, change) -> dict:
+    from providers.video_cover import apply_cover_to_extra
+
+    return apply_cover_to_extra(
+        extra,
+        platform,
+        set_asset=change.set_asset,
+        asset_id=change.asset.id if change.asset is not None else None,
+        set_offset=change.set_offset,
+        offset_ms=change.offset_ms,
+    )
+
+
 @router.post("/", response={201: PostResponse, 200: PostResponse}, summary="Create a draft or scheduled post")
 def create(request, payload: CreatePostRequest):
     enforce_http_rate_limits(request, is_write=True)
@@ -279,6 +363,16 @@ def create(request, payload: CreatePostRequest):
                 # Unknown IDs are create_post's job to reject; only judge what exists.
                 _check_trial_media([found[i] for i in wanted if i in found])
             override["platform_extra"] = _trial_extra(override.get("platform_extra") or {}, ov)
+        cover = _cover_change(ov, set(), request.api_key.workspace, create=True)
+        if cover is not None:
+            from apps.media_library.models import MediaAsset
+
+            wanted = list(payload.media_asset_ids)
+            found = {a.id: a for a in MediaAsset.objects.filter(id__in=wanted, workspace=request.api_key.workspace)}
+            _check_cover_for_channel(social_account.platform, cover, [found[i] for i in wanted if i in found])
+            override["platform_extra"] = _apply_cover_extra(
+                override.get("platform_extra") or {}, social_account.platform, cover
+            )
         platform_overrides[ov.social_account_id] = override
 
     # ---- Atomic claim-first idempotency. Three early-out branches
@@ -523,7 +617,14 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                         _check_trial_media(
                             [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
                         )
-            zu_setzen.append((kind, gesetzt, ov, namen))
+            cover = _cover_change(ov, gesetzt, post.workspace, create=False)
+            if cover is not None:
+                if payload.media_asset_ids is not None:
+                    medien = [resolved_assets[i] for i in wanted_media]
+                else:
+                    medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
+                _check_cover_for_channel(kind.social_account.platform, cover, medien)
+            zu_setzen.append((kind, gesetzt, ov, namen, cover))
 
     with transaction.atomic():
         update_fields: list[str] = []
@@ -570,7 +671,7 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                     position=position,
                 )
 
-        for kind, gesetzt, ov, namen in zu_setzen:
+        for kind, gesetzt, ov, namen, cover in zu_setzen:
             kind_fields: list[str] = []
             for feld, spalte in (
                 ("title", "platform_specific_title"),
@@ -598,6 +699,10 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                 kind.platform_extra = _trial_extra(kind.platform_extra or {}, ov)
                 if "platform_extra" not in kind_fields:
                     kind_fields.append("platform_extra")
+            if cover is not None:
+                kind.platform_extra = _apply_cover_extra(kind.platform_extra or {}, kind.social_account.platform, cover)
+                if "platform_extra" not in kind_fields:
+                    kind_fields.append("platform_extra")
             if kind_fields:
                 kind.save(update_fields=[*kind_fields, "updated_at"])
 
@@ -609,6 +714,66 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
     post.refresh_from_db()
     log_audit_entry(request, action="post.update", target_id=post.id, status_code=200)
     return _post_to_response(request, post)
+
+
+@router.post(
+    "/{post_id}/cover",
+    response=CoverResponse,
+    summary="Set the cover image (Titelbild) of a video post – also when scheduled or published",
+)
+def set_cover(request, post_id: uuid.UUID, payload: CoverRequest):
+    """Titelbild for one or all channels of a post, whatever its state.
+
+    * not published yet (draft, scheduled, review …): stored in
+      ``platform_extra`` and applied at publish time – date and status stay
+      as they are (``result='saved'``),
+    * published: YouTube (thumbnails.set) and Facebook
+      (``/{video_id}/thumbnails``) change the live video (``'updated'``);
+      Instagram and TikTok cannot change a cover after publishing
+      (``'unsupported'``),
+    * a channel being published right now answers 409 for the whole request.
+
+    Idempotent: the same request twice reports ``'unchanged'`` the second time.
+    """
+    enforce_http_rate_limits(request, is_write=True)
+    _require_perm(request, "create_posts")
+    post = _get_workspace_post(request, post_id)
+
+    from apps.composer.models import PlatformPost
+    from apps.publisher.cover import LIVE_COVER_PLATFORMS, apply_cover
+
+    change = _cover_change(payload, _gesetzte_felder(payload), post.workspace, create=False)
+    if change is None:
+        raise HttpError(422, "Send cover_asset_id and/or cover_offset_ms (null removes a stored value).")
+
+    kinder = list(post.platform_posts.select_related("social_account").order_by("created_at"))
+    if payload.social_account_id is not None:
+        kinder = [k for k in kinder if k.social_account_id == payload.social_account_id]
+        if not kinder:
+            raise HttpError(422, f"social_account_id {payload.social_account_id} is not a channel of this post.")
+
+    if any(k.status == PlatformPost.Status.PUBLISHING for k in kinder):
+        raise HttpError(409, "Der Beitrag wird gerade veröffentlicht; Titelbild danach erneut setzen.")
+
+    medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
+    if payload.social_account_id is not None:
+        # One channel named explicitly: a field it cannot use is a caller
+        # error, not something to skip quietly.
+        _check_cover_for_channel(kinder[0].social_account.platform, change, medien)
+    else:
+        # All channels: what a channel cannot use is skipped and reported per
+        # channel (Bluesky & Co. 'unsupported', a PNG for Instagram 'error').
+        _check_cover_media(change.offset_ms, medien)
+
+    # Changing a LIVE video is publish-level power, same gate as scheduling.
+    if change.asset is not None and any(
+        k.status == PlatformPost.Status.PUBLISHED and k.social_account.platform in LIVE_COVER_PLATFORMS for k in kinder
+    ):
+        _require_perm(request, "publish_directly")
+
+    results = [apply_cover(kind, change) for kind in kinder]
+    log_audit_entry(request, action="post.cover", target_id=post.id, status_code=200)
+    return CoverResponse(post_id=post.id, results=results)
 
 
 @router.post("/{post_id}/schedule", response=PostResponse, summary="Schedule a draft")

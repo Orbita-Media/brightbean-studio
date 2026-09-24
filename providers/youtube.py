@@ -273,10 +273,16 @@ class YouTubeProvider(SocialProvider):
             # Step 3 (optional): upload custom thumbnail
             thumbnail_path = content.extra.get("thumbnail_file")
             if video_id and thumbnail_path:
+                # Recorded either way (merged into platform_extra by the
+                # engine), so POST /posts/{id}/cover can tell "already set"
+                # from "failed at publish time" and retry the latter.
                 try:
                     self._upload_thumbnail(access_token, video_id, thumbnail_path)
-                except Exception:
+                    upload_body["thumbnail_set"] = True
+                except Exception as exc:
                     logger.exception("Custom thumbnail upload failed for video %s", video_id)
+                    upload_body["thumbnail_set"] = False
+                    upload_body["thumbnail_error"] = str(exc)[:300]
 
             return PublishResult(
                 platform_post_id=video_id,
