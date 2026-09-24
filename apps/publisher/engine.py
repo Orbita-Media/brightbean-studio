@@ -23,6 +23,7 @@ from datetime import timedelta
 
 from background_task import background
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -425,24 +426,38 @@ class PublishEngine:
             # Pop link_url from extra and set on PublishContent directly
             link_url = extra.pop("link_url", None)
 
-            # Resolve thumbnail_asset_id → temp file path for providers that
-            # need to upload a custom thumbnail (YouTube).
+            # Imported here for both asset lookups below. It used to sit inside
+            # the thumbnail branch only, so a Pinterest cover without a
+            # thumbnail ran into a NameError.
+            from apps.media_library.models import MediaAsset
+            from providers.video_cover import COVER_URL_PLATFORMS, EXTRA_COVER_FILE, EXTRA_COVER_URL
+
+            # Resolve thumbnail_asset_id (Titelbild) for the providers:
+            #   * Instagram fetches the image itself → public absolute URL
+            #     (same APP_URL rule as the media above) as ``thumbnail_url``,
+            #   * YouTube / Facebook upload it → temp file as ``thumbnail_file``.
+            # A missing or foreign asset is logged and skipped: the video still
+            # goes out, with the platform's default cover.
             thumb_asset_id = extra.pop("thumbnail_asset_id", None)
             if thumb_asset_id:
-                from apps.media_library.models import MediaAsset
-
                 try:
                     thumb_asset = MediaAsset.objects.get(id=thumb_asset_id)
                     if thumb_asset.file:
-                        suffix = os.path.splitext(thumb_asset.filename)[1] or ".jpg"
-                        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)  # noqa: SIM115
-                        temp_files.append(tmp.name)
-                        with thumb_asset.file.open("rb") as src:
-                            for chunk in iter(lambda: src.read(8192), b""):
-                                tmp.write(chunk)
-                        tmp.close()
-                        extra["thumbnail_file"] = tmp.name
-                except MediaAsset.DoesNotExist:
+                        if platform in COVER_URL_PLATFORMS:
+                            thumb_url = thumb_asset.file.url
+                            if thumb_url.startswith("/"):
+                                thumb_url = f"{app_url}{thumb_url}"
+                            extra[EXTRA_COVER_URL] = thumb_url
+                        else:
+                            suffix = os.path.splitext(thumb_asset.filename)[1] or ".jpg"
+                            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)  # noqa: SIM115
+                            temp_files.append(tmp.name)
+                            with thumb_asset.file.open("rb") as src:
+                                for chunk in iter(lambda: src.read(8192), b""):
+                                    tmp.write(chunk)
+                            tmp.close()
+                            extra[EXTRA_COVER_FILE] = tmp.name
+                except (MediaAsset.DoesNotExist, ValueError, ValidationError):
                     logger.warning("Thumbnail asset %s not found", thumb_asset_id)
 
             # Resolve cover_image_asset_id → temp file (Pinterest video pins)
