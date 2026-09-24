@@ -102,6 +102,7 @@ Feld für Feld:
 | `media[].position` | entfällt | ergibt sich aus der Reihenfolge |
 | `scheduled_at` | `scheduled_at` | **UTC**, Pflicht bei `action: "schedule"` |
 | `platform_specific_caption` | `platform_overrides[]` | Liste mit `social_account_id` plus überschriebenen Feldern |
+| – | `platform_overrides[].cover_asset_id` / `cover_offset_ms` | **neu**: Titelbild eines Video-Beitrags (Bild bzw. Frame); für geplante und veröffentlichte Beiträge `POST /api/v1/posts/{id}/cover`, siehe `docs/REEL-TITELBILD.md` |
 | `tags` | entfällt | am Post nicht mehr vorgesehen |
 | – | `internal_notes` | **neu**: interne Notiz, wird nie veröffentlicht |
 | – | `idempotency_key` | **neu**: gleicher Key plus gleicher Rumpf liefert die erste Antwort erneut. Bei Sammel-Läufen unbedingt nutzen, dann erzeugen Wiederholungen keine Doppel-Posts |
