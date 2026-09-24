@@ -526,6 +526,10 @@ class TestPublishPost:
 
         assert excinfo.value.retryable is False
         assert "audit" in str(excinfo.value)
+        # The error concerns the account's visibility, not the post's: the
+        # message must not send the user to 'Only you' (that was rejected too).
+        assert "PRIVATE accounts" in str(excinfo.value)
+        assert "to publish now" not in str(excinfo.value)
 
     @patch.object(TikTokProvider, "_request")
     def test_init_unknown_error_stays_retryable(self, mock_request):

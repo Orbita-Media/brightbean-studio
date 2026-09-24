@@ -69,6 +69,19 @@ UNAUDITED_CLIENT_HINT = (
     "(SELF_ONLY). Set this post's TikTok privacy to 'Only you' to publish now."
 )
 
+# Answer of /v2/post/publish/video/init/ with code
+# ``unaudited_client_can_only_post_to_private_accounts``. It concerns the
+# ACCOUNT, not the post: an unaudited client may only post to accounts that are
+# set to private, and even 'Only you' is rejected on a public account (seen on
+# 24.09.2026 with SELF_ONLY on a public business account). TikTok business
+# accounts cannot be switched to private at all.
+UNAUDITED_PUBLIC_ACCOUNT_HINT = (
+    "TikTok only lets unaudited apps post to PRIVATE accounts, and this account is "
+    "public – choosing 'Only you' for the post does not help. Either the app passes "
+    "TikTok's content-posting audit, or the account is set to private in the TikTok "
+    "app (not possible for business accounts)."
+)
+
 # Optional post_info fields the composer may set via platform_extra.
 # https://developers.tiktok.com/doc/content-posting-api-reference-direct-post
 OPTIONAL_POST_INFO_FIELDS = (
@@ -417,7 +430,7 @@ class TikTokProvider(SocialProvider):
             raise exc
         message = f"TikTok rejected the post ({code}): {exc}"
         if code == "unaudited_client_can_only_post_to_private_accounts":
-            message = f"TikTok rejected the post: {UNAUDITED_CLIENT_HINT}"
+            message = f"TikTok rejected the post: {UNAUDITED_PUBLIC_ACCOUNT_HINT}"
         raise PublishError(
             message,
             platform=self.platform_name,
