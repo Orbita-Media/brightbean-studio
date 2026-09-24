@@ -511,11 +511,57 @@ class FacebookProvider(SocialProvider):
         graph_post_id = video_fields.get("post_id") or video_id
         post_id = self._stored_post_id(graph_post_id)
         url = video_fields.get("permalink_url") or f"https://www.facebook.com/{graph_post_id}"
+        result_extra = {**data, **video_fields, "video_id": video_id}
+
+        # Titelbild. Runs AFTER the video is live, so it is best-effort for the
+        # same reason as the lookup above: an exception here would make the
+        # engine retry and post the video twice. A failure is logged and
+        # recorded; POST /api/v1/posts/{id}/cover can set it again later.
+        thumbnail_path = content.extra.get("thumbnail_file")
+        if thumbnail_path:
+            try:
+                self.set_video_thumbnail(access_token, video_id, thumbnail_path)
+                result_extra["thumbnail_set"] = True
+            except Exception as exc:
+                logger.warning("Facebook video %s: custom thumbnail not set: %s", video_id, exc)
+                result_extra["thumbnail_set"] = False
+                result_extra["thumbnail_error"] = str(exc)[:300]
+
         return PublishResult(
             platform_post_id=post_id,
             url=url,
-            extra={**data, **video_fields, "video_id": video_id},
+            extra=result_extra,
         )
+
+    def set_video_thumbnail(self, access_token: str, video_id: str, image_path: str) -> dict:
+        """POST /{video_id}/thumbnails with the image as ``source``.
+
+        Graph reference (Video Thumbnails): ``source`` – "The source for the
+        thumbnail, an image file" (max. 10 MB), ``is_preferred`` – make it the
+        thumbnail shown for this video. Works on a published page video too.
+        """
+        import mimetypes
+        import os
+
+        mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+        with open(image_path, "rb") as fh:
+            image_bytes = fh.read()
+        resp = self._request(
+            "POST",
+            f"{BASE_URL}/{video_id}/thumbnails",
+            access_token=access_token,
+            data={"is_preferred": "true"},
+            files={"source": (os.path.basename(image_path), image_bytes, mime)},
+            timeout=60.0,
+        )
+        body = self._safe_json(resp)
+        if isinstance(body, dict) and body.get("success") is False:
+            raise APIError(
+                f"Facebook refused the thumbnail for video {video_id}",
+                platform=self.platform_name,
+                raw_response=body,
+            )
+        return body
 
     # ------------------------------------------------------------------
     # Comments

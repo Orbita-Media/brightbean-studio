@@ -415,8 +415,12 @@ class TikTokProvider(SocialProvider):
             if field in content.extra:
                 post_info[field] = bool(content.extra[field])
         # Cover frame timestamp; TikTok defaults to the first frame when absent.
+        # ``thumb_offset_ms`` is the channel-neutral key the Agent-API writes
+        # (providers/video_cover.py); the TikTok-specific one wins if both exist.
         cover_ms = content.extra.get("video_cover_timestamp_ms")
-        if cover_ms is not None:
+        if cover_ms is None:
+            cover_ms = content.extra.get("thumb_offset_ms")
+        if cover_ms is not None and not isinstance(cover_ms, bool):
             with contextlib.suppress(TypeError, ValueError):
                 cover_ms = int(cover_ms)
                 if cover_ms >= 0:
@@ -467,8 +471,7 @@ class TikTokProvider(SocialProvider):
             )
         if len(urls) > MAX_PHOTO_IMAGES:
             raise PublishError(
-                f"TikTok zeigt höchstens {MAX_PHOTO_IMAGES} Bilder je Beitrag, dieser Beitrag "
-                f"bringt {len(urls)} mit.",
+                f"TikTok zeigt höchstens {MAX_PHOTO_IMAGES} Bilder je Beitrag, dieser Beitrag bringt {len(urls)} mit.",
                 platform=self.platform_name,
                 retryable=False,
             )

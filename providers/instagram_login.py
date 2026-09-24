@@ -37,6 +37,7 @@ from .types import (
     RateLimitConfig,
     ReplyResult,
 )
+from .video_cover import create_with_cover_fallback, instagram_cover_fields, parse_offset_ms
 
 logger = logging.getLogger(__name__)
 
@@ -341,9 +342,24 @@ class InstagramLoginProvider(SocialProvider):
             if alt_text:
                 payload["alt_text"] = alt_text
 
-        container_id = self._create_container(access_token, payload)
+        # Titelbild: same rules as the Facebook-Login path (providers/video_cover.py).
+        payload.update(instagram_cover_fields(content.extra, content.post_type))
+        container_id, cover_dropped = create_with_cover_fallback(
+            lambda p: self._create_container(access_token, p),
+            payload,
+            fallback_offset=parse_offset_ms(content.extra.get("thumb_offset_ms")),
+            platform=self.platform_name,
+        )
         self._wait_for_container(access_token, container_id)
-        return self._publish_container(access_token, container_id)
+        result = self._publish_container(access_token, container_id)
+        if cover_dropped:
+            # PublishResult is frozen: hand back a copy that says so.
+            result = PublishResult(
+                platform_post_id=result.platform_post_id,
+                url=result.url,
+                extra={**(result.extra or {}), "cover_dropped": True},
+            )
+        return result
 
     def _publish_carousel(self, access_token: str, content: PublishContent) -> PublishResult:
         # A carousel can never be a trial reel; raises before the first upload.

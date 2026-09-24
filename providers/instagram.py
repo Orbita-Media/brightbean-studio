@@ -34,6 +34,7 @@ from .types import (
     RateLimitConfig,
     ReplyResult,
 )
+from .video_cover import create_with_cover_fallback, instagram_cover_fields, parse_offset_ms
 
 logger = logging.getLogger(__name__)
 
@@ -702,8 +703,19 @@ class InstagramProvider(SocialProvider):
                 # list in the body is accepted with a 200 and silently ignored.
                 payload["collaborators"] = json.dumps(collaborators)
 
-        # Step 1: create container
-        container_id, audio_dropped = self._create_container_with_audio(access_token, ig_user_id, payload)
+        # Titelbild: cover_url (image) or thumb_offset (frame), reels only;
+        # dropped with a warning on stories and images (providers/video_cover.py).
+        payload.update(instagram_cover_fields(content.extra, content.post_type))
+        fallback_offset = parse_offset_ms(content.extra.get("thumb_offset_ms"))
+
+        # Step 1: create container. A refused cover image is retried without
+        # it (then with the chosen frame, if any) instead of losing the reel.
+        (container_id, audio_dropped), cover_dropped = create_with_cover_fallback(
+            lambda p: self._create_container_with_audio(access_token, ig_user_id, p),
+            payload,
+            fallback_offset=fallback_offset,
+            platform=self.platform_name,
+        )
 
         # Step 2: wait for container to be ready
         self._wait_for_container(access_token, container_id)
@@ -716,6 +728,8 @@ class InstagramProvider(SocialProvider):
             result_extra["audio_dropped"] = True
         if trial_params:
             result_extra["trial_graduation"] = trial_params["graduation_strategy"]
+        if cover_dropped:
+            result_extra["cover_dropped"] = True
         return self._publish_container(access_token, ig_user_id, container_id, result_extra=result_extra)
 
     def _publish_carousel(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:

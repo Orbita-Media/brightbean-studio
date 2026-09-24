@@ -184,6 +184,17 @@ class SocialProvider(ABC):
         """Post a comment on an existing post (e.g. first comment)."""
         raise NotImplementedError(f"{self.platform_name} does not support comments")
 
+    def set_video_thumbnail(self, access_token: str, video_id: str, image_path: str) -> dict:
+        """Replace the cover image (Titelbild) of an ALREADY PUBLISHED video.
+
+        Only YouTube (thumbnails.set) and Facebook (/{video_id}/thumbnails)
+        can do this. Instagram fixes the cover when the reel is created (a
+        published IG Media only accepts ``comment_enabled``), TikTok takes a
+        frame timestamp at upload and nothing afterwards – they keep this
+        default. See providers/video_cover.py.
+        """
+        raise NotImplementedError(f"{self.platform_name} cannot change the cover of a published video")
+
     # ------------------------------------------------------------------
     # Analytics (optional - override per provider)
     # ------------------------------------------------------------------

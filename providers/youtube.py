@@ -274,23 +274,7 @@ class YouTubeProvider(SocialProvider):
             thumbnail_path = content.extra.get("thumbnail_file")
             if video_id and thumbnail_path:
                 try:
-                    with open(thumbnail_path, "rb") as tf:
-                        thumb_data = tf.read()
-                    # Guess content type from extension
-                    ext = thumbnail_path.lower().rsplit(".", 1)[-1]
-                    thumb_ct = "image/png" if ext == "png" else "image/jpeg"
-                    self._request(
-                        "POST",
-                        f"{UPLOAD_BASE}/thumbnails/set",
-                        access_token=access_token,
-                        params={"videoId": video_id, "uploadType": "media"},
-                        headers={
-                            "Content-Type": thumb_ct,
-                            "Content-Length": str(len(thumb_data)),
-                        },
-                        data=thumb_data,
-                        timeout=60.0,
-                    )
+                    self._upload_thumbnail(access_token, video_id, thumbnail_path)
                 except Exception:
                     logger.exception("Custom thumbnail upload failed for video %s", video_id)
 
@@ -308,6 +292,31 @@ class YouTubeProvider(SocialProvider):
     # ------------------------------------------------------------------
     # Comments
     # ------------------------------------------------------------------
+
+    def _upload_thumbnail(self, access_token: str, video_id: str, image_path: str) -> dict:
+        """thumbnails.set: replace the custom thumbnail of *video_id*."""
+        with open(image_path, "rb") as tf:
+            thumb_data = tf.read()
+        # Guess content type from extension
+        ext = image_path.lower().rsplit(".", 1)[-1]
+        thumb_ct = "image/png" if ext == "png" else "image/jpeg"
+        resp = self._request(
+            "POST",
+            f"{UPLOAD_BASE}/thumbnails/set",
+            access_token=access_token,
+            params={"videoId": video_id, "uploadType": "media"},
+            headers={
+                "Content-Type": thumb_ct,
+                "Content-Length": str(len(thumb_data)),
+            },
+            data=thumb_data,
+            timeout=60.0,
+        )
+        return self._safe_json(resp)
+
+    def set_video_thumbnail(self, access_token: str, video_id: str, image_path: str) -> dict:
+        """Titelbild of a published video: thumbnails.set works any time."""
+        return self._upload_thumbnail(access_token, video_id, image_path)
 
     def publish_comment(self, access_token: str, post_id: str, text: str) -> CommentResult:
         resp = self._request(
