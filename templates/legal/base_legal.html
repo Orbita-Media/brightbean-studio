@@ -11,9 +11,11 @@
     <link rel="stylesheet" href="{% static 'css/dist/styles.css' %}">
     <style>
         .legal-wrap { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; font-family: var(--font-body); color: var(--text-primary); }
-        .legal-card { background: var(--surface-1, #fff); border: 1px solid var(--border, #E5E7EB); border-radius: 16px; box-shadow: 0 1px 3px rgba(16,24,40,.06); padding: 1.75rem 1.25rem; }
+        .legal-card { background: #fff; border: 1px solid var(--border, #E5E7EB); border-radius: 16px; box-shadow: 0 1px 3px rgba(16,24,40,.06); padding: 1.75rem 1.25rem; }
         @media (min-width: 640px) { .legal-card { padding: 2.5rem; } }
-        .legal-card h1 { font-size: 1.75rem; font-weight: 700; line-height: 1.25; margin-bottom: .25rem; }
+        .legal-card h1 { font-size: 1.45rem; font-weight: 700; line-height: 1.25; margin-bottom: .25rem; hyphens: auto; -webkit-hyphens: auto; overflow-wrap: break-word; }
+        @media (min-width: 640px) { .legal-card h1 { font-size: 1.75rem; } }
+        .legal-card h2, .legal-card h3 { hyphens: auto; -webkit-hyphens: auto; overflow-wrap: break-word; }
         .legal-card h2 { font-size: 1.2rem; font-weight: 700; margin: 2rem 0 .5rem; }
         .legal-card h3 { font-size: 1.05rem; font-weight: 600; margin: 1.25rem 0 .35rem; }
         .legal-card p, .legal-card li { font-size: 1rem; line-height: 1.65; color: var(--text-primary); overflow-wrap: break-word; }
