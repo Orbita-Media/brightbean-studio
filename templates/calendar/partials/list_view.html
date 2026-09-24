@@ -42,6 +42,7 @@ Context: posts, workspace.
                         <span class="w-5 h-5 rounded-[5px] flex items-center justify-center">
                             {% include "partials/_platform_icon.html" with platform=pp.social_account.platform size="sm" %}
                         </span>
+                        {% if pp.is_story %}{% include "partials/_story_badge.html" %}{% endif %}
                         {% endfor %}
                     </div>
                 </td>

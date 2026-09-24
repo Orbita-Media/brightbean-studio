@@ -43,6 +43,7 @@ Shows all scheduled platform posts grouped by date. Loaded via HTMX into #tab-co
 
                         <!-- Title / caption -->
                         <p class="text-sm text-stone-600 leading-relaxed">
+                            {% if pp.is_story %}{% include "partials/_story_badge.html" %}{% endif %}
                             {{ pp.post.title|default:pp.post.caption_snippet|default:"(no caption)" }}
                         </p>
 

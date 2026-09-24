@@ -289,6 +289,7 @@
                         {% endif %}
                         {% endwith %}
                         <span class="truncate">{{ pp.post.caption_snippet|truncatechars:28 }}</span>
+                        {% if pp.is_story %}{% include "partials/_story_badge.html" %}{% endif %}
                     </a>
                     {% endfor %}
 

@@ -50,6 +50,7 @@
                         {{ platform|truncatechars:2|upper }}
                     </span>
                     {% endfor %}
+                    {% if draft.has_story %}{% include "partials/_story_badge.html" %}{% endif %}
                 </div>
             </div>
         </a>

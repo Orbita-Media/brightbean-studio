@@ -327,6 +327,13 @@ class Post(models.Model):
         """Summary of target platforms."""
         return list(self.platform_posts.values_list("social_account__platform", flat=True))
 
+    @property
+    def has_story(self):
+        """Whether any channel of this post goes out as a story (badge in lists)."""
+        from providers.story import is_story
+
+        return any(is_story(pp.platform_extra) for pp in self.platform_posts.all())
+
 
 class PlatformPost(models.Model):
     """A per-platform variant of a Post.
@@ -522,6 +529,13 @@ class PlatformPost(models.Model):
     @property
     def platform(self):
         return self.social_account.platform
+
+    @property
+    def is_story(self):
+        """Published as an Instagram/Facebook story (``platform_extra.post_type``)."""
+        from providers.story import is_story
+
+        return is_story(self.platform_extra)
 
     @property
     def char_limit(self):

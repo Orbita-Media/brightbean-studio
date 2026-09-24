@@ -51,6 +51,7 @@ from providers.instagram_trial import (
     EXTRA_TRIAL,
     normalize_graduation,
 )
+from providers.story import STORY_PLATFORMS, apply_story_to_extra
 from providers.tiktok import VALID_PRIVACY_LEVELS as TIKTOK_PRIVACY_LEVELS
 from providers.video_cover import COVER_IMAGE_PLATFORMS, COVER_OFFSET_PLATFORMS, apply_cover_to_extra, parse_offset_ms
 
@@ -255,6 +256,20 @@ def _cover_extra(request, acc_id, current_extra, platform, workspace):
     )
 
 
+def _story_extra(request, acc_id, current_extra):
+    """Read the "Als Story veröffentlichen" switch into ``platform_extra``.
+
+    The hidden field always submits ("true"/"false"), so switching it off
+    really removes the story, and a save from a form without the panel never
+    reaches this function (guard at the call site). Every other key – sound,
+    collaborators, trial, cover – survives untouched: a cover stays stored
+    while the story is on (it is simply not used), so switching back to a
+    reel brings it back.
+    """
+    wanted = request.POST.get(f"story_{acc_id}", "").strip().lower() == "true"
+    return apply_story_to_extra(current_extra, wanted)
+
+
 #: Form field ↔ model field for the three per-platform text overrides.
 PLATFORM_OVERRIDE_FIELDS = (
     ("override_title_", "platform_specific_title"),
@@ -393,6 +408,9 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
 
         if account.platform in COVER_PANEL_PLATFORMS and f"cover_panel_{acc_id}" in request.POST:
             pp.platform_extra = _cover_extra(request, acc_id, pp.platform_extra, account.platform, workspace)
+
+        if account.platform in STORY_PLATFORMS and f"story_{acc_id}" in request.POST:
+            pp.platform_extra = _story_extra(request, acc_id, pp.platform_extra)
 
         pp.save()
 
