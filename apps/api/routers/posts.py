@@ -272,6 +272,73 @@ def _apply_cover_extra(extra: dict, platform: str, change) -> dict:
     )
 
 
+def _story_conflicts(extra: dict) -> list[str]:
+    """Settings in *extra* that a story cannot carry (field names of the API)."""
+    from providers.instagram_trial import is_trial
+    from providers.video_cover import EXTRA_COVER_ASSET, cover_offset_from_extra
+
+    konflikte: list[str] = []
+    if extra.get(EXTRA_COVER_ASSET) or cover_offset_from_extra(extra) is not None:
+        konflikte.append("Titelbild (cover_asset_id / cover_offset_ms)")
+    if extra.get("collaborators"):
+        konflikte.append("Mitwirkende (collaborators)")
+    if extra.get("audio_id"):
+        konflikte.append("Instagram-Sound (instagram_audio)")
+    if is_trial(extra):
+        konflikte.append("Test-Reel (trial)")
+    return konflikte
+
+
+def _check_story(platform: str, medien: list, extra: dict) -> None:
+    """422 when this channel cannot publish its post as a story.
+
+    A story is exactly one image or one video of the right format and length
+    on Instagram or a Facebook page, and it carries none of the reel/feed
+    settings. Checked here instead of at publish time, which is 26 hours
+    later and without anyone watching.
+    """
+    from providers.story import STORY_PLATFORMS, story_media_problem
+
+    if platform not in STORY_PLATFORMS:
+        raise HttpError(
+            422,
+            f"post_type 'story' gibt es nur für Instagram und Facebook-Seiten; dieses Konto ist {platform}.",
+        )
+    problem = story_media_problem(platform, medien)
+    if problem:
+        raise HttpError(422, problem)
+    konflikte = _story_conflicts(extra)
+    if konflikte:
+        raise HttpError(
+            422,
+            (
+                "Eine Story hat kein(e) "
+                + ", ".join(konflikte)
+                + ". Im selben Aufruf leeren (null, [] bzw. false) oder post_type weglassen."
+            ),
+        )
+
+
+def _story_request_extra(ov) -> dict:
+    """What the override of a CREATE request asks for, as ``platform_extra`` keys.
+
+    Only for the conflict check: on create nothing is stored yet, so the sent
+    values are the whole state.
+    """
+    extra: dict = {}
+    if ov.cover_asset_id is not None:
+        extra["thumbnail_asset_id"] = str(ov.cover_asset_id)
+    if ov.cover_offset_ms is not None:
+        extra["thumb_offset_ms"] = ov.cover_offset_ms
+    if ov.collaborators:
+        extra["collaborators"] = list(ov.collaborators)
+    if ov.instagram_audio is not None:
+        extra["audio_id"] = ov.instagram_audio.audio_id
+    if ov.trial:
+        extra["trial"] = True
+    return extra
+
+
 @router.post("/", response={201: PostResponse, 200: PostResponse}, summary="Create a draft or scheduled post")
 def create(request, payload: CreatePostRequest):
     enforce_http_rate_limits(request, is_write=True)
@@ -315,6 +382,14 @@ def create(request, payload: CreatePostRequest):
             "caption": ov.caption,
             "first_comment": ov.first_comment,
         }
+        if ov.post_type == "story":
+            # Before the other extras: a cover or a trial on a story is a
+            # story problem, and the story message is the one that helps.
+            from apps.media_library.models import MediaAsset
+
+            wanted = list(payload.media_asset_ids)
+            found = {a.id: a for a in MediaAsset.objects.filter(id__in=wanted, workspace=request.api_key.workspace)}
+            _check_story(social_account.platform, [found[i] for i in wanted if i in found], _story_request_extra(ov))
         if ov.instagram_audio is not None:
             # A platform sound is an Instagram-only extra. Accepting it for
             # another platform would create a setting that quietly does
@@ -373,6 +448,10 @@ def create(request, payload: CreatePostRequest):
             override["platform_extra"] = _apply_cover_extra(
                 override.get("platform_extra") or {}, social_account.platform, cover
             )
+        if ov.post_type == "story":
+            from providers.story import apply_story_to_extra
+
+            override["platform_extra"] = apply_story_to_extra(override.get("platform_extra") or {}, True)
         platform_overrides[ov.social_account_id] = override
 
     # ---- Atomic claim-first idempotency. Three early-out branches
@@ -572,6 +651,7 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
     # Bluesky caption of 274 characters and let the post fall back to a text
     # that busts the 300-character limit at publish time.
     zu_setzen: list[tuple] = []
+    story_geprueft: set = set()
     if payload.platform_overrides is not None:
         kinder = {pp.social_account_id: pp for pp in post.platform_posts.select_related("social_account")}
         for ov in payload.platform_overrides:
@@ -624,7 +704,51 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                 else:
                     medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
                 _check_cover_for_channel(kind.social_account.platform, cover, medien)
+            story_gesendet = "post_type" in gesetzt
+            # The state this channel will have after the request, to judge a
+            # story against it: a cover stored earlier conflicts just like
+            # one sent now, and clearing it in the same call is the way out.
+            from providers.story import apply_story_to_extra, is_story
+
+            simuliert = dict(kind.platform_extra or {})
+            if namen is not None:
+                if namen:
+                    simuliert["collaborators"] = namen
+                else:
+                    simuliert.pop("collaborators", None)
+            if "trial" in gesetzt and ov.trial is not None:
+                simuliert = _trial_extra(simuliert, ov)
+            if cover is not None:
+                simuliert = _apply_cover_extra(simuliert, kind.social_account.platform, cover)
+            if story_gesendet:
+                simuliert = apply_story_to_extra(simuliert, ov.post_type == "story")
+            beruehrt = story_gesendet or payload.media_asset_ids is not None or cover is not None
+            beruehrt = beruehrt or ("trial" in gesetzt and bool(ov.trial)) or bool(namen)
+            if is_story(simuliert) and beruehrt:
+                if payload.media_asset_ids is not None:
+                    medien = [resolved_assets[i] for i in wanted_media]
+                else:
+                    medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
+                _check_story(kind.social_account.platform, medien, simuliert)
+                story_geprueft.add(kind.social_account_id)
             zu_setzen.append((kind, gesetzt, ov, namen, cover))
+
+    # New media on a post whose channel is a story (and not named in the
+    # overrides above): a second image turns the story into something neither
+    # platform can publish, so it is refused now rather than at publish time.
+    if payload.media_asset_ids is not None:
+        from providers.story import is_story, story_media_problem
+
+        neue_medien = [resolved_assets[i] for i in wanted_media]
+        for kind in post.platform_posts.select_related("social_account"):
+            if kind.social_account_id in story_geprueft or not is_story(kind.platform_extra):
+                continue
+            if any(k.social_account_id == kind.social_account_id for k, *_ in zu_setzen):
+                # Named in the overrides and switched off there, or judged above.
+                continue
+            problem = story_media_problem(kind.social_account.platform, neue_medien)
+            if problem:
+                raise HttpError(422, problem)
 
     with transaction.atomic():
         update_fields: list[str] = []
@@ -703,6 +827,12 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                 kind.platform_extra = _apply_cover_extra(kind.platform_extra or {}, kind.social_account.platform, cover)
                 if "platform_extra" not in kind_fields:
                     kind_fields.append("platform_extra")
+            if "post_type" in gesetzt:
+                from providers.story import apply_story_to_extra
+
+                kind.platform_extra = apply_story_to_extra(kind.platform_extra or {}, ov.post_type == "story")
+                if "platform_extra" not in kind_fields:
+                    kind_fields.append("platform_extra")
             if kind_fields:
                 kind.save(update_fields=[*kind_fields, "updated_at"])
 
@@ -760,6 +890,10 @@ def set_cover(request, post_id: uuid.UUID, payload: CoverRequest):
         # One channel named explicitly: a field it cannot use is a caller
         # error, not something to skip quietly.
         _check_cover_for_channel(kinder[0].social_account.platform, change, medien)
+        from providers.story import is_story
+
+        if is_story(kinder[0].platform_extra) and (change.asset is not None or change.offset_ms is not None):
+            raise HttpError(422, "Dieser Kanal wird als Story veröffentlicht, eine Story hat kein Titelbild.")
     else:
         # All channels: what a channel cannot use is skipped and reported per
         # channel (Bluesky & Co. 'unsupported', a PNG for Instagram 'error').

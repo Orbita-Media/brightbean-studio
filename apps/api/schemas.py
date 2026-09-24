@@ -242,6 +242,23 @@ class PlatformOverride(Schema):
             "else answers 422. On PATCH, ``null`` removes it; omitting the field keeps it."
         ),
     )
+    post_type: Literal["story"] | None = Field(
+        None,
+        description=(
+            "``story`` publishes this channel's post as a STORY instead of a feed post or reel. "
+            "Valid for instagram, instagram_login and facebook (page story); anything else "
+            "answers 422. The post needs exactly ONE medium: one image (Instagram: JPEG, at "
+            "most 8 MB; Facebook: JPEG/PNG/GIF/BMP/TIFF, at most 10 MB) or one video (MP4 or "
+            "MOV, 3 to 60 seconds on both platforms, Instagram at most 100 MB; 9:16 "
+            "recommended). No media, a carousel or a longer video answer 422. A story has no "
+            "caption, alt text, first comment, cover, collaborators, platform sound or trial: "
+            "the caption and first comment are simply not sent, while cover_asset_id / "
+            "cover_offset_ms, collaborators, instagram_audio and trial on the same channel "
+            "answer 422 (send them as null / [] / false to clear stored values in the same "
+            "request). Stickers, links and music cannot be added to a story through the API. "
+            "On PATCH, ``null`` switches the story off again; omitting the field keeps it."
+        ),
+    )
 
 
 class CreatePostRequest(Schema):
@@ -475,10 +492,13 @@ class PlatformOverrideOut(Schema):
     cover_asset_id: uuid.UUID | None = None
     #: Titelbild als Frame in Millisekunden (thumb_offset_ms), null = keins gesetzt.
     cover_offset_ms: int | None = None
+    #: "story" = wird als Story veröffentlicht, null = normaler Beitrag/Reel.
+    post_type: Literal["story"] | None = None
 
     @classmethod
     def from_platform_post(cls, pp: PlatformPost) -> PlatformOverrideOut:
         from providers.instagram_trial import EXTRA_GRADUATION, is_trial, normalize_graduation
+        from providers.story import is_story
         from providers.video_cover import EXTRA_COVER_ASSET, cover_offset_from_extra
 
         extra = pp.platform_extra or {}
@@ -501,6 +521,7 @@ class PlatformOverrideOut(Schema):
             trial_graduation=normalize_graduation(extra.get(EXTRA_GRADUATION)) if test_reel else None,
             cover_asset_id=cover_asset_id,
             cover_offset_ms=cover_offset_from_extra(extra),
+            post_type="story" if is_story(extra) else None,
         )
 
 

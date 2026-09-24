@@ -33,6 +33,7 @@ from apps.composer.models import PlatformPost
 from apps.credentials.models import resolve_platform_credentials
 from providers import get_provider
 from providers.exceptions import PublishError
+from providers.story import is_story
 from providers.types import PostType, PublishContent
 
 from .models import PublishLog, RateLimitState
@@ -204,6 +205,10 @@ class PublishEngine:
                 continue
             if not pp.social_account.supports_first_comment():
                 continue
+            if is_story(pp.platform_extra):
+                # A story has no comments; the post's first comment belongs to
+                # the feed post it echoes, not to the story.
+                continue
             comment_text = pp.effective_first_comment
             if comment_text:
                 _post_first_comment_task(str(pp.id), schedule=FIRST_COMMENT_DELAY)
@@ -352,6 +357,7 @@ class PublishEngine:
         media_files = []
         media_urls = []
         media_alt_texts = []
+        media_types = []
         temp_files = []
         attachments = list(platform_post.post.media_attachments.select_related("media_asset").order_by("position"))
 
@@ -383,6 +389,10 @@ class PublishEngine:
                     # Local storage: make absolute using APP_URL
                     url = f"{app_url}{url}"
                 media_urls.append(url)
+                # Positionally aligned like the alt texts below: a provider that
+                # must tell image from video (Instagram/Facebook story) reads the
+                # real type instead of guessing from the file name.
+                media_types.append(asset.media_type or "")
 
                 # Carry the accessibility description along, positionally
                 # aligned with media_urls/media_files so every carousel slide
@@ -492,6 +502,7 @@ class PublishEngine:
                 media_files=media_files,
                 media_urls=media_urls,
                 media_alt_texts=media_alt_texts,
+                media_types=media_types,
                 post_type=post_type,
                 extra=extra,
                 link_url=link_url,

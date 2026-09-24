@@ -154,6 +154,21 @@ class PublishContent:
     # Duration of the primary video in seconds, when known. Lets providers
     # enforce platform limits (e.g. TikTok's max_video_post_duration_sec).
     video_duration_sec: float | None = None
+    # ``MediaAsset.media_type`` per item ("image", "video", "gif" …),
+    # positionally aligned with ``media_urls``. Optional: a provider that
+    # needs it reads it through ``is_video_at()``, which falls back to the
+    # file extension of the URL when the list is shorter or empty.
+    media_types: list[str] = field(default_factory=list)
+
+    def is_video_at(self, index: int) -> bool:
+        """Whether the media item at ``index`` is a video."""
+        if 0 <= index < len(self.media_types) and self.media_types[index]:
+            return str(self.media_types[index]).lower() == "video"
+        if 0 <= index < len(self.media_urls):
+            from .story import is_video_url
+
+            return is_video_url(self.media_urls[index])
+        return False
 
     def alt_text_for(self, index: int, max_length: int | None = None) -> str:
         """Return the alt text describing the media item at ``index``.

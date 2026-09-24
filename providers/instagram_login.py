@@ -22,6 +22,7 @@ from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError
 from .instagram_trial import build_trial_params, trial_params_field
 from .meta_insights import fetch_insights_safe
+from .story import instagram_story_fields
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -311,6 +312,9 @@ class InstagramLoginProvider(SocialProvider):
         return self._publish_single(access_token, content)
 
     def _publish_single(self, access_token: str, content: PublishContent) -> PublishResult:
+        if content.post_type == PostType.STORY:
+            return self._publish_story(access_token, content)
+
         payload: dict = {}
         if content.text:
             payload["caption"] = content.text
@@ -328,13 +332,6 @@ class InstagramLoginProvider(SocialProvider):
             payload["video_url"] = content.media_urls[0]
             if trial_params:
                 payload["trial_params"] = trial_params_field(trial_params)
-        elif content.post_type == PostType.STORY:
-            url = content.media_urls[0]
-            payload["media_type"] = "STORIES"
-            if url.lower().endswith((".mp4", ".mov")):
-                payload["video_url"] = url
-            else:
-                payload["image_url"] = url
         else:
             # Default IMAGE
             payload["image_url"] = content.media_urls[0]
@@ -360,6 +357,42 @@ class InstagramLoginProvider(SocialProvider):
                 extra={**(result.extra or {}), "cover_dropped": True},
             )
         return result
+
+    def _publish_story(self, access_token: str, content: PublishContent) -> PublishResult:
+        """One image or one video as a story – same rules as the Facebook-Login
+        path (``InstagramProvider._publish_story``): no caption, alt text or
+        cover on a story container, a trial is refused."""
+        build_trial_params(content.extra, content.post_type, platform=self.platform_name)
+        payload = instagram_story_fields(content, "instagram_login", self.platform_name)
+        # Logs "reels only" and returns nothing for a story.
+        instagram_cover_fields(content.extra, content.post_type)
+        if content.text:
+            logger.info("Instagram (Direct): story published without caption, a story container has none")
+        container_id = self._create_container(access_token, payload)
+        # A video story is transcoded like a reel; the same wait applies.
+        self._wait_for_container(access_token, container_id)
+        result = self._publish_container(access_token, container_id)
+        permalink = None
+        try:
+            permalink = (
+                self._request(
+                    "GET",
+                    f"{API_BASE}/{result.platform_post_id}",
+                    access_token=access_token,
+                    params={"fields": "permalink"},
+                )
+                .json()
+                .get("permalink")
+            )
+        except Exception as exc:
+            # Best-effort AFTER the story is live: raising here would make the
+            # engine retry and publish the story twice.
+            logger.debug("Instagram permalink unavailable for %s: %s", result.platform_post_id, exc)
+        return PublishResult(
+            platform_post_id=result.platform_post_id,
+            url=permalink or result.url,
+            extra={**(result.extra or {}), "story": True},
+        )
 
     def _publish_carousel(self, access_token: str, content: PublishContent) -> PublishResult:
         # A carousel can never be a trial reel; raises before the first upload.

@@ -19,6 +19,7 @@ from .meta_business import pages_when_me_accounts_is_empty
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe
 from .meta_pages import SOURCE_ME_ACCOUNTS
+from .story import instagram_story_fields
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -634,6 +635,9 @@ class InstagramProvider(SocialProvider):
 
     def _publish_single(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
         """Publish a single image, reel, or story."""
+        if content.post_type == PostType.STORY:
+            return self._publish_story(access_token, ig_user_id, content)
+
         payload: dict = {}
 
         if content.text:
@@ -661,13 +665,6 @@ class InstagramProvider(SocialProvider):
             if trial_params:
                 # Trial reel: non-followers only until it graduates.
                 payload["trial_params"] = trial_params_field(trial_params)
-        elif content.post_type == PostType.STORY:
-            if content.media_urls and content.media_urls[0].endswith((".mp4", ".mov")):
-                payload["media_type"] = "STORIES"
-                payload["video_url"] = content.media_urls[0]
-            else:
-                payload["media_type"] = "STORIES"
-                payload["image_url"] = content.media_urls[0]
         else:
             # Default IMAGE
             payload["image_url"] = content.media_urls[0]
@@ -690,18 +687,9 @@ class InstagramProvider(SocialProvider):
 
         collaborators = build_collaborators(content.extra)
         if collaborators:
-            if content.post_type == PostType.STORY:
-                # "For Feed image, Reels and Carousels only". Sending it on a
-                # story container is rejected, so it is dropped with a word
-                # rather than losing the story.
-                logger.warning(
-                    "Instagram: ignoring collaborators %s on a story, Graph allows them on feed image, reels and carousels only",
-                    ", ".join(collaborators),
-                )
-            else:
-                # JSON *string*, same reason as audio_configuration: a native
-                # list in the body is accepted with a 200 and silently ignored.
-                payload["collaborators"] = json.dumps(collaborators)
+            # JSON *string*, same reason as audio_configuration: a native
+            # list in the body is accepted with a 200 and silently ignored.
+            payload["collaborators"] = json.dumps(collaborators)
 
         # Titelbild: cover_url (image) or thumb_offset (frame), reels only;
         # dropped with a warning on stories and images (providers/video_cover.py).
@@ -731,6 +719,68 @@ class InstagramProvider(SocialProvider):
         if cover_dropped:
             result_extra["cover_dropped"] = True
         return self._publish_container(access_token, ig_user_id, container_id, result_extra=result_extra)
+
+    def _publish_story(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
+        """Publish one image or one video as a story (``media_type=STORIES``).
+
+        A story container takes the media URL and nothing else: no caption,
+        no alt text, no collaborators, no platform sound, no cover. Whatever of
+        that is stored on the post is left out with a log line instead of
+        failing the story. A trial reel is the exception – that setting
+        promises an audience, so ``build_trial_params`` refuses it.
+        """
+        build_trial_params(content.extra, content.post_type, platform=self.platform_name)
+        payload = instagram_story_fields(content, "instagram", self.platform_name)
+
+        # Logs "reels only" and returns nothing for a story.
+        instagram_cover_fields(content.extra, content.post_type)
+        collaborators = build_collaborators(content.extra)
+        if collaborators:
+            # "For Feed image, Reels and Carousels only". Sending it on a
+            # story container is rejected, so it is dropped with a word
+            # rather than losing the story.
+            logger.warning(
+                "Instagram: ignoring collaborators %s on a story, Graph allows them on feed image, reels and carousels only",
+                ", ".join(collaborators),
+            )
+        audio_configuration = build_audio_configuration(content.extra)
+        if audio_configuration:
+            logger.warning(
+                "Instagram: ignoring audio_id %s on a story, the Audio API attaches sound to reels only",
+                audio_configuration.get("audio_id"),
+            )
+        if content.text:
+            logger.info("Instagram: story published without its caption, a story container has none")
+
+        container_id = self._create_container(access_token, ig_user_id, payload)
+        # A video story is transcoded like a reel; the same wait applies.
+        self._wait_for_container(access_token, container_id)
+        result = self._publish_container(access_token, ig_user_id, container_id, result_extra={"story": True})
+        return self._with_permalink(access_token, result)
+
+    def _with_permalink(self, access_token: str, result: PublishResult) -> PublishResult:
+        """Replace the guessed URL with the media's real permalink, best-effort.
+
+        Runs AFTER the story is live: nothing here may raise, or the engine
+        would retry and publish the story twice.
+        """
+        try:
+            permalink = (
+                self._request(
+                    "GET",
+                    f"{BASE_URL}/{result.platform_post_id}",
+                    access_token=access_token,
+                    params={"fields": "permalink"},
+                )
+                .json()
+                .get("permalink")
+            )
+        except Exception as exc:
+            logger.debug("Instagram permalink unavailable for %s: %s", result.platform_post_id, exc)
+            permalink = None
+        if not permalink:
+            return result
+        return PublishResult(platform_post_id=result.platform_post_id, url=permalink, extra=result.extra)
 
     def _publish_carousel(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
         """Publish a carousel post with multiple media items."""

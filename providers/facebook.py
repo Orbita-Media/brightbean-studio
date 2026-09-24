@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from urllib.parse import urlencode, urlparse
 
@@ -12,6 +13,7 @@ from .meta_business import pages_when_me_accounts_is_empty
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe, parse_insights_response
 from .meta_pages import SOURCE_ME_ACCOUNTS
+from .story import check_story_content
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -82,6 +84,11 @@ FACEBOOK_MAX_ALT_TEXT_LENGTH = 1000
 # the Instagram / Threads carousel providers.
 VIDEO_URL_SUFFIXES = (".mp4", ".mov")
 
+# Page Stories API: the video upload of a video story is processed
+# asynchronously; ``finish`` is only sent once the upload phase is complete.
+STORY_UPLOAD_POLL_INTERVAL = 2  # seconds
+STORY_UPLOAD_POLL_MAX_ATTEMPTS = 60  # ~2 minutes
+
 
 class FacebookProvider(SocialProvider):
     """Facebook Graph API v25.0 provider."""
@@ -113,7 +120,7 @@ class FacebookProvider(SocialProvider):
 
     @property
     def supported_post_types(self) -> list[PostType]:
-        return [PostType.TEXT, PostType.IMAGE, PostType.VIDEO, PostType.LINK]
+        return [PostType.TEXT, PostType.IMAGE, PostType.VIDEO, PostType.LINK, PostType.STORY]
 
     @property
     def supported_media_types(self) -> list[MediaType]:
@@ -335,6 +342,8 @@ class FacebookProvider(SocialProvider):
                 platform=self.platform_name,
             )
 
+        if content.post_type == PostType.STORY:
+            return self._publish_story(access_token, page_id, content)
         if content.post_type == PostType.IMAGE and content.media_urls:
             return self._publish_photo(access_token, page_id, content)
         if content.post_type == PostType.VIDEO and content.media_urls:
@@ -531,6 +540,172 @@ class FacebookProvider(SocialProvider):
             platform_post_id=post_id,
             url=url,
             extra=result_extra,
+        )
+
+    # ------------------------------------------------------------------
+    # Page stories (Page Stories API)
+    # ------------------------------------------------------------------
+
+    def _publish_story(self, access_token: str, page_id: str, content: PublishContent) -> PublishResult:
+        """One photo or one video as a story of the page.
+
+        A story has no text: caption, link, alt text and cover of the post are
+        not sent (the API has no field for them). Media, length and count are
+        checked before the first request, so a story that cannot work fails
+        without leaving anything behind on the page.
+        """
+        video = check_story_content(content, "facebook", self.platform_name)
+        if content.text:
+            logger.info("Facebook: story published without its caption, a page story has no text field")
+        if video:
+            return self._publish_video_story(access_token, page_id, content.media_urls[0])
+        return self._publish_photo_story(access_token, page_id, content.media_urls[0])
+
+    def _publish_photo_story(self, access_token: str, page_id: str, url: str) -> PublishResult:
+        """Upload the photo unpublished, then publish it with ``photo_stories``."""
+        staged = self._request(
+            "POST",
+            f"{BASE_URL}/{page_id}/photos",
+            access_token=access_token,
+            json={"url": url, "published": False},
+        ).json()
+        photo_id = staged.get("id")
+        if not photo_id:
+            raise PublishError(
+                "Facebook: Foto für die Story wurde nicht angenommen (keine photo_id)",
+                platform=self.platform_name,
+                raw_response=staged,
+            )
+        try:
+            data = self._request(
+                "POST",
+                f"{BASE_URL}/{page_id}/photo_stories",
+                access_token=access_token,
+                json={"photo_id": photo_id},
+            ).json()
+            if not data.get("success") or not data.get("post_id"):
+                raise PublishError(
+                    "Facebook: Foto-Story nicht veröffentlicht",
+                    platform=self.platform_name,
+                    raw_response=data,
+                )
+        except Exception:
+            # The staged photo is unpublished and useless without the story;
+            # a retry uploads a fresh one ("a photo … can not have been used
+            # in a previously published post").
+            self._delete_staged_photos(access_token, [photo_id])
+            raise
+        return self._story_result(access_token, page_id, data, media_id=photo_id, media_type="photo")
+
+    def _publish_video_story(self, access_token: str, page_id: str, url: str) -> PublishResult:
+        """start → upload (hosted file) → wait for the upload → finish."""
+        start = self._request(
+            "POST",
+            f"{BASE_URL}/{page_id}/video_stories",
+            access_token=access_token,
+            json={"upload_phase": "start"},
+        ).json()
+        video_id = start.get("video_id")
+        upload_url = start.get("upload_url")
+        if not video_id or not upload_url:
+            raise PublishError(
+                "Facebook: Video-Story konnte nicht gestartet werden (keine video_id/upload_url)",
+                platform=self.platform_name,
+                raw_response=start,
+            )
+
+        # Hosted file: Facebook fetches the video itself from ``file_url``.
+        # The rupload host wants the token as "OAuth", not as "Bearer".
+        uploaded = self._safe_json(
+            self._request(
+                "POST",
+                upload_url,
+                headers={"Authorization": f"OAuth {access_token}", "file_url": url},
+                timeout=120.0,
+            )
+        )
+        if uploaded.get("success") is False:
+            raise PublishError(
+                "Facebook: Upload des Story-Videos abgelehnt",
+                platform=self.platform_name,
+                raw_response=uploaded,
+            )
+
+        self._wait_for_story_upload(access_token, video_id)
+
+        data = self._request(
+            "POST",
+            f"{BASE_URL}/{page_id}/video_stories",
+            access_token=access_token,
+            json={"upload_phase": "finish", "video_id": video_id},
+        ).json()
+        if not data.get("success") or not data.get("post_id"):
+            raise PublishError(
+                "Facebook: Video-Story nicht veröffentlicht",
+                platform=self.platform_name,
+                raw_response=data,
+            )
+        return self._story_result(access_token, page_id, data, media_id=video_id, media_type="video")
+
+    def _wait_for_story_upload(self, access_token: str, video_id: str) -> None:
+        """Poll ``GET /{video_id}?fields=status`` until the upload is complete.
+
+        ``uploading_phase.status`` / ``processing_phase.status`` report
+        ``error``; ``video_status`` can be ``error`` or ``expired``. Processing
+        itself may continue after ``finish`` – only the upload has to be done.
+        """
+        for _ in range(STORY_UPLOAD_POLL_MAX_ATTEMPTS):
+            data = self._request(
+                "GET",
+                f"{BASE_URL}/{video_id}",
+                access_token=access_token,
+                params={"fields": "status"},
+            ).json()
+            status = data.get("status") or {}
+            video_status = str(status.get("video_status") or "").lower()
+            upload = str((status.get("uploading_phase") or {}).get("status") or "").lower()
+            processing = str((status.get("processing_phase") or {}).get("status") or "").lower()
+            if video_status in ("error", "expired") or "error" in (upload, processing):
+                raise PublishError(
+                    f"Facebook: Story-Video wurde nicht verarbeitet ({video_status or upload or processing})",
+                    platform=self.platform_name,
+                    raw_response=data,
+                )
+            if upload == "complete" or video_status == "ready":
+                return
+            time.sleep(STORY_UPLOAD_POLL_INTERVAL)
+        raise PublishError(
+            "Facebook: Upload des Story-Videos nicht rechtzeitig fertig",
+            platform=self.platform_name,
+        )
+
+    def _story_result(
+        self, access_token: str, page_id: str, data: dict, *, media_id: str, media_type: str
+    ) -> PublishResult:
+        """Build the result; the story URL is looked up best-effort.
+
+        Runs AFTER the story is live, so nothing here may raise – the engine
+        would retry and publish the story twice.
+        """
+        post_id = str(data["post_id"])
+        url = ""
+        try:
+            stories = self._request(
+                "GET",
+                f"{BASE_URL}/{page_id}/stories",
+                access_token=access_token,
+                params={"fields": "post_id,url,media_id,media_type,status"},
+            ).json()
+            for story in stories.get("data") or []:
+                if str(story.get("post_id")) == post_id or str(story.get("media_id")) == str(media_id):
+                    url = story.get("url") or ""
+                    break
+        except Exception as exc:
+            logger.debug("Facebook story URL unavailable for %s: %s", post_id, exc)
+        return PublishResult(
+            platform_post_id=post_id,
+            url=url or f"https://www.facebook.com/stories/{page_id}/",
+            extra={**data, "story": True, "media_id": media_id, "media_type": media_type},
         )
 
     def set_video_thumbnail(self, access_token: str, video_id: str, image_path: str) -> dict:

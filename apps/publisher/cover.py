@@ -171,6 +171,18 @@ def apply_cover(pp, change: CoverChange) -> dict:
     skipped = unsupported_fields_message(platform, change)
     note = f" Nicht übernommen: {skipped}" if skipped else ""
 
+    from providers.story import is_story
+
+    wants_value = (own.set_asset and own.asset is not None) or (own.set_offset and own.offset_ms is not None)
+    if wants_value and is_story(pp.platform_extra):
+        # Removing a leftover value is fine; setting one would be ignored at
+        # publish time, so it is not stored in the first place.
+        return _result(
+            pp,
+            RESULT_UNSUPPORTED,
+            f"{label}: Dieser Kanal wird als Story veröffentlicht, eine Story hat kein Titelbild.",
+        )
+
     if own.set_asset and own.asset is not None:
         problem = asset_problem(platform, own.asset)
         if problem:
