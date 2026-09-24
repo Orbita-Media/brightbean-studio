@@ -1,0 +1,50 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{% endblock %} – Orbita Social</title>
+    <meta name="robots" content="index,follow">
+    <link rel="icon" href="{% static 'favicon/favicon.ico' %}" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="{% static 'favicon/favicon.svg' %}">
+    <link rel="stylesheet" href="{% static 'css/dist/styles.css' %}">
+    <style>
+        .legal-wrap { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; font-family: var(--font-body); color: var(--text-primary); }
+        .legal-card { background: var(--surface-1, #fff); border: 1px solid var(--border, #E5E7EB); border-radius: 16px; box-shadow: 0 1px 3px rgba(16,24,40,.06); padding: 1.75rem 1.25rem; }
+        @media (min-width: 640px) { .legal-card { padding: 2.5rem; } }
+        .legal-card h1 { font-size: 1.75rem; font-weight: 700; line-height: 1.25; margin-bottom: .25rem; }
+        .legal-card h2 { font-size: 1.2rem; font-weight: 700; margin: 2rem 0 .5rem; }
+        .legal-card h3 { font-size: 1.05rem; font-weight: 600; margin: 1.25rem 0 .35rem; }
+        .legal-card p, .legal-card li { font-size: 1rem; line-height: 1.65; color: var(--text-primary); overflow-wrap: break-word; }
+        .legal-card p { margin: .5rem 0; }
+        .legal-card ul { list-style: disc; padding-left: 1.25rem; margin: .5rem 0; }
+        .legal-card a { color: var(--primary, #635BFF); text-decoration: underline; word-break: break-word; }
+        .legal-meta { font-size: .9rem; color: var(--text-secondary, #6B7280); }
+        .legal-lang { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0 0; }
+        .legal-lang a { display: inline-flex; align-items: center; height: 2.5rem; padding: 0 1rem; border-radius: 9999px; border: 1px solid var(--border, #E5E7EB); text-decoration: none; font-weight: 600; font-size: .95rem; transition: background-color .15s; }
+        .legal-lang a:hover { background: #f4f4f5; }
+        .legal-sep { border: 0; border-top: 1px solid var(--border, #E5E7EB); margin: 2.5rem 0 0; }
+        .legal-foot { text-align: center; margin-top: 1.5rem; font-size: .95rem; color: var(--text-secondary, #6B7280); }
+        .legal-foot a { color: var(--primary, #635BFF); font-weight: 600; }
+    </style>
+</head>
+<body style="background: var(--bg, #F7F8FA);">
+<main class="legal-wrap">
+    <div class="flex items-center gap-3 mb-6">
+        <img src="{% static 'img/orbita-social-logo.png' %}" alt="Orbita Social" class="w-10 h-10 object-contain" style="background:#635BFF;border-radius:10px;padding:4px;">
+        <span class="text-lg font-semibold">Orbita Social</span>
+    </div>
+    <article class="legal-card">
+        {% block content %}{% endblock %}
+    </article>
+    <p class="legal-foot">
+        <a href="{% url 'legal_terms' %}">Nutzungsbedingungen / Terms of Service</a>
+        &nbsp;·&nbsp;
+        <a href="{% url 'legal_privacy' %}">Datenschutz / Privacy Policy</a>
+        &nbsp;·&nbsp;
+        <a href="https://orbita-media.de/impressum" rel="noopener">Impressum</a>
+    </p>
+</main>
+</body>
+</html>

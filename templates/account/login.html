@@ -124,5 +124,12 @@
         Don't have an account?
         <a href="{{ signup_url }}" class="font-semibold hover:underline" style="color: var(--primary);">Sign up</a>
     </p>
+    <p class="text-center text-sm mt-3" style="color: var(--text-secondary);">
+        <a href="{% url 'legal_terms' %}" class="hover:underline">Terms of Service</a>
+        &nbsp;·&nbsp;
+        <a href="{% url 'legal_privacy' %}" class="hover:underline">Privacy Policy</a>
+        &nbsp;·&nbsp;
+        <a href="https://orbita-media.de/impressum" rel="noopener" class="hover:underline">Impressum</a>
+    </p>
 </div>
 {% endblock %}

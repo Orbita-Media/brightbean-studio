@@ -13,6 +13,16 @@ def health_check(request):
     return JsonResponse({"status": "ok"})
 
 
+def legal_privacy(request):
+    """Public privacy policy for Orbita Social (required by platform app reviews, e.g. TikTok)."""
+    return render(request, "legal/privacy.html")
+
+
+def legal_terms(request):
+    """Public terms of service for Orbita Social (required by platform app reviews, e.g. TikTok)."""
+    return render(request, "legal/terms.html")
+
+
 @login_required
 def dashboard(request):
     """Main dashboard - redirects to last used workspace or shows org overview."""
