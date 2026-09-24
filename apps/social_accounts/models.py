@@ -66,6 +66,11 @@ class SocialAccount(models.Model):
     # place of the metric region. Cleared on successful reconnect.
     analytics_needs_reconnect = models.BooleanField(default=False)
 
+    # Per-account settings that belong to one platform only, e.g. the
+    # Pinterest default board ("pinterest_default_board_id" / "_name"), used
+    # when a pin carries no board of its own (apps/social_accounts/pinterest.py).
+    platform_settings = models.JSONField(default=dict, blank=True)
+
     objects = WorkspaceScopedManager()
 
     class Meta:

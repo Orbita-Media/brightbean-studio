@@ -59,9 +59,14 @@ EXTRA_COVER_URL = "thumbnail_url"
 EXTRA_COVER_FILE = "thumbnail_file"
 
 #: Platforms that take a cover IMAGE.
-COVER_IMAGE_PLATFORMS = ("youtube", "instagram", "instagram_login", "facebook")
-#: Platforms that take a cover FRAME (offset into the video).
-COVER_OFFSET_PLATFORMS = ("instagram", "instagram_login", "tiktok")
+COVER_IMAGE_PLATFORMS = ("youtube", "instagram", "instagram_login", "facebook", "pinterest")
+#: Platforms that take a cover FRAME (offset into the video). Pinterest takes
+#: whole seconds (``cover_image_key_frame_time``); the milliseconds are cut.
+COVER_OFFSET_PLATFORMS = ("instagram", "instagram_login", "tiktok", "pinterest")
+#: Pinterest video pins: the image lives under the composer's own key.
+EXTRA_PINTEREST_COVER = "cover_image_asset_id"
+#: Pinterest: ``cover_image_content_type`` enum is image/jpeg and image/png.
+PINTEREST_COVER_MIME_TYPES = ("image/jpeg", "image/jpg", "image/pjpeg", "image/png")
 #: Platforms where the public URL of the image is needed (Instagram fetches it).
 COVER_URL_PLATFORMS = ("instagram", "instagram_login")
 
@@ -117,11 +122,12 @@ def apply_cover_to_extra(
     offset under both keys so its provider and composer panel keep working.
     """
     extra = dict(extra or {})
+    asset_key = EXTRA_PINTEREST_COVER if platform == "pinterest" else EXTRA_COVER_ASSET
     if set_asset:
         if asset_id:
-            extra[EXTRA_COVER_ASSET] = str(asset_id)
+            extra[asset_key] = str(asset_id)
         else:
-            extra.pop(EXTRA_COVER_ASSET, None)
+            extra.pop(asset_key, None)
     if set_offset:
         if offset_ms is None:
             extra.pop(EXTRA_COVER_OFFSET, None)

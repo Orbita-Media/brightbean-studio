@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
 from urllib.parse import urlencode
 
 from .base import SocialProvider
@@ -41,6 +42,14 @@ MAX_CAROUSEL_ITEMS = 5
 
 # ``title`` per PinCreate is capped at 100 characters.
 MAX_TITLE_LENGTH = 100
+
+# Video pins (help.pinterest.com "Review Pin specs", checked 24.09.2026):
+# "Minimum 4 seconds, maximum 5 minutes", MP4/M4V (MOV in the apps), H.264/H.265.
+VIDEO_MIN_SECONDS = 4
+VIDEO_MAX_SECONDS = 5 * 60
+# GET /v5/media/{media_id}: status registered → processing → succeeded | failed.
+MEDIA_POLL_INTERVAL = 3  # seconds
+MEDIA_POLL_MAX_ATTEMPTS = 100  # ~5 minutes
 
 
 class PinterestProvider(SocialProvider):
@@ -226,8 +235,10 @@ class PinterestProvider(SocialProvider):
         if alt_text:
             payload["alt_text"] = alt_text[:MAX_ALT_TEXT_LENGTH]
 
-        # Determine media source
-        is_video = content.extra.get("is_video", False)
+        # Determine media source. ``is_video`` is the legacy explicit flag;
+        # nothing sets it any more, so the media type of the first attachment
+        # decides (a video used to go out as ``image_url`` and fail).
+        is_video = bool(content.extra.get("is_video")) or (bool(content.media_urls) and content.is_video_at(0))
 
         if is_video:
             return self._publish_video_pin(access_token, content, payload)
@@ -319,49 +330,97 @@ class PinterestProvider(SocialProvider):
         content: PublishContent,
         payload: dict,
     ) -> PublishResult:
-        """Upload a video pin via the media endpoint."""
-        # Step 1: Register media upload
-        media_resp = self._request(
+        """Video pin: register the upload, POST the file, wait, create the pin.
+
+        Pinterest v5 (OpenAPI 5.28.0):
+
+        1. ``POST /media`` with ``media_type=video`` returns ``media_id``,
+           ``upload_url`` and ``upload_parameters``.
+        2. "make an HTTP POST request … to ``upload_url`` … Send the media
+           file's contents as the request's ``file`` parameter and also include
+           all of the parameters from ``upload_parameters``" – a multipart form
+           to S3, without our bearer token.
+        3. ``GET /media/{media_id}`` until ``status`` is ``succeeded``.
+        4. ``POST /pins`` with ``media_source = {source_type: video_id,
+           media_id, cover_image_url | cover_image_key_frame_time}``. The
+           cover (Titelbild) is the image from ``cover_image_asset_id``; without
+           one, the frame at ``thumb_offset_ms`` (seconds, default 0).
+        """
+        duration = content.video_duration_sec
+        if duration and (duration < VIDEO_MIN_SECONDS or duration > VIDEO_MAX_SECONDS):
+            raise PublishError(
+                f"Pinterest nimmt Video-Pins von {VIDEO_MIN_SECONDS} Sekunden bis {VIDEO_MAX_SECONDS // 60} "
+                f"Minuten; dieses Video ist {duration:.1f} Sekunden lang.",
+                platform=self.platform_name,
+                retryable=False,
+            )
+        if not content.media_files:
+            raise PublishError(
+                "Pinterest-Video-Pin: keine Videodatei zum Hochladen vorhanden",
+                platform=self.platform_name,
+                retryable=False,
+            )
+
+        media_body = self._request(
             "POST",
             f"{API_BASE}/media",
             access_token=access_token,
             json={"media_type": "video"},
-        )
-        media_body = media_resp.json()
-        media_id = media_body.get("media_id", "")
+        ).json()
+        media_id = str(media_body.get("media_id") or "")
         upload_url = media_body.get("upload_url")
-
-        if upload_url and content.media_files:
-            # Step 2: Upload video binary
-            video_path = content.media_files[0]
-            with open(video_path, "rb") as f:
-                video_data = f.read()
-
-            self._request(
-                "PUT",
-                upload_url,
-                headers={"Content-Type": "video/mp4"},
-                data=video_data,
-                timeout=120.0,
+        if not media_id or not upload_url:
+            raise PublishError(
+                "Pinterest hat keinen Upload für das Video angelegt (media_id/upload_url fehlt)",
+                platform=self.platform_name,
+                raw_response=media_body,
             )
 
-        # Step 3: Create pin referencing media_id
-        payload["media_source"] = {
-            "source_type": "video_id",
-            "media_id": media_id,
-        }
-        resp = self._request(
+        video_path = content.media_files[0]
+        with open(video_path, "rb") as fh:
+            video_data = fh.read()
+        fields = {str(k): str(v) for k, v in (media_body.get("upload_parameters") or {}).items()}
+        self._request(
             "POST",
-            f"{API_BASE}/pins",
-            access_token=access_token,
-            json=payload,
+            upload_url,
+            data=fields,
+            files={"file": (os.path.basename(video_path), video_data, "video/mp4")},
+            timeout=300.0,
         )
-        body = resp.json()
-        pin_id = body.get("id", "")
-        return PublishResult(
-            platform_post_id=pin_id,
-            url=f"https://www.pinterest.com/pin/{pin_id}/" if pin_id else None,
-            extra=body,
+
+        self._wait_for_media(access_token, media_id)
+
+        media_source: dict = {"source_type": "video_id", "media_id": media_id}
+        cover_url = str(content.extra.get("cover_image_url") or "").strip()
+        if cover_url:
+            media_source["cover_image_url"] = cover_url
+        else:
+            offset_ms = content.extra.get("thumb_offset_ms")
+            try:
+                seconds = max(0, int(offset_ms) // 1000) if offset_ms is not None else 0
+            except (TypeError, ValueError):
+                seconds = 0
+            # "If entered time exceeds video duration, the last frame is used."
+            media_source["cover_image_key_frame_time"] = seconds
+        payload["media_source"] = media_source
+        return self._create_pin(access_token, payload)
+
+    def _wait_for_media(self, access_token: str, media_id: str) -> None:
+        for _ in range(MEDIA_POLL_MAX_ATTEMPTS):
+            body = self._request("GET", f"{API_BASE}/media/{media_id}", access_token=access_token).json()
+            status = str(body.get("status") or "").lower()
+            if status == "succeeded":
+                return
+            if status == "failed":
+                raise PublishError(
+                    "Pinterest konnte das Video nicht verarbeiten (status failed)",
+                    platform=self.platform_name,
+                    raw_response=body,
+                )
+            time.sleep(MEDIA_POLL_INTERVAL)
+        raise PublishError(
+            "Pinterest hat das Video nicht rechtzeitig verarbeitet",
+            platform=self.platform_name,
         )
 
     # ------------------------------------------------------------------
@@ -369,14 +428,23 @@ class PinterestProvider(SocialProvider):
     # ------------------------------------------------------------------
 
     def get_boards(self, access_token: str) -> list[dict]:
-        """Fetch all boards for the authenticated account."""
-        resp = self._request(
-            "GET",
-            f"{API_BASE}/boards",
-            access_token=access_token,
-        )
-        body = resp.json()
-        return body.get("items", [])
+        """Fetch ALL boards of the account, following the ``bookmark`` cursor.
+
+        ``page_size`` maximum is 250; the default of 25 used to cut off every
+        board after the 25th without a word.
+        """
+        boards: list[dict] = []
+        bookmark = None
+        for _ in range(40):  # hard stop: 10,000 boards
+            params: dict = {"page_size": 250}
+            if bookmark:
+                params["bookmark"] = bookmark
+            body = self._request("GET", f"{API_BASE}/boards", access_token=access_token, params=params).json()
+            boards.extend(body.get("items") or [])
+            bookmark = body.get("bookmark")
+            if not bookmark:
+                break
+        return boards
 
     # ------------------------------------------------------------------
     # Analytics

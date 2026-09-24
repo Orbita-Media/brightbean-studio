@@ -532,12 +532,12 @@
                 <!-- Pinterest settings (auto-visible when any Pinterest account is selected) -->
                 <template x-for="accId in selectedAccounts" :key="'pin-settings-' + accId">
                     <div x-show="charLimits[accId]?.platform === 'pinterest'"
-                         x-data="{ boards: [], boardsLoading: false, boardsLoaded: false }"
+                         x-data="{ boards: [], boardsLoading: false, boardsLoaded: false, defaultBoard: '' }"
                          x-effect="if (charLimits[accId]?.platform === 'pinterest' && !boardsLoaded) {
                              boardsLoading = true;
                              fetch(`/workspace/{{ workspace.id }}/compose/pinterest-boards/${accId}/`)
                                  .then(r => r.json())
-                                 .then(data => { boards = data.boards || []; boardsLoaded = true; })
+                                 .then(data => { boards = data.boards || []; defaultBoard = data.default_board_id || ''; boardsLoaded = true; })
                                  .catch(() => {})
                                  .finally(() => { boardsLoading = false; });
                          }"
@@ -559,12 +559,13 @@
                                 <option value="">Select a board…</option>
                                 <template x-for="board in boards" :key="board.id">
                                     <option :value="board.id"
-                                            :selected="platformExtras[accId]?.board_id === board.id"
+                                            :selected="(platformExtras[accId]?.board_id || defaultBoard) === board.id"
                                             x-text="board.name"></option>
                                 </template>
                             </select>
                             <p x-show="boardsLoading" class="text-[11px] text-stone-400 mt-1">Loading boards…</p>
                             <p x-show="boardsLoaded && boards.length === 0" class="text-[11px] text-red-400 mt-1">No boards found. Create a board on Pinterest first.</p>
+                            <p x-show="boardsLoaded && defaultBoard && !platformExtras[accId]?.board_id" class="text-sm text-stone-500 mt-1">Standard-Board des Kontos ist vorausgewählt.</p>
                         </div>
                         <!-- Destination Link -->
                         <div>

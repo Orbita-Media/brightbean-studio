@@ -1060,3 +1060,37 @@ def _create_or_update_account(
         create_default_queue_and_slots(account)
 
     return account
+
+
+@login_required
+@require_permission("manage_social_accounts")
+@require_POST
+def pinterest_default_board(request, workspace_id, account_id):
+    """Set (or with an empty ``board_id`` remove) the account's default board.
+
+    The id is checked against the account's real boards, and the name is
+    taken from Pinterest, not from the form.
+    """
+    from django.http import JsonResponse
+
+    from .pinterest import default_board_id, default_board_name, fetch_boards, is_board_id, set_default_board
+
+    account = get_object_or_404(SocialAccount.objects.for_workspace(workspace_id), id=account_id, platform="pinterest")
+    board_id = request.POST.get("board_id", "").strip() or None
+    name = ""
+    if board_id:
+        if not is_board_id(board_id):
+            return JsonResponse({"error": "Ungültige Board-ID."}, status=400)
+        try:
+            boards = fetch_boards(account)
+        except Exception:
+            logger.warning("Pinterest boards lookup failed for %s", account.id, exc_info=True)
+            return JsonResponse({"error": "Pinterest hat die Boards nicht geliefert."}, status=502)
+        match = next((b for b in boards if b["id"] == board_id), None)
+        if match is None:
+            return JsonResponse({"error": "Dieses Board gehört nicht zum Konto."}, status=400)
+        name = match["name"]
+    set_default_board(account, board_id, name)
+    return JsonResponse(
+        {"default_board_id": default_board_id(account), "default_board_name": default_board_name(account)}
+    )

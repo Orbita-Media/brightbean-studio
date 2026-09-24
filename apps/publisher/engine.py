@@ -425,6 +425,17 @@ class PublishEngine:
             if platform == "facebook" and "page_id" not in extra:
                 extra["page_id"] = account.account_platform_id
 
+            # Pinterest: a pin without its own board goes to the account's
+            # default board (apps/social_accounts/pinterest.py). Without either
+            # the provider fails with a clear message – but scheduling already
+            # refuses that case, so it only happens to a hand-edited post.
+            if platform == "pinterest" and not extra.get("board_id"):
+                from apps.social_accounts.pinterest import default_board_id
+
+                fallback_board = default_board_id(account)
+                if fallback_board:
+                    extra["board_id"] = fallback_board
+
             # Inject Instagram user ID for Facebook-login Instagram accounts.
             if platform == "instagram" and "ig_user_id" not in extra:
                 extra["ig_user_id"] = account.account_platform_id
@@ -476,6 +487,13 @@ class PublishEngine:
                 try:
                     cover_asset = MediaAsset.objects.get(id=cover_asset_id)
                     if cover_asset.file:
+                        # Pinterest takes the video-pin cover as a public URL
+                        # (media_source.cover_image_url), same APP_URL rule as
+                        # the media above.
+                        cover_url = cover_asset.file.url
+                        if cover_url.startswith("/"):
+                            cover_url = f"{app_url}{cover_url}"
+                        extra["cover_image_url"] = cover_url
                         suffix = os.path.splitext(cover_asset.filename)[1] or ".jpg"
                         tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)  # noqa: SIM115
                         temp_files.append(tmp.name)
@@ -484,7 +502,7 @@ class PublishEngine:
                                 tmp.write(chunk)
                         tmp.close()
                         extra["cover_image_file"] = tmp.name
-                except MediaAsset.DoesNotExist:
+                except (MediaAsset.DoesNotExist, ValueError, ValidationError):
                     logger.warning("Cover image asset %s not found", cover_asset_id)
 
             post_type = self._resolve_post_type(

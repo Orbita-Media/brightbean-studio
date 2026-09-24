@@ -201,6 +201,19 @@ Widerspruchs mit einem Rückfall: lehnt die API den Karussell-Pin mit HTTP 400
 ab, wird derselbe Pin als Einzelbild-Pin mit der ersten Folie erneut versucht
 und das im Ergebnis vermerkt.
 
+**Board, Link und Video-Pins (24.09.2026):** Jeder Pin braucht ein Board.
+`platform_overrides[].board_id` und `link_url` (https, höchstens 2048 Zeichen)
+lassen sich per Agent-API bei POST und PATCH setzen, auch bei eingeplanten
+Pins. Fehlt das Board, nimmt die Engine das Standard-Board des Kontos
+(`SocialAccount.platform_settings`); fehlt auch das, lehnt die API das
+Einplanen mit 422 ab. Video-Pins: Upload als Multipart-POST an `upload_url`
+mit allen `upload_parameters`, Warten auf `status = succeeded`, dann
+`media_source.source_type = "video_id"` mit `cover_image_url` (Titelbild,
+JPEG oder PNG) oder `cover_image_key_frame_time` (ganze Sekunden). Videos
+4 Sekunden bis 5 Minuten, MP4/M4V (MOV nur in den Apps), H.264/H.265
+([Pin-Specs](https://help.pinterest.com/en/article/review-pin-specs)).
+Einzelheiten: `docs/PINTEREST-BOARD.md`.
+
 ---
 
 ## Mastodon

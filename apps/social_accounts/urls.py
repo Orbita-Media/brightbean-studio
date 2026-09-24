@@ -54,4 +54,9 @@ urlpatterns = [
         views.disconnect,
         name="disconnect",
     ),
+    path(
+        "<uuid:workspace_id>/<uuid:account_id>/pinterest-default-board/",
+        views.pinterest_default_board,
+        name="pinterest_default_board",
+    ),
 ]

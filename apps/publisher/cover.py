@@ -33,6 +33,7 @@ from providers.video_cover import (
     FACEBOOK_THUMBNAIL_MAX_BYTES,
     INSTAGRAM_COVER_MAX_BYTES,
     INSTAGRAM_COVER_MIME_TYPES,
+    PINTEREST_COVER_MIME_TYPES,
     apply_cover_to_extra,
 )
 
@@ -123,6 +124,8 @@ def asset_problem(platform: str, asset) -> str | None:
             return f"Instagram nimmt als Titelbild nur JPEG; das Bild ist {mime or name or 'kein JPEG'}."
         if size > INSTAGRAM_COVER_MAX_BYTES:
             return "Instagram nimmt als Titelbild höchstens 8 MB."
+    if platform == "pinterest" and mime and mime not in PINTEREST_COVER_MIME_TYPES:
+        return f"Pinterest nimmt als Titelbild eines Video-Pins nur JPEG oder PNG; das Bild ist {mime}."
     if platform == "facebook" and size > FACEBOOK_THUMBNAIL_MAX_BYTES:
         return "Facebook nimmt als Titelbild höchstens 10 MB."
     if platform == "youtube" and size > YOUTUBE_THUMBNAIL_MAX_BYTES:

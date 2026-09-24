@@ -81,6 +81,65 @@ Usage: {% include "social_accounts/partials/_account_card.html" with account=acc
     </div>
     {% endif %}
 
+    {% if account.platform == "pinterest" and account.connection_status == "connected" %}
+    <!-- Pinterest default board: used by every pin without its own board
+         (apps/social_accounts/pinterest.py). Boards come from the composer's
+         board lookup; the choice is stored per account. -->
+    <div class="border-t border-stone-100 mt-4 pt-4"
+         data-pinterest-default-board
+         x-data="{
+             boards: [], loading: true, failed: false, saving: false, saved: false, error: '',
+             current: '{{ account.platform_settings.pinterest_default_board_id|default:''|escapejs }}',
+             load() {
+                 fetch('{% url 'composer:pinterest_boards' workspace_id=workspace_id account_id=account.id %}')
+                     .then(r => r.ok ? r.json() : Promise.reject())
+                     .then(d => { this.boards = d.boards || []; })
+                     .catch(() => { this.failed = true; })
+                     .finally(() => { this.loading = false; });
+             },
+             choose(id) {
+                 if (this.saving) return;
+                 const next = this.current === id ? '' : id;
+                 this.saving = true; this.saved = false; this.error = '';
+                 const body = new FormData();
+                 body.append('board_id', next);
+                 fetch('{% url 'social_accounts:pinterest_default_board' workspace_id=workspace_id account_id=account.id %}', {
+                     method: 'POST', body, headers: { 'X-CSRFToken': '{{ csrf_token }}' },
+                 })
+                     .then(r => r.json().then(d => ({ ok: r.ok, d })))
+                     .then(({ ok, d }) => {
+                         if (!ok) { this.error = d.error || 'Nicht gespeichert.'; return; }
+                         this.current = d.default_board_id || ''; this.saved = true;
+                     })
+                     .catch(() => { this.error = 'Nicht gespeichert.'; })
+                     .finally(() => { this.saving = false; });
+             },
+         }"
+         x-init="load()">
+        <div class="mb-3">
+            <h4 class="text-xs font-semibold text-stone-700 uppercase tracking-wider">Standard-Board</h4>
+            <p class="text-sm text-stone-500 mt-0.5">Pins ohne eigenes Board landen hier. Ohne Standard-Board lässt sich ein solcher Pin nicht einplanen.</p>
+        </div>
+        <p x-show="loading" class="text-sm text-stone-500">Boards werden geladen …</p>
+        <p x-show="failed" x-cloak class="text-sm text-red-500">Pinterest hat die Boards nicht geliefert.</p>
+        <p x-show="!loading && !failed && boards.length === 0" x-cloak class="text-sm text-stone-500">Keine Boards gefunden. Zuerst auf Pinterest ein Board anlegen.</p>
+        <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Standard-Board">
+            <template x-for="board in boards" :key="board.id">
+                <button type="button" role="radio"
+                        :aria-checked="current === board.id"
+                        :disabled="saving"
+                        @click="choose(board.id)"
+                        class="h-10 px-3 rounded-lg border text-sm font-medium transition-colors cursor-pointer disabled:opacity-50"
+                        :class="current === board.id ? 'border-orange-400 bg-orange-50 text-orange-600' : 'border-stone-200 text-stone-700 hover:border-orange-400'"
+                        x-text="board.name"></button>
+            </template>
+        </div>
+        <p x-show="saved" x-cloak x-transition class="text-sm text-stone-500 mt-2"
+           x-text="current ? 'Gespeichert.' : 'Standard-Board entfernt.'"></p>
+        <p x-show="error" x-cloak class="text-sm text-red-500 mt-2" x-text="error"></p>
+    </div>
+    {% endif %}
+
     <!-- Posting Schedule -->
     {% if account.connection_status == "connected" %}
     <div class="border-t border-stone-100 mt-4 pt-4">

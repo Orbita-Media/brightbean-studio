@@ -345,7 +345,10 @@ def _sync_platform_posts(request, post, workspace, initial_status=None):
             board_id = request.POST.get(f"pin_board_id_{acc_id}", "").strip()
             if not board_id:
                 board_id = (pp.platform_extra or {}).get("board_id") or None
+            # Update rather than replace: a cover frame set through the API
+            # (thumb_offset_ms) has no field in this panel and must survive.
             pp.platform_extra = {
+                **(pp.platform_extra or {}),
                 "board_id": board_id,
                 "link_url": request.POST.get(f"pin_link_url_{acc_id}", "").strip() or None,
                 "alt_text": request.POST.get(f"pin_alt_text_{acc_id}", "").strip() or None,
@@ -433,8 +436,20 @@ def _validate_pinterest_board_selection(request, post, workspace):
                 or ""
             )
         if not board_id:
+            # The account's default board stands in (apps/social_accounts/pinterest.py).
+            from apps.social_accounts.pinterest import default_board_id
+
+            board_id = default_board_id(account) or ""
+        if not board_id:
             return JsonResponse(
-                {"errors": {"pinterest_board": f"Select a Pinterest board for {account.account_name}."}},
+                {
+                    "errors": {
+                        "pinterest_board": (
+                            f"Pinterest-Board für {account.account_name} wählen "
+                            "oder am Konto ein Standard-Board hinterlegen."
+                        )
+                    }
+                },
                 status=400,
             )
     return None
@@ -2036,7 +2051,15 @@ def pinterest_boards(request, workspace_id, account_id):
     except Exception:
         return JsonResponse({"error": "Failed to fetch boards"}, status=502)
 
-    return JsonResponse({"boards": [{"id": b.get("id"), "name": b.get("name")} for b in boards]})
+    from apps.social_accounts.pinterest import default_board_id
+
+    return JsonResponse(
+        {
+            "boards": [{"id": b.get("id"), "name": b.get("name")} for b in boards],
+            # Preselected in the composer when the pin has no board of its own.
+            "default_board_id": default_board_id(account),
+        }
+    )
 
 
 @login_required

@@ -104,6 +104,7 @@ Feld für Feld:
 | `platform_specific_caption` | `platform_overrides[]` | Liste mit `social_account_id` plus überschriebenen Feldern |
 | – | `platform_overrides[].cover_asset_id` / `cover_offset_ms` | **neu**: Titelbild eines Video-Beitrags (Bild bzw. Frame); für geplante und veröffentlichte Beiträge `POST /api/v1/posts/{id}/cover`, siehe `docs/REEL-TITELBILD.md` |
 | – | `platform_overrides[].post_type` | **neu**: `"story"` veröffentlicht den Kanal als Instagram- bzw. Facebook-Story (genau ein Bild oder ein Video, Video 3–60 s), siehe `docs/STORYS.md` |
+| – | `platform_overrides[].board_id` / `link_url` | **neu**: Board und Ziel-Link eines Pinterest-Pins (auch für eingeplante Pins per PATCH); ohne Board gilt das Standard-Board des Kontos, sonst 422 beim Einplanen. Boards: `GET /api/v1/accounts/{id}/pinterest-boards`, siehe `docs/PINTEREST-BOARD.md` |
 | `tags` | entfällt | am Post nicht mehr vorgesehen |
 | – | `internal_notes` | **neu**: interne Notiz, wird nie veröffentlicht |
 | – | `idempotency_key` | **neu**: gleicher Key plus gleicher Rumpf liefert die erste Antwort erneut. Bei Sammel-Läufen unbedingt nutzen, dann erzeugen Wiederholungen keine Doppel-Posts |

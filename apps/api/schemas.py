@@ -65,9 +65,16 @@ class AccountSummary(Schema):
             "If false, ``first_comment`` is silently dropped at publish time."
         ),
     )
+    pinterest_default_board_id: str | None = Field(
+        None,
+        description="Pinterest only: board used for pins without their own ``board_id``. null = none set.",
+    )
+    pinterest_default_board_name: str | None = Field(None, description="Name of that board, as stored when it was set.")
 
     @classmethod
     def from_social_account(cls, sa) -> AccountSummary:
+        from apps.social_accounts.pinterest import default_board_id, default_board_name
+
         return cls(
             id=sa.id,
             platform=sa.platform,
@@ -77,7 +84,30 @@ class AccountSummary(Schema):
             char_limit=sa.char_limit,
             needs_title=bool(sa.field_config.get("needs_title", False)),
             supports_first_comment=sa.supports_first_comment(),
+            pinterest_default_board_id=default_board_id(sa),
+            pinterest_default_board_name=(default_board_name(sa) or None) if default_board_id(sa) else None,
         )
+
+
+class PinterestBoard(Schema):
+    id: str
+    name: str
+    #: PUBLIC, PROTECTED or SECRET (Pinterest's own values).
+    privacy: str = ""
+
+
+class PinterestBoardsResponse(Schema):
+    boards: list[PinterestBoard]
+    default_board_id: str | None = Field(None, description="The account's default board, null = none set.")
+
+
+class PinterestDefaultBoardRequest(Schema):
+    board_id: str | None = Field(
+        ...,
+        max_length=32,
+        pattern=r"^[0-9]{1,32}$",
+        description="Board id from GET /accounts/{id}/pinterest-boards; null removes the default.",
+    )
 
 
 class StorageSummary(Schema):
@@ -226,8 +256,9 @@ class PlatformOverride(Schema):
             "workspace. Valid for youtube (thumbnails.set), instagram / instagram_login "
             "(reel ``cover_url`` – must be a JPEG of at most 8 MB, 9:16 recommended; the "
             "profile grid shows the middle 3:4, so keep the hook out of the top and bottom "
-            "eighth) and facebook (``/{video_id}/thumbnails``, at most 10 MB). Anything "
-            "else answers 422. On Instagram the image wins over ``cover_offset_ms``. "
+            "eighth), facebook (``/{video_id}/thumbnails``, at most 10 MB) and pinterest "
+            "(video pin ``cover_image_url``, JPEG or PNG; stored as ``cover_image_asset_id``). "
+            "Anything else answers 422. On Instagram the image wins over ``cover_offset_ms``. "
             "On PATCH, ``null`` removes it; omitting the field keeps the stored value. "
             "For an already scheduled or published post use ``POST /posts/{id}/cover``."
         ),
@@ -238,8 +269,9 @@ class PlatformOverride(Schema):
         description=(
             "Cover frame of a video post: position in the video in milliseconds (0 = first "
             "frame). Valid for instagram / instagram_login (``thumb_offset``, used when no "
-            "``cover_asset_id`` is set) and tiktok (``video_cover_timestamp_ms``). Anything "
-            "else answers 422. On PATCH, ``null`` removes it; omitting the field keeps it."
+            "``cover_asset_id`` is set), tiktok (``video_cover_timestamp_ms``) and pinterest "
+            "(``cover_image_key_frame_time`` in whole seconds, used when no image is set). "
+            "Anything else answers 422. On PATCH, ``null`` removes it; omitting the field keeps it."
         ),
     )
     post_type: Literal["story"] | None = Field(
@@ -257,6 +289,26 @@ class PlatformOverride(Schema):
             "answer 422 (send them as null / [] / false to clear stored values in the same "
             "request). Stickers, links and music cannot be added to a story through the API. "
             "On PATCH, ``null`` switches the story off again; omitting the field keeps it."
+        ),
+    )
+    board_id: str | None = Field(
+        None,
+        max_length=32,
+        pattern=r"^[0-9]{1,32}$",
+        description=(
+            "Pinterest only: the board the pin goes to (numeric id from "
+            "``GET /api/v1/accounts/{id}/pinterest-boards``). Without it the pin uses the "
+            "account's default board (``PUT /api/v1/accounts/{id}/pinterest-default-board``); "
+            "scheduling a pin that has neither answers 422. On PATCH (drafts AND scheduled "
+            "posts), ``null`` removes it and the default board applies; omitting keeps it."
+        ),
+    )
+    link_url: str | None = Field(
+        None,
+        max_length=2048,
+        description=(
+            "Pinterest only: destination link of the pin, an ``https://`` URL of at most 2048 "
+            'characters. On PATCH, ``null`` or ``""`` removes it; omitting keeps it.'
         ),
     )
 
@@ -494,6 +546,10 @@ class PlatformOverrideOut(Schema):
     cover_offset_ms: int | None = None
     #: "story" = wird als Story veröffentlicht, null = normaler Beitrag/Reel.
     post_type: Literal["story"] | None = None
+    #: Pinterest: Board des Pins (null = Standard-Board des Kontos greift).
+    board_id: str | None = None
+    #: Pinterest: Ziel-Link des Pins.
+    link_url: str | None = None
 
     @classmethod
     def from_platform_post(cls, pp: PlatformPost) -> PlatformOverrideOut:
@@ -505,14 +561,17 @@ class PlatformOverrideOut(Schema):
         roh = extra.get("collaborators")
         test_reel = is_trial(extra)
         cover_asset_id = None
+        platform = pp.social_account.platform
+        # Pinterest keeps its video-pin cover under its own composer key.
+        cover_key = "cover_image_asset_id" if platform == "pinterest" else EXTRA_COVER_ASSET
         try:
-            cover_asset_id = uuid.UUID(str(extra.get(EXTRA_COVER_ASSET))) if extra.get(EXTRA_COVER_ASSET) else None
+            cover_asset_id = uuid.UUID(str(extra.get(cover_key))) if extra.get(cover_key) else None
         except ValueError:
             # A hand-edited, malformed value: report "none" rather than a 500.
             cover_asset_id = None
         return cls(
             social_account_id=pp.social_account_id,
-            platform=pp.social_account.platform,
+            platform=platform,
             title=pp.platform_specific_title,
             caption=pp.platform_specific_caption,
             first_comment=pp.platform_specific_first_comment,
@@ -522,6 +581,12 @@ class PlatformOverrideOut(Schema):
             cover_asset_id=cover_asset_id,
             cover_offset_ms=cover_offset_from_extra(extra),
             post_type="story" if is_story(extra) else None,
+            board_id=(str(extra.get("board_id")) if extra.get("board_id") else None)
+            if platform == "pinterest"
+            else None,
+            link_url=(str(extra.get("link_url")) if extra.get("link_url") else None)
+            if platform == "pinterest"
+            else None,
         )
 
 
