@@ -10,6 +10,7 @@ from apps.members.models import WorkspaceMembership
 from apps.notifications.engine import notify
 from apps.notifications.models import EventType
 from apps.social_accounts.models import SocialAccount
+from apps.social_accounts.tokens import call_with_fresh_token
 from providers import get_provider
 
 from .models import InboxMessage, InboxSLAConfig
@@ -21,6 +22,64 @@ logger = logging.getLogger(__name__)
 # are suppressed for it, EXCEPT messages newer than this window — so a long-quiet
 # account's genuinely-new first message still alerts instead of being swallowed.
 INBOX_BACKLOG_NOTIFY_WINDOW = timedelta(hours=1)
+
+
+# How long a part of the inbox the platform refused (missing app capability)
+# is skipped before it is probed again. Once a day keeps the log quiet and
+# still picks up a granted App Review without a redeploy.
+INBOX_UNAVAILABLE_RECHECK = timedelta(hours=24)
+INBOX_UNAVAILABLE_KEY = "inbox_unavailable"
+
+
+def inbox_parts_to_skip(account) -> set[str]:
+    """Inbox parts marked unavailable within the last ``INBOX_UNAVAILABLE_RECHECK``."""
+    from django.utils.dateparse import parse_datetime
+
+    marked = (account.platform_settings or {}).get(INBOX_UNAVAILABLE_KEY) or {}
+    skip = set()
+    for part, info in marked.items():
+        checked = parse_datetime((info or {}).get("checked_at") or "")
+        if checked and checked > timezone.now() - INBOX_UNAVAILABLE_RECHECK:
+            skip.add(part)
+    return skip
+
+
+def record_inbox_availability(account, skipped: set[str], unavailable) -> None:
+    """Persist which inbox parts the platform refused, and clear recovered ones.
+
+    ``unavailable`` maps part name → reason, as reported by the provider for
+    this cycle. Parts that were probed (not skipped) and not reported again
+    have recovered and are removed.
+    """
+    if not isinstance(unavailable, dict):
+        return
+    settings_ = dict(account.platform_settings or {})
+    marked = dict(settings_.get(INBOX_UNAVAILABLE_KEY) or {})
+    before = dict(marked)
+    now = timezone.now().isoformat()
+    for part, reason in unavailable.items():
+        if part not in before:
+            logger.warning(
+                "Inbox part %r of account %s (%s) is not available, skipping it for %s: %s",
+                part,
+                account.id,
+                account.platform,
+                INBOX_UNAVAILABLE_RECHECK,
+                reason,
+            )
+        marked[part] = {"reason": str(reason)[:500], "checked_at": now}
+    for part in list(marked):
+        if part not in unavailable and part not in skipped:
+            logger.info("Inbox part %r of account %s (%s) is available again", part, account.id, account.platform)
+            del marked[part]
+    if marked == before:
+        return
+    if marked:
+        settings_[INBOX_UNAVAILABLE_KEY] = marked
+    else:
+        settings_.pop(INBOX_UNAVAILABLE_KEY, None)
+    account.platform_settings = settings_
+    account.save(update_fields=["platform_settings", "updated_at"])
 
 
 def _is_recent(ts):
@@ -75,10 +134,20 @@ class InboxSyncEngine:
         )
         is_first_sync = last_msg is None
 
+        # Parts of the inbox the platform refused for lack of an app capability
+        # (e.g. Instagram DMs without instagram_manage_messages). They are
+        # re-probed once a day instead of failing every five minutes.
+        skip_parts = inbox_parts_to_skip(account)
+        provider.inbox_skip_parts = skip_parts
+        provider.inbox_unavailable_parts = {}
+
         try:
-            messages = provider.get_messages(
-                access_token=account.oauth_access_token,
-                since=last_msg,
+            # Refresh before expiry and once more on 401: YouTube/Google tokens
+            # live one hour, the inbox polls every five minutes.
+            messages = call_with_fresh_token(
+                account,
+                provider,
+                lambda token: provider.get_messages(access_token=token, since=last_msg),
             )
         except NotImplementedError:
             return
@@ -89,6 +158,8 @@ class InboxSyncEngine:
                 account.platform,
             )
             return
+
+        record_inbox_availability(account, skip_parts, provider.inbox_unavailable_parts)
 
         for msg in messages:
             # Suppress notifications for the historical backlog pulled on an

@@ -226,13 +226,20 @@ def send_reply(request, workspace_id, message_id):
     # Attempt to post reply via provider
     try:
         from apps.publisher.engine import _resolve_publish_credentials
+        from apps.social_accounts.tokens import call_with_fresh_token
 
         provider = get_provider(account.platform, _resolve_publish_credentials(account))
-        result = provider.reply_to_message(
-            access_token=account.oauth_access_token,
-            message_id=message.platform_message_id,
-            text=body,
-            extra=message.extra,
+        # A 401 means the platform did not execute the reply, so one retry
+        # after a token refresh cannot post it twice.
+        result = call_with_fresh_token(
+            account,
+            provider,
+            lambda token: provider.reply_to_message(
+                access_token=token,
+                message_id=message.platform_message_id,
+                text=body,
+                extra=message.extra,
+            ),
         )
         platform_reply_id = result.platform_message_id
     except NotImplementedError:

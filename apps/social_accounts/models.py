@@ -107,24 +107,52 @@ class SocialAccount(models.Model):
         """
         from datetime import timedelta
 
+        from django.db import transaction
         from django.utils import timezone
 
-        new_tokens = provider.refresh_token(self.oauth_refresh_token)
-        self.oauth_access_token = new_tokens.access_token
-        if new_tokens.refresh_token:
-            self.oauth_refresh_token = new_tokens.refresh_token
-        if new_tokens.expires_in:
-            self.token_expires_at = timezone.now() + timedelta(seconds=new_tokens.expires_in)
-        self.connection_status = self.ConnectionStatus.CONNECTED
-        self.save(
-            update_fields=[
-                "oauth_access_token",
-                "oauth_refresh_token",
-                "token_expires_at",
-                "connection_status",
-                "updated_at",
-            ]
-        )
+        from .tokens import ACCESS_TOKEN_REFRESH_MARGIN
+
+        with transaction.atomic():
+            # Serialise refreshes of the same account across processes (web
+            # workers, the task worker). Providers such as Bluesky and TikTok
+            # rotate the refresh token on every use; two concurrent refreshes
+            # with the same old refresh token would invalidate the session.
+            try:
+                locked = type(self)._base_manager.select_for_update().get(pk=self.pk)
+            except type(self).DoesNotExist:
+                locked = self
+            if locked is not self and locked.oauth_access_token != self.oauth_access_token:
+                # Someone else refreshed while we waited for the lock. Adopt
+                # their tokens instead of spending (and possibly burning) the
+                # refresh token a second time.
+                still_fresh = locked.token_expires_at is None or locked.token_expires_at > (
+                    timezone.now() + ACCESS_TOKEN_REFRESH_MARGIN
+                )
+                if still_fresh:
+                    self.oauth_access_token = locked.oauth_access_token
+                    self.oauth_refresh_token = locked.oauth_refresh_token
+                    self.token_expires_at = locked.token_expires_at
+                    self.connection_status = locked.connection_status
+                    return self.oauth_access_token
+
+            new_tokens = provider.refresh_token(locked.oauth_refresh_token)
+            self.oauth_access_token = new_tokens.access_token
+            if new_tokens.refresh_token:
+                self.oauth_refresh_token = new_tokens.refresh_token
+            elif locked is not self:
+                self.oauth_refresh_token = locked.oauth_refresh_token
+            if new_tokens.expires_in:
+                self.token_expires_at = timezone.now() + timedelta(seconds=new_tokens.expires_in)
+            self.connection_status = self.ConnectionStatus.CONNECTED
+            self.save(
+                update_fields=[
+                    "oauth_access_token",
+                    "oauth_refresh_token",
+                    "token_expires_at",
+                    "connection_status",
+                    "updated_at",
+                ]
+            )
         return new_tokens.access_token
 
     # Platform character limits

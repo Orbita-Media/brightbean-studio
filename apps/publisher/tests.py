@@ -602,3 +602,52 @@ class DispatchFremdzeichenSperreTest(SimpleTestCase):
         result = engine._dispatch_to_provider(platform_post)
 
         self.assertTrue(result["success"])
+
+
+class DispatchRefreshesExpiredTokenTest(TestCase):
+    """Publishing renews an expired OAuth token before it calls the provider.
+
+    Proof for 25.09.2026: the YouTube access token had expired at 08:38 UTC
+    while 77 YouTube posts were scheduled. The engine refreshes any token that
+    expires within seven days (``is_token_expiring_soon``), so a one-hour
+    YouTube token is renewed before every single publish.
+    """
+
+    def setUp(self):
+        from apps.organizations.models import Organization
+        from apps.social_accounts.models import SocialAccount
+        from apps.workspaces.models import Workspace
+
+        org = Organization.objects.create(name="Refresh Org")
+        workspace = Workspace.objects.create(name="Refresh WS", organization=org)
+        self.account = SocialAccount.objects.create(
+            workspace=workspace,
+            platform="youtube",
+            account_platform_id="UC-publish",
+            account_name="Publish Test",
+            oauth_access_token="expired-access",
+            oauth_refresh_token="refresh-yt",
+            token_expires_at=timezone.now() - timedelta(minutes=26),
+            connection_status=SocialAccount.ConnectionStatus.CONNECTED,
+        )
+
+    @patch("apps.publisher.engine.get_provider")
+    @patch("apps.publisher.engine._resolve_publish_credentials", return_value={})
+    def test_expired_youtube_token_is_refreshed_before_publish(self, _mock_creds, mock_get_provider):
+        from providers.types import OAuthTokens
+
+        engine, platform_post, mock_provider = _build_dispatch_mocks(
+            platform="youtube",
+            account_platform_id="UC-publish",
+        )
+        platform_post.social_account = self.account
+        mock_provider.refresh_token.return_value = OAuthTokens(access_token="fresh-access", expires_in=3599)
+        mock_get_provider.return_value = mock_provider
+
+        engine._dispatch_to_provider(platform_post)
+
+        mock_provider.refresh_token.assert_called_once_with("refresh-yt")
+        access_token, _content = mock_provider.publish_post.call_args.args
+        self.assertEqual(access_token, "fresh-access")
+        self.account.refresh_from_db()
+        self.assertGreater(self.account.token_expires_at, timezone.now() + timedelta(minutes=55))

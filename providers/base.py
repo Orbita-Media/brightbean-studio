@@ -41,6 +41,14 @@ class SocialProvider(ABC):
 
     def __init__(self, credentials: dict | None = None):
         self.credentials = credentials or {}
+        # Inbox parts (e.g. ``"dm"``, ``"comments"``) the caller asks
+        # ``get_messages`` to skip because the platform refused them recently.
+        self.inbox_skip_parts: set[str] = set()
+        # Filled by ``get_messages``: part → reason for every part the platform
+        # refused for lack of an app capability/permission in this call. The
+        # inbox engine persists it and skips the part for a day instead of
+        # failing every five minutes (apps/inbox/tasks.py).
+        self.inbox_unavailable_parts: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Class-level metadata (abstract properties)

@@ -42,6 +42,36 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://graph.facebook.com/v25.0"
 OAUTH_URL = "https://www.facebook.com/v25.0/dialog/oauth"
 TOKEN_URL = f"{BASE_URL}/oauth/access_token"
+
+# Inbox: how many recent posts the comment sync looks at, and the nested
+# fields for one request (comments with their replies, capped per post).
+INBOX_MEDIA_LIMIT = 25
+INBOX_MEDIA_FIELDS = (
+    "id,username,permalink,timestamp,comments_count,"
+    "comments.limit(50){id,text,username,timestamp,from,"
+    "replies.limit(50){id,text,username,timestamp,from}}"
+)
+
+# Graph API error codes meaning "this app/token may not do that at all":
+# 3 = app lacks the capability, 10/200 = permission denied,
+# 230 = requires instagram_manage_messages.
+_META_CAPABILITY_ERROR_CODES = {3, 10, 200, 230}
+
+
+def _meta_error(exc: APIError) -> dict:
+    error = (exc.raw_response or {}).get("error")
+    return error if isinstance(error, dict) else {}
+
+
+def _is_meta_capability_error(exc: APIError) -> bool:
+    return _meta_error(exc).get("code") in _META_CAPABILITY_ERROR_CODES
+
+
+def _meta_error_message(exc: APIError) -> str:
+    error = _meta_error(exc)
+    return error.get("message") or str(exc)
+
+
 INSTAGRAM_ACCOUNT_INSIGHTS = [
     "reach",
     "views",
@@ -1160,7 +1190,90 @@ class InstagramProvider(SocialProvider):
     # ------------------------------------------------------------------
 
     def get_messages(self, access_token: str, since: datetime | None = None) -> list[InboxMessage]:
+        """Comments on recent media plus direct messages, each part on its own.
+
+        Comments need ``instagram_manage_comments`` (always requested).
+        Direct messages go through the Conversations API, which needs
+        ``instagram_manage_messages`` *and* the Meta app's Instagram messaging
+        capability (App Review). Without it Meta answers ``(#3) Application
+        does not have the capability to make this API call`` – seen every five
+        minutes on 25.09.2026. Such a refusal no longer fails the whole sync:
+        the part lands in ``inbox_unavailable_parts`` and the inbox engine
+        skips it for a day (``apps/inbox/tasks.py``).
+        """
         ig_user_id = self.credentials.get("ig_user_id", "me")
+        messages: list[InboxMessage] = []
+        for part, fetch in (("comments", self._get_comment_messages), ("dm", self._get_dm_messages)):
+            if part in self.inbox_skip_parts:
+                continue
+            try:
+                messages.extend(fetch(access_token, ig_user_id, since))
+            except APIError as exc:
+                if not _is_meta_capability_error(exc):
+                    raise
+                self.inbox_unavailable_parts[part] = _meta_error_message(exc)
+        return messages
+
+    def _get_comment_messages(self, access_token: str, ig_user_id: str, since: datetime | None) -> list[InboxMessage]:
+        """Comments and replies on the most recent media, newest first.
+
+        One request covers ``INBOX_MEDIA_LIMIT`` posts with their comments
+        nested. Our own replies are left out – they are answers, not inbox
+        items.
+        """
+        resp = self._request(
+            "GET",
+            f"{BASE_URL}/{ig_user_id}/media",
+            access_token=access_token,
+            params={"fields": INBOX_MEDIA_FIELDS, "limit": INBOX_MEDIA_LIMIT},
+        )
+        messages: list[InboxMessage] = []
+        for media in resp.json().get("data", []):
+            own_username = (media.get("username") or "").lower()
+            for comment in media.get("comments", {}).get("data", []):
+                messages.extend(self._comment_to_message(comment, media, own_username, since, parent_id=None))
+                for reply in comment.get("replies", {}).get("data", []):
+                    messages.extend(
+                        self._comment_to_message(reply, media, own_username, since, parent_id=comment["id"])
+                    )
+        return messages
+
+    @staticmethod
+    def _comment_to_message(
+        comment: dict,
+        media: dict,
+        own_username: str,
+        since: datetime | None,
+        parent_id: str | None,
+    ) -> list[InboxMessage]:
+        sender = comment.get("from") or {}
+        username = comment.get("username") or sender.get("username", "")
+        if own_username and username.lower() == own_username:
+            return []
+        timestamp = datetime.fromisoformat(comment["timestamp"].replace("+0000", "+00:00"))
+        if since and timestamp < since:
+            return []
+        extra = {
+            "comment_id": comment["id"],
+            "media_id": media.get("id", ""),
+            "permalink": media.get("permalink", ""),
+            "sender_handle": username,
+        }
+        if parent_id:
+            extra["parent_comment_id"] = parent_id
+        return [
+            InboxMessage(
+                platform_message_id=comment["id"],
+                sender_id=sender.get("id", ""),
+                sender_name=username,
+                text=comment.get("text", ""),
+                timestamp=timestamp,
+                message_type="comment",
+                extra=extra,
+            )
+        ]
+
+    def _get_dm_messages(self, access_token: str, ig_user_id: str, since: datetime | None) -> list[InboxMessage]:
         params: dict = {"fields": "id,participants,messages{id,message,from,created_time}"}
         if since:
             params["since"] = int(since.timestamp())
@@ -1191,13 +1304,26 @@ class InstagramProvider(SocialProvider):
         return messages
 
     def reply_to_message(self, access_token: str, message_id: str, text: str, extra: dict | None = None) -> ReplyResult:
-        """Reply to a conversation. message_id should be the conversation ID."""
-        resp = self._request(
-            "POST",
-            f"{BASE_URL}/{message_id}/messages",
-            access_token=access_token,
-            json={"message": text},
-        )
+        """Reply to a comment (``/{comment_id}/replies``) or to a DM conversation."""
+        extra = extra or {}
+        comment_id = extra.get("parent_comment_id") or extra.get("comment_id")
+        if comment_id:
+            # Instagram threads are one level deep: an answer to a reply goes
+            # onto the top-level comment.
+            resp = self._request(
+                "POST",
+                f"{BASE_URL}/{comment_id}/replies",
+                access_token=access_token,
+                params={"message": text},
+            )
+        else:
+            conversation_id = extra.get("conversation_id") or message_id
+            resp = self._request(
+                "POST",
+                f"{BASE_URL}/{conversation_id}/messages",
+                access_token=access_token,
+                json={"message": text},
+            )
         data = resp.json()
         return ReplyResult(platform_message_id=data.get("id", ""), extra=data)
 
