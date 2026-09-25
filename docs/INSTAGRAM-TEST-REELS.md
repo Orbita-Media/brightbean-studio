@@ -35,7 +35,7 @@ Einschränkungen, die daraus und aus der Hilfeseite
 | Sichtbarkeit | Follower können es trotzdem sehen, wenn es per DM geteilt wird, auf Audio-Seiten oder in Suchmaschinen |
 | Auswertung | Insights innerhalb von 24 Stunden; ein Test-Reel läuft langsamer an und beeinflusst das Ranking der normalen Reels nicht |
 | Automatik in der App | Wer in der App „automatisch teilen" einschaltet, setzt das für alle künftigen Test-Reels. Über die Schnittstelle gilt der Wert je Beitrag |
-| Kombination | Mit `collaborators`, `audio_configuration` oder `share_to_feed` dokumentiert Meta **keine** Einschränkung. Der Verteiler setzt `share_to_feed` nicht |
+| Kombination | Mit `collaborators`, `audio_configuration` oder `share_to_feed` dokumentiert die Graph-Referenz **keine** Einschränkung. Die Instagram-Hilfe sagt aber: Test-Reels nehmen keine Mitwirkenden („Instagram doesn't allow collaborators for this format“, zitiert bei help.metricool.com, 25.09.2026). Der Plan im Content-Tool schickt deshalb nie beides; lehnt Instagram einen Container wegen der Mitwirkenden ab, veröffentlicht der Provider ohne sie (`collaborators_dropped`). Der Verteiler setzt `share_to_feed` nicht |
 
 ## Beleg gegen die echte Schnittstelle (23.09.2026)
 

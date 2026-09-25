@@ -698,8 +698,9 @@ class InstagramProvider(SocialProvider):
 
         # Step 1: create container. A refused cover image is retried without
         # it (then with the chosen frame, if any) instead of losing the reel.
+        dropped: set[str] = set()
         (container_id, audio_dropped), cover_dropped = create_with_cover_fallback(
-            lambda p: self._create_container_with_audio(access_token, ig_user_id, p),
+            lambda p: self._create_container_with_audio(access_token, ig_user_id, p, dropped),
             payload,
             fallback_offset=fallback_offset,
             platform=self.platform_name,
@@ -718,6 +719,8 @@ class InstagramProvider(SocialProvider):
             result_extra["trial_graduation"] = trial_params["graduation_strategy"]
         if cover_dropped:
             result_extra["cover_dropped"] = True
+        if "collaborators" in dropped:
+            result_extra["collaborators_dropped"] = True
         return self._publish_container(access_token, ig_user_id, container_id, result_extra=result_extra)
 
     def _publish_story(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
@@ -831,12 +834,20 @@ class InstagramProvider(SocialProvider):
             # the child and the caption on the parent.
             carousel_payload["collaborators"] = json.dumps(collaborators)
 
-        carousel_id = self._create_container(access_token, ig_user_id, carousel_payload)
+        dropped: set[str] = set()
+        carousel_id = self._create_container_or_drop_collaborators(access_token, ig_user_id, carousel_payload, dropped)
         self._wait_for_container(access_token, carousel_id)
 
-        return self._publish_container(access_token, ig_user_id, carousel_id)
+        return self._publish_container(
+            access_token,
+            ig_user_id,
+            carousel_id,
+            result_extra={"collaborators_dropped": True} if "collaborators" in dropped else None,
+        )
 
-    def _create_container_with_audio(self, access_token: str, ig_user_id: str, payload: dict) -> tuple[str, bool]:
+    def _create_container_with_audio(
+        self, access_token: str, ig_user_id: str, payload: dict, dropped: set[str] | None = None
+    ) -> tuple[str, bool]:
         """Create the container, retrying once without the platform sound.
 
         Meta hands third parties a subset of the in-app catalogue ("the
@@ -847,10 +858,13 @@ class InstagramProvider(SocialProvider):
         a container is only a staged upload, an abandoned one is never
         published.
 
-        Returns ``(container_id, audio_dropped)``.
+        Returns ``(container_id, audio_dropped)``. A collaborator dropped on
+        the way is recorded in ``dropped`` (see
+        ``_create_container_or_drop_collaborators``).
         """
+        dropped = dropped if dropped is not None else set()
         try:
-            return self._create_container(access_token, ig_user_id, payload), False
+            return self._create_container_or_drop_collaborators(access_token, ig_user_id, payload, dropped), False
         except (APIError, PublishError) as exc:
             if "audio_configuration" not in payload:
                 raise
@@ -860,7 +874,40 @@ class InstagramProvider(SocialProvider):
                 exc,
             )
             retry_payload = {k: v for k, v in payload.items() if k != "audio_configuration"}
-            return self._create_container(access_token, ig_user_id, retry_payload), True
+            return self._create_container_or_drop_collaborators(access_token, ig_user_id, retry_payload, dropped), True
+
+    def _create_container_or_drop_collaborators(
+        self, access_token: str, ig_user_id: str, payload: dict, dropped: set[str]
+    ) -> str:
+        """Create the container, retrying once without the collaborators.
+
+        Every feed post and reel of an author title invites the author
+        (docs in the Social Media Content Tool: KOLLABORATIONEN.md). A handle
+        that was renamed, deleted or made private after it was planned is not
+        a reason to lose a produced post: Meta documents no error for it, and
+        "tagging a private collaborator is not permitted via the API". The
+        post goes out without the invitation and ``collaborators_dropped``
+        lands in the result so the publish log shows it. Only a SUCCESSFUL
+        retry marks the drop – if the retry fails too, the collaborators were
+        not the problem and the original error is raised.
+        """
+        try:
+            return self._create_container(access_token, ig_user_id, payload)
+        except (APIError, PublishError) as exc:
+            if "collaborators" not in payload:
+                raise
+            logger.warning(
+                "Instagram: container rejected with collaborators=%s, retrying without them (%s)",
+                payload["collaborators"],
+                exc,
+            )
+            retry_payload = {k: v for k, v in payload.items() if k != "collaborators"}
+            try:
+                container_id = self._create_container(access_token, ig_user_id, retry_payload)
+            except (APIError, PublishError):
+                raise exc from None
+            dropped.add("collaborators")
+            return container_id
 
     def _create_container(self, access_token: str, ig_user_id: str, payload: dict) -> str:
         resp = self._request(

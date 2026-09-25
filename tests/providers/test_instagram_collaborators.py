@@ -202,3 +202,107 @@ def test_carousel_puts_collaborators_on_the_parent_not_the_children():
     assert "collaborators" not in child_two.kwargs["json"]
     assert parent.kwargs["json"]["media_type"] == "CAROUSEL"
     assert json.loads(parent.kwargs["json"]["collaborators"]) == ["autorin", "verlag"]
+
+
+# ---------------------------------------------------------------------------
+# Never lose a post over an invitation (25.09.2026)
+# ---------------------------------------------------------------------------
+# Since 25.09.2026 every feed post and reel of an author title invites the
+# author. A handle renamed or made private after planning must not take a
+# fully produced post down: the container is retried once without the
+# collaborators. The same fallback covers a trial reel that Instagram
+# refuses with collaborators (its help pages say trial reels take none; the
+# plan in the Social Media Content Tool never sends both).
+
+from providers.exceptions import APIError  # noqa: E402
+
+
+def test_rejected_collaborator_is_dropped_and_the_reel_still_goes_out(caplog):
+    provider = _provider()
+    provider._request = MagicMock(
+        side_effect=[
+            APIError("Instagram API error 400: collaborator not found", platform="Instagram"),
+            _resp({"id": "container-2"}),
+            _resp({"status_code": "FINISHED"}),
+            _resp({"id": "media-1"}),
+        ]
+    )
+
+    with caplog.at_level("WARNING"):
+        result = provider.publish_post(
+            "page-token",
+            _content(PostType.REEL, ["https://cdn.example.com/reel.mp4"], collaborators=["umbenannt"]),
+        )
+
+    first, retry = provider._request.call_args_list[0], provider._request.call_args_list[1]
+    assert "collaborators" in first.kwargs["json"]
+    assert "collaborators" not in retry.kwargs["json"]
+    assert retry.kwargs["json"]["media_type"] == "REELS"
+    assert result.platform_post_id == "media-1"
+    assert result.extra.get("collaborators_dropped") is True
+    assert "umbenannt" in caplog.text
+
+
+def test_when_the_retry_fails_too_the_original_error_is_raised():
+    """Then the collaborators were not the problem – nothing is hidden."""
+    provider = _provider()
+    provider._request = MagicMock(
+        side_effect=[
+            APIError("Instagram API error 400: first", platform="Instagram"),
+            APIError("Instagram API error 400: second", platform="Instagram"),
+        ]
+    )
+
+    try:
+        provider.publish_post(
+            "page-token",
+            _content(PostType.IMAGE, ["https://cdn.example.com/cover.jpg"], collaborators=["autorin"]),
+        )
+    except APIError as exc:
+        assert "first" in str(exc)
+    else:
+        raise AssertionError("expected APIError")
+
+
+def test_post_without_collaborators_is_not_retried():
+    provider = _provider()
+    provider._request = MagicMock(side_effect=[APIError("Instagram API error 400", platform="Instagram")])
+
+    try:
+        provider.publish_post("page-token", _content(PostType.IMAGE, ["https://cdn.example.com/cover.jpg"]))
+    except APIError:
+        pass
+    else:
+        raise AssertionError("expected APIError")
+    assert provider._request.call_count == 1
+
+
+def test_carousel_parent_is_retried_without_collaborators():
+    provider = _provider()
+    provider._request = MagicMock(
+        side_effect=[
+            _resp({"id": "child-1"}),
+            _resp({"status_code": "FINISHED"}),
+            _resp({"id": "child-2"}),
+            _resp({"status_code": "FINISHED"}),
+            APIError("Instagram API error 400: collaborator", platform="Instagram"),
+            _resp({"id": "carousel-1"}),
+            _resp({"status_code": "FINISHED"}),
+            _resp({"id": "media-1"}),
+        ]
+    )
+
+    result = provider.publish_post(
+        "page-token",
+        _content(
+            PostType.CAROUSEL,
+            ["https://cdn.example.com/1.jpg", "https://cdn.example.com/2.jpg"],
+            collaborators=["autorin"],
+        ),
+    )
+
+    posts = [c for c in provider._request.call_args_list if c.args and c.args[0] == "POST"]
+    assert "collaborators" in posts[2].kwargs["json"]
+    assert "collaborators" not in posts[3].kwargs["json"]
+    assert posts[3].kwargs["json"]["media_type"] == "CAROUSEL"
+    assert result.extra.get("collaborators_dropped") is True
