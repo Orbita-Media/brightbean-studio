@@ -87,7 +87,7 @@ Usage: {% include "social_accounts/partials/_account_card.html" with account=acc
         {% for part, info in account.platform_settings.inbox_unavailable.items %}
         <p class="text-sm text-amber-800 break-words">
             <span class="font-semibold">Postfach: {% if part == "dm" %}Direktnachrichten{% elif part == "comments" %}Kommentare{% else %}{{ part }}{% endif %} nicht verfügbar.</span>
-            Die Plattform verweigert den Abruf ({{ info.reason }}). Veröffentlichen ist davon nicht betroffen; der Abruf wird täglich neu versucht.
+            Veröffentlichen ist davon nicht betroffen; der Abruf wird täglich neu versucht. Antwort der Plattform: {{ info.reason }}
         </p>
         {% endfor %}
     </div>
