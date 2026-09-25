@@ -256,6 +256,20 @@ class TestGalleryEmbed:
 
         assert all(item["aspectRatio"] == {"width": 1080, "height": 1350} for item in embed["items"])
 
+    def test_every_gallery_item_names_its_union_type(self, tmp_path):
+        # items is a union (refs #image): without $type the PDS answers 400
+        # "Expected an object which includes the $type property" (25.09.2026).
+        embed = self._provider()._build_embed("token", self._content(tmp_path, 6))
+
+        assert [item["$type"] for item in embed["items"]] == ["app.bsky.embed.gallery#image"] * 6
+
+    def test_four_image_embed_items_stay_without_type(self, tmp_path):
+        # images#image is a plain ref, not a union – the old embed stays as it was.
+        embed = self._provider()._build_embed("token", self._content(tmp_path, 4))
+
+        assert embed["$type"] == "app.bsky.embed.images"
+        assert all("$type" not in item for item in embed["images"])
+
     def test_aspect_ratio_is_read_per_file_not_from_the_first(self, tmp_path):
         content = PublishContent(
             post_type=PostType.IMAGE,

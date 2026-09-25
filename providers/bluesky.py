@@ -502,7 +502,11 @@ class BlueskyProvider(SocialProvider):
                 "image": blob_ref,
             }
             if as_gallery:
-                item["aspectRatio"] = ratios[index]
+                # ``items`` is a union (refs ``#image``), so every entry must name
+                # its type – without it the PDS rejects the record with
+                # "Expected an object which includes the $type property"
+                # (25.09.2026, lexicons/app/bsky/embed/gallery.json).
+                item = {"$type": "app.bsky.embed.gallery#image", **item, "aspectRatio": ratios[index]}
             items.append(item)
 
         if as_gallery:
