@@ -46,6 +46,16 @@ nötig.
   verbrauchen. Wichtig für Anbieter, die das Refresh-Token bei jeder Nutzung
   tauschen (Bluesky, TikTok).
 
+**Was der 401 verdeckt hat.** Mit gültigem Token erreicht die stündliche
+Auswertung YouTube jetzt wirklich und bekommt `403 YouTube Analytics API has
+not been used in project 1002261931374 before or it is disabled`. Das ist
+kein Token-Problem, sondern eine Einstellung im Google-Cloud-Projekt des
+OAuth-Clients „Orbita Verteiler (YouTube)“: Dort muss die *YouTube Analytics
+API* aktiviert werden
+(`https://console.developers.google.com/apis/api/youtubeanalytics.googleapis.com/overview?project=1002261931374`).
+Bis dahin schreibt der Worker stündlich eine Warnung; Veröffentlichen
+(YouTube Data API v3) ist davon nicht betroffen.
+
 **Andere Konten.** Kurzlebige Token haben YouTube und Google Business (1 h),
 Bluesky (2 h, kein Postfach, keine Auswertung) und TikTok (24 h, wird von der
 Zustandsprüfung alle 6 h erneuert). Pinterest, Threads und LinkedIn laufen
@@ -82,6 +92,28 @@ durch den App-Review bringen, dann `META_REQUEST_MESSAGES_SCOPE=true` setzen
 und den Instagram-Kanal einmal neu verbinden. Der Abruf nimmt die
 Direktnachrichten spätestens 24 Stunden später automatisch wieder auf.
 
+## 3. Beim Deploy abgebrochene Aufgaben blieben eine Stunde gesperrt
+
+**Befund.** Nach dem Deploy um 09:29 lief der Postfach-Abruf nicht mehr:
+`background_task` zeigte `locked_by = 1`, `locked_at = 09:29:25`. Der alte
+Worker hatte die Aufgabe um 09:29:25 begonnen und wurde um 09:29:47 entfernt.
+
+**Ursache.** `process_tasks` fängt unter Linux nur SIGTSTP ab, nicht SIGTERM.
+Als PID 1 ignorierte der Worker Coolifys Stoppsignal und wurde nach der
+Frist hart beendet, mitten in der laufenden Aufgabe. Der neue Worker ist
+ebenfalls PID 1, hält den Sperrvermerk deshalb für lebendig und wartet
+`BACKGROUND_TASK_MAX_RUN_TIME` (eine Stunde) ab. Dasselbe kann den
+Veröffentlichungslauf treffen.
+
+**Behebung** (`docker-compose.coolify.yml`):
+
+- `stop_signal: SIGTSTP` – der Worker bringt die laufende Aufgabe zu Ende und
+  beendet sich selbst.
+- Vor `process_tasks` läuft `manage.py release_task_locks`
+  (`apps/common/management/commands/release_task_locks.py`) und löst die
+  Sperren des Vorgängers. Sicher, weil Coolify die alten Container entfernt,
+  bevor der neue Worker startet.
+
 ## Tests
 
 - `apps/social_accounts/tests/test_tokens.py` – Erneuern vor Ablauf, einmal
@@ -91,3 +123,5 @@ Direktnachrichten spätestens 24 Stunden später automatisch wieder auf.
   Überspringen und erneuter Versuch nach 24 Stunden, Antwortwege.
 - `apps/publisher/tests.py::DispatchRefreshesExpiredTokenTest` – Veröffentlichen
   erneuert ein abgelaufenes Token.
+- `apps/common/tests/test_release_task_locks.py` – Sperre eines toten Workers
+  wird gelöst.

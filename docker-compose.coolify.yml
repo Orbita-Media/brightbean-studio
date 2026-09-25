@@ -35,13 +35,24 @@ services:
 
   worker:
     build: .
-    command: python manage.py process_tasks
+    # 2026-09-25 – Vor dem Start die Sperren eines getöteten Vorgängers lösen
+    # (apps/common/management/commands/release_task_locks.py). Sonst hält
+    # eine beim Deploy abgebrochene Aufgabe ihre Sperre eine Stunde lang: Der
+    # neue Worker ist ebenfalls PID 1 und hält den toten Vorgänger für lebendig.
+    # ``exec``, damit process_tasks PID 1 bleibt und das Stoppsignal bekommt.
+    command: sh -c "python manage.py release_task_locks && exec python manage.py process_tasks"
     # 2026-08-05 — Laufenden Task beim Deploy zu Ende bringen.
     #
     # Ohne diesen Wert gilt Dockers Standard von 10 Sekunden, dann SIGKILL —
     # ein Task, der länger braucht, stirbt bei jedem Deploy mittendrin.
     # Kein Nachteil im Leerlauf: Ist nichts zu tun, endet der Worker sofort.
     stop_grace_period: 10m
+    # 2026-09-25 – process_tasks fängt unter Linux nur SIGTSTP ab
+    # (background_task/utils.py), nicht SIGTERM. Als PID 1 ignorierte der
+    # Worker das Stoppsignal deshalb ganz und wurde nach Coolifys Frist hart
+    # beendet, mitten in der laufenden Aufgabe. Mit SIGTSTP bringt er die
+    # laufende Aufgabe zu Ende und beendet sich dann selbst.
+    stop_signal: SIGTSTP
     volumes:
       - media_data:/app/media
     env_file:
