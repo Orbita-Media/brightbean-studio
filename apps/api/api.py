@@ -48,10 +48,17 @@ api = NinjaAPI(
         "Headers `X-RateLimit-Limit` and `X-RateLimit-Remaining` are "
         "emitted **only on 429 responses**, not on every response.\n\n"
         "**Per-platform daily caps.** Posting against a connected account "
-        "is also bounded by a per-`SocialAccount` 24-hour rolling cap "
-        "(e.g. Instagram 25/day, LinkedIn 100/day). Over-quota requests "
-        "return 429 with the same error body shape, computed `retry_after` "
-        "tells you when the oldest counting row ages out.\n\n"
+        "is also bounded by a per-`SocialAccount` cap per 24-hour moving "
+        "window (e.g. Instagram 25, LinkedIn 100). Posts count at their "
+        "*publish* time (`scheduled_at`, or `published_at` once out), "
+        "never at the time you created or scheduled them; drafts never "
+        "count. So planning weeks ahead is fine as long as no single "
+        "24-hour window around a post's time is full. Scheduling, "
+        "re-timing (PATCH `scheduled_at`) or publishing now into a full "
+        "window returns 429 with the same error body shape plus "
+        "`requested_at`, `window_used`, `next_free_at` and a German "
+        "`detail`; `retry_after` is the number of seconds the post has to "
+        "move later to fit. Re-sending the same time does not help.\n\n"
         "**First comments.** When a target account's "
         "`supports_first_comment` is `false` (TikTok, Pinterest, Bluesky, "
         "Google Business; LinkedIn Personal in OIDC mode), the "
@@ -257,13 +264,16 @@ def _slug_for(status: int) -> str:
 
 
 def _parse_quota_message(msg: str) -> tuple[dict[str, Any], dict[str, str]]:
-    """Parse ``rate_limited tier=X limit=N remaining=N retry_after=N`` into JSON.
+    """Parse ``rate_limited tier=X limit=N remaining=N retry_after=N [k=v …] [| detail]``.
 
     The limits module emits this fixed format from ``_format_quota_message``;
     matching it here keeps the two ends decoupled (the limits module has no
     direct Ninja dependency).
     """
     parts: dict[str, Any] = {"error": "rate_limited"}
+    msg, sep, detail = msg.partition(" | ")
+    if sep and detail.strip():
+        parts["detail"] = detail.strip()
     for token in msg.split():
         if "=" in token:
             k, v = token.split("=", 1)

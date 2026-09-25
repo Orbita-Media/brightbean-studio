@@ -3,12 +3,15 @@
 Two orthogonal concerns live here:
 
 1. ``PLATFORM_DAILY_POST_LIMIT`` — channel-aligned caps on how many
-   scheduled-or-published PlatformPost rows an API key may create per
-   ``SocialAccount`` per rolling 24h window. Numbers come from each
-   platform's own developer docs (May 2026); see ``docs/agent-api.md``
-   for the source links. The publisher's own ``RateLimitState`` tracks
-   the *outgoing* upstream platform quota separately — these layers
-   compose; neither replaces the other.
+   PlatformPost rows may be *published* per ``SocialAccount`` within any
+   24-hour moving window. Rows are placed on the timeline at their
+   publish time (``scheduled_at`` for queued rows, ``published_at`` for
+   finished ones), not at the moment the agent created or scheduled them,
+   so planning weeks ahead never trips the cap. Numbers come from each
+   platform's own developer docs (May 2026); see ``README.md`` (Agent API,
+   Rate Limits) and ``docs/PLATTFORM-GRENZEN.md``. The publisher's own
+   ``RateLimitState`` tracks the *outgoing* upstream platform quota
+   separately — these layers compose; neither replaces the other.
 
 2. Per-key / per-workspace / per-IP HTTP throttles via ``django-ratelimit``,
    exposed as small wrapper helpers so each router stays declarative.
@@ -95,81 +98,264 @@ def resolve_platform_limit(social_account: SocialAccount) -> int:
 #: for an agent who built a 25-post Instagram draft queue.
 QUOTA_CONSUMING_STATUSES = frozenset({"scheduled", "publishing", "published", "failed"})
 
+#: Length of the platform's moving window. Every platform in
+#: ``PLATFORM_DAILY_POST_LIMIT`` states its cap per 24 hours.
+QUOTA_WINDOW = dt.timedelta(hours=24)
 
-def count_recent_creations(social_account: SocialAccount, *, window_hours: int = 24) -> int:
-    """Count PlatformPost rows in the platform-budget-consuming states.
+#: How far past the requested time ``next_free_slot`` looks for a gap.
+#: A week covers every realistic re-plan; beyond that the 429 simply
+#: omits ``next_free_at``.
+_NEXT_FREE_HORIZON = dt.timedelta(days=7)
 
-    Filtered to ``QUOTA_CONSUMING_STATUSES`` and to rows whose
-    ``updated_at`` falls inside the window. Codex review flagged that
-    the previous ``created_at`` filter let an agent bypass the cap by
-    creating drafts (which don't count) and then scheduling them more
-    than 24 h later — the newly quota-consuming rows had a stale
-    ``created_at`` outside the window and slipped through.
+_PENDING_STATUSES = ("scheduled", "publishing")
+_DONE_STATUSES = ("published", "failed")
 
-    ``updated_at`` is bumped by ``transition_platform_post`` whenever
-    the status changes (including the moment a draft enters scheduled),
-    so it is a faithful approximation of "when did this row consume a
-    platform slot". Edits that touch other fields also bump it; the
-    over-counting is conservative — agents hit the cap slightly earlier
-    than the platform's own count, which is the safe direction.
+
+def _aware(value: dt.datetime) -> dt.datetime:
+    if timezone.is_naive(value):
+        return timezone.make_aware(value, dt.UTC)
+    return value
+
+
+def effective_publish_at(publish_at: dt.datetime | None, *, now: dt.datetime | None = None) -> dt.datetime:
+    """The moment a post will actually hit the platform.
+
+    ``None`` means "publish now"; a time in the past is picked up by the
+    publisher on its next poll, so it also lands at ``now``.
     """
-    cutoff = timezone.now() - dt.timedelta(hours=window_hours)
-    return PlatformPost.objects.filter(
-        social_account=social_account,
-        updated_at__gte=cutoff,
-        status__in=QUOTA_CONSUMING_STATUSES,
-    ).count()
+    now = now or timezone.now()
+    if publish_at is None:
+        return now
+    return max(_aware(publish_at), now)
 
 
-def check_platform_quota(social_account: SocialAccount) -> None:
-    """Raise an ``HttpError(429, ...)`` if the per-account cap is reached.
+def publish_times(
+    social_account: SocialAccount,
+    *,
+    start: dt.datetime,
+    end: dt.datetime,
+    exclude_ids: tuple | list | set = (),
+    now: dt.datetime | None = None,
+) -> list[dt.datetime]:
+    """Sorted publish times of every quota-consuming row in ``(start, end)``.
 
-    Call this immediately before creating a ``PlatformPost`` row in any
-    write endpoint. The 24h-rolling check is a single indexed count, so
-    it's cheap enough to run on every write.
+    The quota mirrors the platform's own cap, and the platform counts a
+    post when it is *published* — not when we queued it. So each row is
+    placed on the timeline at its publish moment:
+
+    * ``scheduled`` / ``publishing``: the publisher's own time,
+      ``Coalesce(PlatformPost.scheduled_at, Post.scheduled_at)``. An
+      overdue row (time already past, publisher not yet through) goes
+      out on the next poll, so it is clamped to ``now``. Rows without
+      any time fall back to ``updated_at`` (clamped as well).
+    * ``published`` / ``failed``: ``published_at``, else ``updated_at``
+      (the moment the failed attempt was recorded).
+    * drafts and every other editorial state: never counted.
+
+    The previous implementation counted rows whose ``updated_at`` lay in
+    the last 24 h, regardless of when they would publish. Planning six
+    weeks of one-per-day stories therefore burned the whole daily cap in
+    one run and locked the account for 24 h (Facebook 200/200 on
+    2026-09-24). Counting by publish time keeps the Codex P3 guarantee
+    too: a draft created long ago and scheduled today is counted at its
+    new publish time, so "drafts first, schedule later" cannot bypass
+    the cap.
     """
-    limit = resolve_platform_limit(social_account)
-    used = count_recent_creations(social_account)
-    if used >= limit:
-        # Compute when the oldest quota-consuming row ages out, so the
-        # client gets an honest Retry-After rather than guessing. Match
-        # the same filter as count_recent_creations to keep the two
-        # numbers internally consistent.
-        # Match the same filter as ``count_recent_creations`` so the
-        # two numbers stay internally consistent; computing the oldest
-        # quota-consuming ``updated_at`` lets ``retry_after`` reflect
-        # when the bucket will next free up.
-        oldest = (
-            PlatformPost.objects.filter(
-                social_account=social_account,
-                updated_at__gte=timezone.now() - dt.timedelta(hours=24),
-                status__in=QUOTA_CONSUMING_STATUSES,
+    now = now or timezone.now()
+    from django.db.models import Case, DateTimeField, F, Value, When
+    from django.db.models.functions import Coalesce, Greatest
+
+    pending_at = Greatest(
+        Coalesce(F("scheduled_at"), F("post__scheduled_at"), F("updated_at")),
+        Value(now, output_field=DateTimeField()),
+    )
+    done_at = Coalesce(F("published_at"), F("updated_at"))
+    qs = (
+        PlatformPost.objects.filter(
+            social_account=social_account,
+            status__in=QUOTA_CONSUMING_STATUSES,
+        )
+        .annotate(
+            quota_at=Case(
+                When(status__in=_PENDING_STATUSES, then=pending_at),
+                default=done_at,
+                output_field=DateTimeField(),
             )
-            .order_by("updated_at")
-            .values_list("updated_at", flat=True)
-            .first()
         )
-        retry_after_seconds = int((oldest + dt.timedelta(hours=24) - timezone.now()).total_seconds()) if oldest else 60
-        # 1s floor so the client doesn't hammer us at the boundary.
-        retry_after_seconds = max(retry_after_seconds, 1)
-        raise HttpError(
-            429,
-            _format_quota_message(
-                tier=f"platform_quota:{social_account.platform}",
-                limit=limit,
-                remaining=0,
-                retry_after=retry_after_seconds,
-            ),
-        )
+        .filter(quota_at__gt=start, quota_at__lt=end)
+    )
+    if exclude_ids:
+        qs = qs.exclude(pk__in=list(exclude_ids))
+    return sorted(qs.values_list("quota_at", flat=True))
 
 
-def _format_quota_message(*, tier: str, limit: int, remaining: int, retry_after: int) -> str:
+def _busiest_window(times: list[dt.datetime], at: dt.datetime, limit: int) -> int:
+    """Largest number of existing posts sharing one 24-h window with ``at``.
+
+    Exact moving-window check, as the platforms define it ("25 posts
+    within a 24-hour moving period"): adding a post at ``at`` breaks the
+    cap iff ``limit`` existing posts and ``at`` fit into one window,
+    i.e. some run of ``limit + 1`` consecutive sorted times that
+    contains ``at`` spans less than 24 h. Consecutive runs are the
+    tightest ones, so checking them is sufficient.
+
+    Returns the count of existing posts in the fullest window around
+    ``at`` (capped at what matters for the verdict). ``>= limit`` means
+    "no room".
+    """
+    import bisect
+
+    merged = list(times)
+    k = bisect.bisect_right(merged, at)
+    merged.insert(k, at)
+    best = 0
+    # Windows containing ``at``: [merged[i], merged[i] + 24h) for i <= k
+    # with merged[i] > at - 24h. Count members of each.
+    for i in range(k, -1, -1):
+        if at - merged[i] >= QUOTA_WINDOW:
+            break
+        j = bisect.bisect_left(merged, merged[i] + QUOTA_WINDOW)
+        best = max(best, j - i - 1)  # minus the new post itself
+        if best >= limit:
+            break
+    return best
+
+
+def window_load(
+    social_account: SocialAccount,
+    publish_at: dt.datetime | None = None,
+    *,
+    exclude_ids: tuple | list | set = (),
+) -> int:
+    """How many quota-consuming posts share the fullest 24-h window with ``publish_at``."""
+    now = timezone.now()
+    at = effective_publish_at(publish_at, now=now)
+    limit = resolve_platform_limit(social_account)
+    times = publish_times(
+        social_account,
+        start=at - QUOTA_WINDOW,
+        end=at + QUOTA_WINDOW,
+        exclude_ids=exclude_ids,
+        now=now,
+    )
+    return _busiest_window(times, at, max(limit, 1))
+
+
+def next_free_slot(
+    social_account: SocialAccount,
+    publish_at: dt.datetime | None = None,
+    *,
+    exclude_ids: tuple | list | set = (),
+) -> dt.datetime | None:
+    """Earliest time ``>= publish_at`` where one more post fits under the cap.
+
+    A window frees up only when an existing post drops out of it, so the
+    candidates are the requested time itself and every ``t + 24h``.
+    Returns ``None`` if the next week has no gap (or the cap is 0).
+    """
+    now = timezone.now()
+    at = effective_publish_at(publish_at, now=now)
+    limit = resolve_platform_limit(social_account)
+    if limit <= 0:
+        return None
+    horizon = at + _NEXT_FREE_HORIZON
+    times = publish_times(
+        social_account,
+        start=at - QUOTA_WINDOW,
+        end=horizon + QUOTA_WINDOW,
+        exclude_ids=exclude_ids,
+        now=now,
+    )
+    candidates = sorted({at, *(t + QUOTA_WINDOW for t in times if at < t + QUOTA_WINDOW <= horizon)})
+    for cand in candidates:
+        if _busiest_window(times, cand, limit) < limit:
+            return cand
+    return None
+
+
+def check_platform_quota(
+    social_account: SocialAccount,
+    publish_at: dt.datetime | None = None,
+    *,
+    exclude_ids: tuple | list | set = (),
+) -> None:
+    """Raise ``HttpError(429, ...)`` if a post at ``publish_at`` breaks the cap.
+
+    Call this before a ``PlatformPost`` enters a quota-consuming state
+    (create with ``action="schedule"``, ``/schedule``, PATCH with a new
+    ``scheduled_at`` on a scheduled post, MCP ``schedule_post`` /
+    ``schedule_draft``). ``publish_at`` is the time the post will be
+    published; ``None`` or a past time means "now".
+
+    ``exclude_ids`` names rows that are being *moved* (re-timing a
+    scheduled post) so they don't block their own new slot.
+
+    The 429 carries ``retry_after`` = seconds the post has to move later
+    to fit (for a post due now that equals the wait time), plus
+    ``next_free_at`` (ISO-8601) when a gap exists within a week.
+    Waiting without changing the time does not help a future post: its
+    window is full at that time no matter when the request is repeated.
+    """
+    now = timezone.now()
+    at = effective_publish_at(publish_at, now=now)
+    limit = resolve_platform_limit(social_account)
+    used = window_load(social_account, at, exclude_ids=exclude_ids)
+    if used < limit:
+        return
+    free = next_free_slot(social_account, at, exclude_ids=exclude_ids)
+    if free is not None:
+        retry_after_seconds = max(int((free - at).total_seconds()), 1)
+    else:
+        retry_after_seconds = int(_NEXT_FREE_HORIZON.total_seconds())
+    extra = {"window_used": used, "requested_at": at.isoformat()}
+    if free is not None:
+        extra["next_free_at"] = free.isoformat()
+    detail = (
+        f"Das 24-Stunden-Fenster um {at.isoformat()} ist für dieses Konto voll "
+        f"({used} von {limit} Beiträgen nach Veröffentlichungszeit). "
+        + (
+            f"Frei ist der nächste Termin ab {free.isoformat()}; "
+            if free is not None
+            else "In den folgenden sieben Tagen ist kein Termin frei; "
+        )
+        + "ein anderer Termin hilft, erneutes Senden mit demselben Termin nicht."
+    )
+    raise HttpError(
+        429,
+        _format_quota_message(
+            tier=f"platform_quota:{social_account.platform}",
+            limit=limit,
+            remaining=0,
+            retry_after=retry_after_seconds,
+            extra=extra,
+            detail=detail,
+        ),
+    )
+
+
+def _format_quota_message(
+    *,
+    tier: str,
+    limit: int,
+    remaining: int,
+    retry_after: int,
+    extra: dict | None = None,
+    detail: str = "",
+) -> str:
     """Plain-text body for the HttpError so Ninja's default 429 page renders.
 
     The router-level error handler in ``api.py`` rewraps this into the
-    uniform JSON shape with a ``Retry-After`` header.
+    uniform JSON shape with a ``Retry-After`` header. ``extra`` values
+    must not contain whitespace (they become ``key=value`` tokens);
+    ``detail`` is free text after a `` | `` separator and lands in the
+    JSON body as ``detail``.
     """
-    return f"rate_limited tier={tier} limit={limit} remaining={remaining} retry_after={retry_after}"
+    msg = f"rate_limited tier={tier} limit={limit} remaining={remaining} retry_after={retry_after}"
+    for key, value in (extra or {}).items():
+        msg += f" {key}={value}"
+    if detail:
+        msg += f" | {detail}"
+    return msg
 
 
 # ---------------------------------------------------------------------------

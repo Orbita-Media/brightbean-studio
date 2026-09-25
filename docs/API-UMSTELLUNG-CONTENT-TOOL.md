@@ -138,8 +138,19 @@ der Weboberfläche. Veröffentlichte Posts bleiben dauerhaft als Nachweis stehen
 - **429** bei Überschreiten des Rate-Limits, mit `Retry-After`-Kopfzeile und
   einem JSON-Rumpf mit `tier`, `limit`, `remaining`, `retry_after`. Die Kopfzeilen
   `X-RateLimit-*` kommen **nur** bei 429, nicht bei jeder Antwort.
-- Zusätzlich gilt je Konto eine rollierende 24-Stunden-Grenze (Instagram 25 pro
-  Tag, LinkedIn 100 pro Tag und so weiter) – ebenfalls als 429.
+- Zusätzlich gilt je Konto eine Grenze je gleitendem 24-Stunden-Fenster, die das
+  Veröffentlichungslimit der Plattform abbildet (Instagram 25, TikTok 15,
+  YouTube 50, LinkedIn 100, Facebook 200 und so weiter). Gezählt wird nach dem
+  **Veröffentlichungszeitpunkt**, nicht nach dem Zeitpunkt des Einplanens:
+  geplante Beiträge mit `scheduled_at` (überfällige als „jetzt“), veröffentlichte
+  und fehlgeschlagene mit `published_at` bzw. dem letzten Stand. Entwürfe zählen
+  nie. Wer sechs Wochen im Voraus einplant, stößt also nicht an die Grenze –
+  abgewiesen wird nur ein Termin, in dessen 24-Stunden-Umfeld das Konto schon
+  voll ist (auch beim Umplanen per PATCH). Die 429-Antwort enthält dann
+  zusätzlich `requested_at`, `window_used`, `next_free_at` (frühester freier
+  Termin innerhalb einer Woche) und `detail`; `retry_after` sagt, um wie viele
+  Sekunden der Termin später liegen muss. Denselben Termin erneut zu senden
+  hilft nicht, nur ein anderer Termin.
 - **403**, wenn die `social_account_id` nicht in der Freigabeliste des Keys steht.
 
 ## Neuen API-Key erzeugen

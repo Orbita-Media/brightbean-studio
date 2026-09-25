@@ -306,11 +306,11 @@ def _schedule_post(args: dict, context: dict[str, Any]) -> dict:
     # raises ``HttpError(429,...)`` which we re-shape into a JSON-RPC
     # error so MCP clients see structured feedback rather than HTTP.
     try:
-        check_platform_quota(sa)
+        check_platform_quota(sa, scheduled_at)
     except HttpError as exc:
         raise JsonRpcError(
             INVALID_PARAMS,
-            f"Per-platform daily quota reached for {sa.platform}: {exc.message}",
+            f"Per-platform 24-hour window full for {sa.platform} at the requested time: {exc.message}",
         ) from exc
     try:
         post = create_post(
@@ -484,15 +484,16 @@ def _schedule_draft(args: dict, context: dict[str, Any]) -> dict:
     if not drafts:
         raise JsonRpcError(INVALID_PARAMS, "No draft platform posts to schedule")
 
-    # Per-platform 24h quota check, one per child, BEFORE we mutate
+    # Per-platform 24h-window quota check at the requested publish time,
+    # one per child, BEFORE we mutate
     # anything — over-quota fails the whole call with no partial commit.
     for pp in drafts:
         try:
-            check_platform_quota(pp.social_account)
+            check_platform_quota(pp.social_account, scheduled_at)
         except HttpError as exc:
             raise JsonRpcError(
                 INVALID_PARAMS,
-                f"Per-platform daily quota reached for {pp.social_account.platform}: {exc.message}",
+                f"Per-platform 24-hour window full for {pp.social_account.platform} at the requested time: {exc.message}",
             ) from exc
 
     # Wrap the per-child loop in a single outer atomic — same reasoning

@@ -620,6 +620,8 @@ Permission keys: `create_posts`, `publish_directly`, `upload_media`, `view_analy
 
 Rate-limit responses (`429`) include `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers.
 
+**Per-account platform caps.** On top of the HTTP limits, every connected account has a cap per 24-hour moving window that mirrors the platform's own publishing limit (Instagram 25, TikTok 15, YouTube 50, LinkedIn 100, Pinterest 100, Facebook 200, Threads 250, …; overridable per account via `daily_post_limit_override`). Posts count at their **publish time** – `scheduled_at` for scheduled and publishing posts (an overdue one counts as now), `published_at` (else the last update) for published and failed posts. Drafts and review states never count. Creating, scheduling or re-timing (PATCH `scheduled_at`) a post at time T is refused with `429` only if some 24-hour window containing T already holds the full cap; planning weeks ahead therefore never trips it. The 429 body adds `requested_at`, `window_used`, `next_free_at` (earliest free time within a week) and a `detail` text; `retry_after` is the number of seconds the post has to move later to fit. Sending the same time again does not help – pick another time.
+
 ### REST Endpoints
 
 | Method | Path | Purpose | Permission |

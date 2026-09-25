@@ -563,10 +563,11 @@ def create(request, payload: CreatePostRequest):
     # depends on database state that other concurrent claims could
     # change. Drafts are excluded from the count inside
     # ``check_platform_quota`` so creating drafts cannot exhaust the
-    # platform's posting cap.
+    # platform's posting cap; the check looks at the 24-h windows around
+    # the post's own publish time, not at "the last 24 h".
     if payload.action == "schedule":
         try:
-            check_platform_quota(social_account)
+            check_platform_quota(social_account, payload.scheduled_at)
         except HttpError:
             release_idempotent_claim(api_key=request.api_key, idempotency_key=idempotency_key)
             raise
@@ -680,6 +681,11 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
     # Codex PR #53 security review (round 4) caught this gap.
     if payload.scheduled_at is not None and post.platform_posts.filter(status="scheduled").exists():
         _require_perm(request, "publish_directly")
+        # Moving a scheduled post into a full 24-h window would break the
+        # platform cap just like scheduling a new one there. The children
+        # being moved are excluded so they don't block their own new slot.
+        for kind in post.platform_posts.filter(status="scheduled").select_related("social_account"):
+            check_platform_quota(kind.social_account, payload.scheduled_at, exclude_ids=[kind.pk])
 
     # ---- Validate-everything-first.
     #
@@ -1015,7 +1021,7 @@ def schedule(request, post_id: uuid.UUID, payload: ScheduleRequest):
     # we touch any state. Doing the checks first means an over-quota
     # account fails the whole route with 429 — no partial commit.
     for pp in drafts:
-        check_platform_quota(pp.social_account)
+        check_platform_quota(pp.social_account, payload.scheduled_at)
         _require_pin_ready(
             pp.platform_extra or {},
             pp.social_account,

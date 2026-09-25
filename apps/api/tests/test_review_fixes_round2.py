@@ -15,8 +15,8 @@ from django.utils import timezone
 
 from apps.api.limits import (
     PLATFORM_DAILY_POST_LIMIT,
-    count_recent_creations,
     resolve_platform_limit,
+    window_load,
 )
 from apps.api_keys import services
 from apps.composer.models import PlatformPost, Post
@@ -296,7 +296,9 @@ class TestCancelClearsParentSchedule:
 
 
 # ===========================================================================
-# P3 — Quota counts via updated_at, not created_at
+# P3 — Quota counts at publish time, so "draft first, schedule later"
+#      cannot bypass it (updated 2026-09-25: publish time replaces the
+#      former updated_at window, see test_platform_quota_window.py)
 # ===========================================================================
 
 
@@ -306,19 +308,21 @@ class TestQuotaCountsRecentTransitions:
         """Codex P3 regression: an agent could create 100 LinkedIn drafts
         on day 1, wait > 24h, then schedule them all — the quota check
         used to look at ``created_at`` (> 24h ago, outside window) and
-        let every row through.
+        let every row through. Counting at the publish time closes this
+        independently of any creation or update timestamp.
         """
         # Simulate a draft created 25h ago.
         old_post = Post.objects.create(workspace=workspace, caption="old")
         pp = PlatformPost.objects.create(post=old_post, social_account=social_account, status="draft")
         old_time = timezone.now() - timedelta(hours=25)
         PlatformPost.objects.filter(pk=pp.pk).update(created_at=old_time, updated_at=old_time)
-        # Now flip to scheduled today (mirrors what the schedule route
-        # would do via ``transition_platform_post``).
-        PlatformPost.objects.filter(pk=pp.pk).update(status="scheduled", updated_at=timezone.now())
+        # Now flip to scheduled for tomorrow; even with a stale
+        # ``updated_at`` the row counts at its publish time.
+        publish_at = timezone.now() + timedelta(hours=20)
+        PlatformPost.objects.filter(pk=pp.pk).update(status="scheduled", scheduled_at=publish_at, updated_at=old_time)
 
         # The single newly-scheduled row must be counted.
-        assert count_recent_creations(social_account) == 1
+        assert window_load(social_account, publish_at) == 1
 
 
 # ===========================================================================

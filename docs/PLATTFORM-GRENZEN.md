@@ -100,6 +100,11 @@ damit in **einen** Beitrag.
 | Text | 2.200 Zeichen | IG User Media |
 | Kontingent | 100 API-Beiträge je 24 h, ein Karussell zählt als ein Beitrag | *"Carousels count as a single post."* |
 
+**Eigene Sperre im Fork:** Die Agent-API lässt je Instagram-Konto höchstens 25
+Beiträge je gleitendem 24-Stunden-Fenster zu (vorsichtiger als Metas 100),
+gezählt nach Veröffentlichungszeitpunkt, nicht nach Einplanzeitpunkt
+(`apps/api/limits.py`, seit 25.09.2026). Weit im Voraus einplanen ist damit frei.
+
 **Layout-Falle:** Instagram beschneidet alle Karussell-Bilder auf das
 Seitenverhältnis des **ersten**. Die erste Folie bestimmt das Format der ganzen
 Strecke.
