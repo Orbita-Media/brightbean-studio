@@ -164,3 +164,12 @@ class TestPinBasics:
         provider.publish_post("token", content)
 
         assert len(provider.payloads[-1]["title"]) == 100
+
+
+def test_scopes_include_boards_write_for_themed_boards():
+    """Themed boards are created via the API, so the consent must ask for boards:write."""
+    scopes = PinterestProvider().required_scopes
+    assert "boards:write" in scopes
+    assert {"user_accounts:read", "boards:read", "pins:read", "pins:write"} <= set(scopes)
+    url = PinterestProvider({"client_id": "x", "client_secret": "y"}).get_auth_url("https://r.test/cb", "s")
+    assert "boards%3Awrite" in url or "boards:write" in url

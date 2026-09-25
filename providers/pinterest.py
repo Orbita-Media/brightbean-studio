@@ -98,7 +98,10 @@ class PinterestProvider(SocialProvider):
 
     @property
     def required_scopes(self) -> list[str]:
-        return ["user_accounts:read", "boards:read", "pins:read", "pins:write"]
+        # boards:write: themed boards („Kochen & Backen“, „Zitate“ …) are created
+        # once via the API; the pins are sorted into them (Content-Tool
+        # docs/PINTEREST-PINS.md). Requires reconnecting the account.
+        return ["user_accounts:read", "boards:read", "boards:write", "pins:read", "pins:write"]
 
     @property
     def rate_limits(self) -> RateLimitConfig:
