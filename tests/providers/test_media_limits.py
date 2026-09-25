@@ -215,13 +215,12 @@ class TestSingleMediaChannelsSayWhatTheyDrop:
 
     def test_google_business_sends_exactly_one_media_entry(self, caplog):
         provider = GoogleBusinessProvider()
-        provider._get_account_id = MagicMock(return_value="accounts/1")
-        provider._get_location_id = MagicMock(return_value="accounts/1/locations/2")
         provider._request = MagicMock(return_value=MagicMock(json=MagicMock(return_value={"name": "p1"})))
         content = PublishContent(
             text="Text",
             post_type=PostType.IMAGE,
             media_urls=[f"https://example.test/{i}.jpg" for i in range(6)],
+            extra={"location_path": "accounts/1/locations/2"},
         )
 
         with caplog.at_level(logging.WARNING, logger="providers.google_business"):

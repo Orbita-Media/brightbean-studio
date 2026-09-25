@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 from .base import SocialProvider
@@ -27,6 +29,20 @@ ACCOUNTS_API = "https://mybusinessaccountmanagement.googleapis.com/v1"
 BUSINESS_INFO_API = "https://mybusinessbusinessinformation.googleapis.com/v1"
 POSTS_API = "https://mybusiness.googleapis.com/v4"
 
+#: Required by accounts.locations.list (v1); only what get_profile shows.
+LOCATION_READ_MASK = "name,title,storefrontAddress,phoneNumbers"
+#: v4 ``CallToAction.actionType`` values we send (GET_OFFER is deprecated).
+#: The dialog labels: BOOK Reservieren, ORDER Online bestellen, SHOP Kaufen,
+#: LEARN_MORE Weitere Informationen, SIGN_UP Anmelden, CALL Anrufen.
+CTA_TYPES = frozenset({"BOOK", "ORDER", "SHOP", "LEARN_MORE", "SIGN_UP", "CALL"})
+DEFAULT_LANGUAGE = "de"
+V4_PARENT = re.compile(r"accounts/[0-9]+/locations/[0-9]+")
+
+
+def location_number(value: str) -> str:
+    """``2832…``, ``locations/2832…`` or ``accounts/1/locations/2832…`` → ``2832…``."""
+    return (value or "").strip().rstrip("/").rsplit("/", 1)[-1]
+
 
 class GoogleBusinessProvider(SocialProvider):
     """Google Business Profile provider.
@@ -38,7 +54,12 @@ class GoogleBusinessProvider(SocialProvider):
 
     Optional:
     - ``account_id`` – Google Business account ID
-    - ``location_id`` – Google Business location ID
+    - ``location_id`` – Google Business location ID (``123``, ``locations/123``
+      or ``accounts/1/locations/123``)
+
+    Per-post ``extra`` keys: ``location_path`` (set by the engine from the
+    connected account), ``gbp_cta`` (button type, see ``CTA_TYPES``),
+    ``language_code``, ``topic_type``, ``event``, ``offer``.
     """
 
     # ------------------------------------------------------------------
@@ -166,103 +187,146 @@ class GoogleBusinessProvider(SocialProvider):
     # Account / location helpers
     # ------------------------------------------------------------------
 
-    def _get_account_id(self, access_token: str) -> str:
-        """Return the account ID from credentials or by listing accounts."""
-        if self.credentials.get("account_id"):
-            return self.credentials["account_id"]
+    def _list_accounts(self, access_token: str) -> list[dict]:
+        """All Business Profile accounts the grant can see, every page."""
+        accounts: list[dict] = []
+        page_token = None
+        while True:
+            params = {"pageSize": 20}
+            if page_token:
+                params["pageToken"] = page_token
+            data = self._request("GET", f"{ACCOUNTS_API}/accounts", access_token=access_token, params=params).json()
+            accounts.extend(data.get("accounts", []))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                return accounts
 
-        resp = self._request(
-            "GET",
-            f"{ACCOUNTS_API}/accounts",
-            access_token=access_token,
+    def _list_locations(self, access_token: str, account_name: str) -> list[dict]:
+        """Locations of one account, every page.
+
+        ``readMask`` is a *required* parameter of accounts.locations.list
+        (Business Information API v1); without it Google answers 400 – which
+        is what broke connecting before 25.09.2026.
+        """
+        locations: list[dict] = []
+        page_token = None
+        while True:
+            params = {"readMask": LOCATION_READ_MASK, "pageSize": 100}
+            if page_token:
+                params["pageToken"] = page_token
+            data = self._request(
+                "GET",
+                f"{BUSINESS_INFO_API}/{account_name}/locations",
+                access_token=access_token,
+                params=params,
+            ).json()
+            locations.extend(data.get("locations", []))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                return locations
+
+    def _find_location(self, access_token: str) -> tuple[str, dict]:
+        """Return ``(account_name, location)`` of the location to post to.
+
+        The first account in the list is often the personal account without
+        any location, so every account is searched. A configured
+        ``location_id`` (any spelling, see ``location_number``) wins.
+        """
+        wanted = location_number(self.credentials.get("location_id") or "")
+        wanted_account = self.credentials.get("account_id") or ""
+        if wanted_account and not wanted_account.startswith("accounts/"):
+            wanted_account = f"accounts/{wanted_account}"
+        accounts = [{"name": wanted_account}] if wanted_account else self._list_accounts(access_token)
+        for account in accounts:
+            for loc in self._list_locations(access_token, account["name"]):
+                if not wanted or location_number(loc.get("name", "")) == wanted:
+                    return account["name"], loc
+        raise PublishError(
+            "No Google Business location found"
+            + (f" with id {wanted}" if wanted else "")
+            + " – is the profile verified and owned by the connected Google account?",
+            platform=self.platform_name,
         )
-        data = resp.json()
-        accounts = data.get("accounts", [])
-        if not accounts:
-            raise PublishError(
-                "No Google Business accounts found",
-                platform=self.platform_name,
-            )
-        # Return the first account's resource name (e.g. "accounts/123")
-        return accounts[0]["name"]
 
-    def _get_location_id(self, access_token: str, account_id: str) -> str:
-        """Return the location ID from credentials or by listing locations."""
-        if self.credentials.get("location_id"):
-            return self.credentials["location_id"]
+    def _post_parent(self, access_token: str, extra: dict) -> str:
+        """v4 parent of a local post: ``accounts/{a}/locations/{l}``.
 
-        resp = self._request(
-            "GET",
-            f"{BUSINESS_INFO_API}/{account_id}/locations",
-            access_token=access_token,
-        )
-        data = resp.json()
-        locations = data.get("locations", [])
-        if not locations:
-            raise PublishError(
-                "No locations found for Google Business account",
-                platform=self.platform_name,
-            )
-        return locations[0]["name"]
+        localPosts live in the v4 API under the account, while the v1
+        Business Information API names a location ``locations/{id}`` without
+        it. Posting to ``v4/locations/{id}/localPosts`` is a 404 – the second
+        bug found on 25.09.2026. The connected account stores the full v4
+        path as its ``account_platform_id``; the engine hands it over as
+        ``extra["location_path"]``.
+        """
+        path = extra.get("location_path") or ""
+        if V4_PARENT.fullmatch(path):
+            return path
+        account_id = self.credentials.get("account_id") or ""
+        location_id = self.credentials.get("location_id") or ""
+        if account_id and location_id:
+            account = account_id if account_id.startswith("accounts/") else f"accounts/{account_id}"
+            return f"{account}/locations/{location_number(location_id)}"
+        account_name, loc = self._find_location(access_token)
+        return f"{account_name}/locations/{location_number(loc['name'])}"
 
     # ------------------------------------------------------------------
     # Profile
     # ------------------------------------------------------------------
 
     def get_profile(self, access_token: str) -> AccountProfile:
-        """Fetch the Google Business account and primary location info."""
-        account_id = self._get_account_id(access_token)
+        """The location becomes the connected account.
 
-        resp = self._request(
-            "GET",
-            f"{BUSINESS_INFO_API}/{account_id}/locations",
-            access_token=access_token,
-        )
-        data = resp.json()
-        locations = data.get("locations", [])
-
-        if locations:
-            loc = locations[0]
-            name = loc.get("title", loc.get("name", ""))
-            address_obj = loc.get("storefrontAddress", {})
-            address_lines = address_obj.get("addressLines", [])
-            address = ", ".join(address_lines) if address_lines else ""
-            phone = loc.get("phoneNumbers", {}).get("primaryPhone", "")
-            return AccountProfile(
-                platform_id=loc.get("name", account_id),
-                name=name,
-                handle=None,
-                extra={"address": address, "phone": phone},
-            )
-
+        ``platform_id`` is the v4 parent ``accounts/{a}/locations/{l}`` so
+        publishing needs no further lookup.
+        """
+        account_name, loc = self._find_location(access_token)
+        address_lines = (loc.get("storefrontAddress") or {}).get("addressLines", [])
+        address = ", ".join(address_lines)
+        phone = (loc.get("phoneNumbers") or {}).get("primaryPhone", "")
         return AccountProfile(
-            platform_id=account_id,
-            name=account_id,
+            platform_id=f"{account_name}/locations/{location_number(loc['name'])}",
+            name=loc.get("title") or loc.get("name", account_name),
+            handle=None,
+            extra={"address": address, "phone": phone, "account": account_name, "location": loc.get("name", "")},
         )
 
     # ------------------------------------------------------------------
     # Publishing
     # ------------------------------------------------------------------
 
-    def publish_post(self, access_token: str, content: PublishContent) -> PublishResult:
-        """Publish a local post to Google Business Profile."""
+    def build_post_body(self, content: PublishContent) -> dict:
+        """The LocalPost payload, without any network call (tested directly)."""
         if content.text and len(content.text) > self.max_caption_length:
             raise PublishError(
                 f"Post text exceeds {self.max_caption_length} characters (got {len(content.text)})",
                 platform=self.platform_name,
             )
-
-        account_id = self._get_account_id(access_token)
-        location_id = self._get_location_id(access_token, account_id)
-
-        # Determine topic type
         topic_type = content.extra.get("topic_type", "STANDARD")
-
         body: dict = {
-            "languageCode": content.extra.get("language_code", "en"),
+            # Our profile is German; "en" as fallback marked every post as English.
+            "languageCode": content.extra.get("language_code") or DEFAULT_LANGUAGE,
             "summary": content.text or "",
             "topicType": topic_type,
         }
+
+        # Button. The link was passed through by the engine as
+        # ``content.link_url`` and silently dropped until 25.09.2026 – a post
+        # without its "Kaufen" button has no way to the book page.
+        cta = (content.extra.get("gbp_cta") or "").upper()
+        if cta and cta not in CTA_TYPES:
+            raise PublishError(
+                f"Unknown Google Business button {cta!r}; allowed: {', '.join(sorted(CTA_TYPES))}",
+                platform=self.platform_name,
+            )
+        if cta == "CALL":
+            body["callToAction"] = {"actionType": "CALL"}
+        elif content.link_url:
+            body["callToAction"] = {"actionType": cta or "LEARN_MORE", "url": content.link_url}
+        elif cta:
+            raise PublishError(
+                f"Button {cta} needs a link (link_url)",
+                platform=self.platform_name,
+            )
 
         # Attach media. Alt text is deliberately not forwarded here: for a
         # LocalPost media item "sourceUrl is the only supported data field",
@@ -285,44 +349,83 @@ class GoogleBusinessProvider(SocialProvider):
         # OFFER type extras
         if topic_type == "OFFER" and content.extra.get("offer"):
             body["offer"] = content.extra["offer"]
+        return body
 
+    def publish_post(self, access_token: str, content: PublishContent) -> PublishResult:
+        """Publish a local post to Google Business Profile."""
+        body = self.build_post_body(content)
+        parent = self._post_parent(access_token, content.extra)
         resp = self._request(
             "POST",
-            f"{POSTS_API}/{location_id}/localPosts",
+            f"{POSTS_API}/{parent}/localPosts",
             access_token=access_token,
             json=body,
         )
         data = resp.json()
-
-        post_name = data.get("name", "")
+        if data.get("state") == "REJECTED":
+            raise PublishError(
+                "Google rejected the local post (state REJECTED) – check text and image against the content policy",
+                platform=self.platform_name,
+                raw_response=data,
+            )
         return PublishResult(
-            platform_post_id=post_name,
+            platform_post_id=data.get("name", ""),
             url=data.get("searchUrl"),
             extra=data,
         )
+
+    def delete_post(self, access_token: str, post_id: str) -> bool:
+        """Delete a local post (``accounts/…/locations/…/localPosts/…``)."""
+        self._request("DELETE", f"{POSTS_API}/{post_id}", access_token=access_token)
+        return True
 
     # ------------------------------------------------------------------
     # Analytics
     # ------------------------------------------------------------------
 
     def get_post_metrics(self, access_token: str, post_id: str) -> PostMetrics:
-        """Fetch metrics for a Google Business local post."""
-        resp = self._request(
-            "GET",
-            f"{POSTS_API}/{post_id}",
-            access_token=access_token,
-        )
-        data = resp.json()
-        search_views = 0
-        maps_views = 0
-        for metric in data.get("searchActionMetrics", []):
-            if metric.get("metricType") == "QUERIES_DIRECT":
-                search_views += metric.get("value", 0)
-        return PostMetrics(
-            impressions=search_views + maps_views,
-            extra={
-                "search_views": search_views,
-                "maps_views": maps_views,
-                "raw": data,
+        """Views and button clicks of one local post.
+
+        A LocalPost carries no numbers; they come from
+        ``localPosts:reportInsights`` (v4). Reading ``searchActionMetrics``
+        off the post itself returned 0 forever – the third bug found on
+        25.09.2026.
+        """
+        parent, sep, _ = post_id.rpartition("/localPosts/")
+        if not sep or not V4_PARENT.fullmatch(parent):
+            raise PublishError(f"Not a local post name: {post_id!r}", platform=self.platform_name)
+        now = datetime.now(UTC)
+        body = {
+            "localPostNames": [post_id],
+            "basicRequest": {
+                "metricRequests": [{"metric": "ALL"}],
+                "timeRange": {
+                    # Posts are archived after six months; 18 months is the
+                    # longest range Google's insights accept.
+                    "startTime": (now - timedelta(days=540)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "endTime": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
             },
+        }
+        data = self._request(
+            "POST",
+            f"{POSTS_API}/{parent}/localPosts:reportInsights",
+            access_token=access_token,
+            json=body,
+        ).json()
+        werte: dict[str, int] = {}
+        for eintrag in data.get("localPostMetrics", []):
+            if eintrag.get("localPostName") not in (None, post_id):
+                continue
+            for mv in eintrag.get("metricValues", []):
+                total = (mv.get("totalValue") or {}).get("value")
+                if total is None:
+                    total = sum(int(d.get("value") or 0) for d in mv.get("dimensionalValues", []))
+                werte[mv.get("metric", "")] = werte.get(mv.get("metric", ""), 0) + int(total or 0)
+        views = werte.get("LOCAL_POST_VIEWS_SEARCH", 0)
+        clicks = werte.get("LOCAL_POST_ACTIONS_CALL_TO_ACTION", 0)
+        return PostMetrics(
+            impressions=views,
+            clicks=clicks,
+            extra={"search_views": views, "cta_clicks": clicks, "raw": data},
         )

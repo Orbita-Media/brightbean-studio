@@ -339,20 +339,33 @@ def _story_request_extra(ov) -> dict:
     return extra
 
 
+#: Per-channel link fields of an override and the channels that know them.
+LINK_FIELDS = ("board_id", "link_url", "gbp_cta")
+LINK_FIELD_PLATFORMS = {
+    "board_id": ("pinterest",),
+    "link_url": ("pinterest", "google_business"),
+    "gbp_cta": ("google_business",),
+}
+PLATFORM_LABEL = {"pinterest": "Pinterest", "google_business": "Google Business"}
+
+
 def _check_pin_fields(platform: str, ov, gesetzt: set[str] | None = None) -> None:
-    """422 when ``board_id`` / ``link_url`` carry a value on a non-Pinterest
-    channel, or the link is not an https URL. ``null`` is always fine."""
+    """422 when ``board_id`` / ``link_url`` / ``gbp_cta`` carry a value on a
+    channel that has no such field, or the link is not an https URL.
+    ``null`` is always fine."""
     from apps.social_accounts.pinterest import is_valid_link
 
-    sent = {f for f in ("board_id", "link_url") if getattr(ov, f, None) not in (None, "")}
+    sent = {f for f in LINK_FIELDS if getattr(ov, f, None) not in (None, "")}
     if gesetzt is not None:
         sent &= gesetzt
     if not sent:
         return
-    if platform != "pinterest":
+    fremd = sorted(f for f in sent if platform not in LINK_FIELD_PLATFORMS[f])
+    if fremd:
+        erlaubt = sorted({PLATFORM_LABEL[k] for f in fremd for k in LINK_FIELD_PLATFORMS[f]})
         raise HttpError(
             422,
-            f"{' und '.join(sorted(sent))} gibt es nur bei Pinterest; dieses Konto ist {platform}.",
+            f"{' und '.join(fremd)} gibt es nur bei {' und '.join(erlaubt)}; dieses Konto ist {platform}.",
         )
     if "link_url" in sent and not is_valid_link(ov.link_url):
         raise HttpError(
@@ -362,9 +375,10 @@ def _check_pin_fields(platform: str, ov, gesetzt: set[str] | None = None) -> Non
 
 
 def _apply_pin_fields(extra: dict, ov, gesetzt: set[str] | None = None) -> dict:
-    """Write ``board_id`` / ``link_url`` into a copy of *extra* (``None``/"" removes)."""
+    """Write ``board_id`` / ``link_url`` / ``gbp_cta`` into a copy of *extra*
+    (``None``/"" removes)."""
     extra = dict(extra or {})
-    for feld in ("board_id", "link_url"):
+    for feld in LINK_FIELDS:
         if gesetzt is not None and feld not in gesetzt:
             continue
         wert = getattr(ov, feld, None)
@@ -373,6 +387,16 @@ def _apply_pin_fields(extra: dict, ov, gesetzt: set[str] | None = None) -> dict:
         else:
             extra.pop(feld, None)
     return extra
+
+
+def _require_gbp_ready(kind_extra: dict, account) -> None:
+    """A Google Business button other than CALL needs its link; without one
+    the post would fail at its publish time, so scheduling refuses it now."""
+    if account.platform != "google_business":
+        return
+    cta = (kind_extra.get("gbp_cta") or "").upper()
+    if cta and cta != "CALL" and not kind_extra.get("link_url"):
+        raise HttpError(422, f"Google Business: Der Button {cta} braucht link_url (https://…).")
 
 
 def _require_pin_ready(kind_extra: dict, account, medien: list) -> None:
@@ -386,6 +410,7 @@ def _require_pin_ready(kind_extra: dict, account, medien: list) -> None:
     from apps.social_accounts.pinterest import effective_board_id, missing_board_message
     from providers.video_cover import EXTRA_PINTEREST_COVER, cover_offset_from_extra
 
+    _require_gbp_ready(kind_extra, account)
     if account.platform != "pinterest":
         return
     if not effective_board_id(kind_extra, account):
@@ -512,14 +537,14 @@ def create(request, payload: CreatePostRequest):
             from providers.story import apply_story_to_extra
 
             override["platform_extra"] = apply_story_to_extra(override.get("platform_extra") or {}, True)
-        if ov.board_id is not None or ov.link_url is not None:
+        if ov.board_id is not None or ov.link_url is not None or ov.gbp_cta is not None:
             _check_pin_fields(social_account.platform, ov)
             override["platform_extra"] = _apply_pin_fields(override.get("platform_extra") or {}, ov)
         platform_overrides[ov.social_account_id] = override
 
     # A pin without a board fails at its publish time, hours later. Refuse
     # the schedule now instead (a draft may stay without one).
-    if payload.action == "schedule" and social_account.platform == "pinterest":
+    if payload.action == "schedule" and social_account.platform in ("pinterest", "google_business"):
         from apps.media_library.models import MediaAsset
 
         eigen = platform_overrides.get(social_account.id, {}).get("platform_extra") or {}
@@ -808,10 +833,12 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                 story_geprueft.add(kind.social_account_id)
             if cover is not None:
                 _check_cover_for_channel(kind.social_account.platform, cover, medien)
-            if {"board_id", "link_url"} & gesetzt:
+            if set(LINK_FIELDS) & gesetzt:
                 _check_pin_fields(kind.social_account.platform, ov, gesetzt)
-            pin_beruehrt = bool({"board_id", "link_url"} & gesetzt) or cover is not None
+            pin_beruehrt = bool(set(LINK_FIELDS) & gesetzt) or cover is not None
             pin_beruehrt = pin_beruehrt or payload.media_asset_ids is not None
+            if kind.status == "scheduled" and kind.social_account.platform == "google_business" and pin_beruehrt:
+                _require_gbp_ready(_apply_pin_fields(kind.platform_extra or {}, ov, gesetzt), kind.social_account)
             if kind.status == "scheduled" and kind.social_account.platform == "pinterest" and pin_beruehrt:
                 pin_extra = _apply_pin_fields(kind.platform_extra or {}, ov, gesetzt)
                 if cover is not None:
@@ -919,7 +946,7 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                 kind.platform_extra = apply_story_to_extra(kind.platform_extra or {}, ov.post_type == "story")
                 if "platform_extra" not in kind_fields:
                     kind_fields.append("platform_extra")
-            if {"board_id", "link_url"} & gesetzt and kind.social_account.platform == "pinterest":
+            if set(LINK_FIELDS) & gesetzt and kind.social_account.platform in ("pinterest", "google_business"):
                 kind.platform_extra = _apply_pin_fields(kind.platform_extra or {}, ov, gesetzt)
                 if "platform_extra" not in kind_fields:
                     kind_fields.append("platform_extra")

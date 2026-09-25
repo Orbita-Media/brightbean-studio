@@ -307,8 +307,19 @@ class PlatformOverride(Schema):
         None,
         max_length=2048,
         description=(
-            "Pinterest only: destination link of the pin, an ``https://`` URL of at most 2048 "
+            "Pinterest: destination link of the pin. Google Business: target of the post's "
+            "button (``gbp_cta``, default LEARN_MORE). An ``https://`` URL of at most 2048 "
             'characters. On PATCH, ``null`` or ``""`` removes it; omitting keeps it.'
+        ),
+    )
+    gbp_cta: Literal["BOOK", "ORDER", "SHOP", "LEARN_MORE", "SIGN_UP", "CALL"] | None = Field(
+        None,
+        description=(
+            "Google Business only: the button of the local post (v4 ``callToAction.actionType``). "
+            "Dialog labels: SHOP „Kaufen“, ORDER „Online bestellen“, LEARN_MORE „Weitere "
+            "Informationen“, BOOK „Reservieren“, SIGN_UP „Anmelden“, CALL „Anrufen“ (no link). "
+            "Every value except CALL needs ``link_url``; scheduling without one answers 422. "
+            "Without ``gbp_cta`` a ``link_url`` gets LEARN_MORE. On PATCH ``null`` removes it."
         ),
     )
 
@@ -548,8 +559,10 @@ class PlatformOverrideOut(Schema):
     post_type: Literal["story"] | None = None
     #: Pinterest: Board des Pins (null = Standard-Board des Kontos greift).
     board_id: str | None = None
-    #: Pinterest: Ziel-Link des Pins.
+    #: Pinterest: Ziel-Link des Pins. Google Business: Ziel des Buttons.
     link_url: str | None = None
+    #: Google Business: Button des Beitrags (SHOP = „Kaufen“ …).
+    gbp_cta: str | None = None
 
     @classmethod
     def from_platform_post(cls, pp: PlatformPost) -> PlatformOverrideOut:
@@ -585,7 +598,10 @@ class PlatformOverrideOut(Schema):
             if platform == "pinterest"
             else None,
             link_url=(str(extra.get("link_url")) if extra.get("link_url") else None)
-            if platform == "pinterest"
+            if platform in ("pinterest", "google_business")
+            else None,
+            gbp_cta=(str(extra.get("gbp_cta")) if extra.get("gbp_cta") else None)
+            if platform == "google_business"
             else None,
         )
 

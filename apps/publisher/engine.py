@@ -425,6 +425,11 @@ class PublishEngine:
             if platform == "facebook" and "page_id" not in extra:
                 extra["page_id"] = account.account_platform_id
 
+            # Google Business: the connected account's id IS the v4 parent
+            # ``accounts/{a}/locations/{l}`` of its local posts.
+            if platform == "google_business" and "location_path" not in extra:
+                extra["location_path"] = account.account_platform_id
+
             # Pinterest: a pin without its own board goes to the account's
             # default board (apps/social_accounts/pinterest.py). Without either
             # the provider fails with a clear message – but scheduling already
