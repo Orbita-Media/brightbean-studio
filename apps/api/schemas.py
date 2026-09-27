@@ -70,6 +70,13 @@ class AccountSummary(Schema):
         description="Pinterest only: board used for pins without their own ``board_id``. null = none set.",
     )
     pinterest_default_board_name: str | None = Field(None, description="Name of that board, as stored when it was set.")
+    follower_count: int | None = Field(
+        None,
+        description=(
+            "Followers/subscribers as last synced from the platform (daily metrics sync). "
+            "null = never synced; 0 is a real zero."
+        ),
+    )
 
     @classmethod
     def from_social_account(cls, sa) -> AccountSummary:
@@ -86,6 +93,7 @@ class AccountSummary(Schema):
             supports_first_comment=sa.supports_first_comment(),
             pinterest_default_board_id=default_board_id(sa),
             pinterest_default_board_name=(default_board_name(sa) or None) if default_board_id(sa) else None,
+            follower_count=getattr(sa, "follower_count", None),
         )
 
 

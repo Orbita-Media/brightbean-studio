@@ -174,6 +174,8 @@ class TestReadOnlyEndpoints:
         assert r.status_code == 200
         ids = {a["id"] for a in r.json()["accounts"]}
         assert ids == {str(social_account.id)}
+        # Follower count is exposed so API clients (IYC portal) do not show 0 for every account
+        assert r.json()["accounts"][0]["follower_count"] == social_account.follower_count
 
 
 # ---------------------------------------------------------------------------
