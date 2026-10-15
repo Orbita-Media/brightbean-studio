@@ -472,3 +472,29 @@ class TestPinterestAltText:
         provider.publish_post("token", content)
 
         assert "alt_text" not in provider._request.call_args.kwargs["json"]
+
+
+class TestThreadsCarouselWaitsForChildren:
+    def test_every_image_child_is_awaited_before_the_carousel_container(self):
+        """Regression 15.10.2026: the last image child was not ready yet (subcode 4279004)."""
+        provider = ThreadsProvider({"client_id": "id", "client_secret": "secret"})
+        order = []
+        provider._request = MagicMock(
+            side_effect=[
+                _resp({"id": "item-0"}),
+                _resp({"id": "item-1"}),
+                _resp({"id": "carousel-1"}),
+                _resp({"id": "thread-1"}),
+            ]
+        )
+        provider._wait_for_container = MagicMock(side_effect=lambda token, cid: order.append(cid))
+        content = PublishContent(
+            post_type=PostType.CAROUSEL,
+            media_urls=["https://cdn/1.jpg", "https://cdn/2.jpg"],
+        )
+
+        provider._publish_carousel("token", "user-1", content)
+
+        # both images are awaited, and both before the carousel container is created
+        assert order[:2] == ["item-0", "item-1"]
+        assert provider._wait_for_container.call_args_list[2].args[1] == "carousel-1"

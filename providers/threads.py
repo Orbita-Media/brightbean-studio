@@ -406,10 +406,12 @@ class ThreadsProvider(SocialProvider):
                     platform=self.platform_name,
                     raw_response=item_body,
                 )
-            # Video children ingest asynchronously; wait before they are
-            # referenced by the carousel container.
-            if media_type == "VIDEO":
-                self._wait_for_container(access_token, item_id)
+            # Children ingest asynchronously: videos for a long time, images for
+            # a moment. Referencing the last image right after creating it made
+            # the carousel container fail with subcode 4279004 ("untergeordnete
+            # Carousel-Elemente ungueltig") on 15.10.2026 (3 posts, 4 attempts
+            # each, always the last child). Wait for every child.
+            self._wait_for_container(access_token, item_id)
             children_ids.append(item_id)
 
         # Step 2: Create carousel container
