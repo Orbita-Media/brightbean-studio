@@ -17,6 +17,8 @@ auch löschen – wiederherstellbar.
 - Medium in den Papierkorb (`trash_asset`): abgelehnt, solange ein eingeplanter
   oder laufender Post es nutzt. Die Datei bleibt bis zum endgültigen Löschen.
 - Endgültig löschen geht nur aus dem Papierkorb (zweiter Schritt).
+- Speicherquote (`used_storage_bytes`, auch `/me`) zählt den Papierkorb mit: die Dateien liegen noch.
+  `sweep_orphaned_media` arbeitet über `objects` und lässt Papierkorb-Zeilen in Ruhe.
 - Geteilte Organisations-Medien löscht die Organisations-Mediathek wie bisher
   direkt; über einen Workspace-Schlüssel nicht (403).
 

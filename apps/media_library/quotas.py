@@ -136,7 +136,9 @@ def used_storage_bytes(organization) -> int:
     Live aggregate — fine at realistic scale (a few thousand assets per
     org). Don't denormalize until profiling proves it's needed.
     """
-    total = MediaAsset.objects.filter(organization=organization).aggregate(total=Sum("file_size"))["total"]
+    # all_objects: trashed assets keep their file until purged, so they
+    # still occupy storage and must count against the quota.
+    total = MediaAsset.all_objects.filter(organization=organization).aggregate(total=Sum("file_size"))["total"]
     return int(total or 0)
 
 
