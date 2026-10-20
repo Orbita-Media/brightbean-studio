@@ -37,7 +37,7 @@ from apps.api.middleware import (
 )
 from apps.api.schemas import MediaAssetListResponse, MediaAssetResponse
 from apps.media_library.models import MediaAsset
-from apps.media_library.services import create_asset
+from apps.media_library.services import ProtectedAssetError, create_asset, purge_asset, restore_asset, trash_asset
 
 router = Router(tags=["media"])
 
@@ -60,6 +60,12 @@ def _visible_assets_qs(request: HttpRequest):
         workspace_id=workspace.id,
         organization_id=workspace.organization_id,
     )
+
+
+def _trashed_assets_qs(request: HttpRequest):
+    """Trashed assets of the key's workspace (shared org assets are never trashed via a workspace key)."""
+    workspace = request.workspace  # type: ignore[attr-defined]  # set by ApiKeyAuth
+    return MediaAsset.all_objects.filter(workspace_id=workspace.id, deleted_at__isnull=False)
 
 
 def _parse_tags_csv(value: str | None) -> list[str]:
@@ -266,6 +272,7 @@ def list_media(
     ),
     created_after: str | None = Query(None),
     created_before: str | None = Query(None),
+    trashed: bool = Query(False, description="``true`` lists the trash instead of the library."),
     order_by: str = Query("-created_at"),
     cursor: str | None = Query(None),
     limit: int = Query(_DEFAULT_LIMIT, ge=1, le=_MAX_LIMIT),
@@ -275,7 +282,7 @@ def list_media(
     if order_by not in _ORDER_BY_WHITELIST:
         raise HttpError(422, f"order_by must be one of {sorted(_ORDER_BY_WHITELIST)}.")
 
-    qs = MediaAsset.objects.with_last_used_at(_visible_assets_qs(request))
+    qs = MediaAsset.objects.with_last_used_at(_trashed_assets_qs(request) if trashed else _visible_assets_qs(request))
 
     if processing_status and processing_status.lower() != "any":
         qs = qs.filter(processing_status=processing_status)
@@ -314,3 +321,55 @@ def list_media(
     )
     log_audit_entry(request, action="media.read.200", target_id=None, status_code=200)
     return body
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/media/{id} + POST /api/v1/media/{id}/restore  (trash)
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/{media_id}",
+    response={200: MediaAssetResponse, 204: None},
+    summary="Move a media asset to the trash; with ?permanent=true delete a trashed asset for good",
+)
+def delete(request, media_id: uuid.UUID, permanent: bool = Query(False)):
+    """Trash first, purge second.
+
+    Without ``permanent`` the asset goes to the trash: it disappears from the
+    library and the list, the file stays, ``POST /media/{id}/restore`` brings
+    it back. ``409`` if a scheduled or publishing post still uses it.
+    Shared org assets cannot be deleted with a workspace key (``403``).
+
+    ``permanent=true`` only works on an asset already in the trash (``409``
+    otherwise) and removes file, thumbnail and versions.
+    """
+    enforce_http_rate_limits(request, is_write=True)
+    _require_perm(request, "delete_media")
+    if permanent:
+        asset = _trashed_assets_qs(request).filter(id=media_id).first()
+        if asset is None:
+            get_object_or_404(_visible_assets_qs(request), id=media_id)
+            raise HttpError(409, "Move the asset to the trash first (DELETE without permanent).")
+        purge_asset(asset)
+        log_audit_entry(request, action="media.purge", target_id=media_id, status_code=204)
+        return 204, None
+    asset = get_object_or_404(_visible_assets_qs(request), id=media_id)
+    if asset.workspace_id is None:
+        raise HttpError(403, "Shared organization assets cannot be deleted with a workspace key.")
+    try:
+        trash_asset(asset)
+    except ProtectedAssetError as exc:
+        raise HttpError(409, f"Asset is used by scheduled posts: {exc.referencing_posts}") from exc
+    log_audit_entry(request, action="media.trash", target_id=asset.id, status_code=200)
+    return 200, MediaAssetResponse.from_asset(asset)
+
+
+@router.post("/{media_id}/restore", response=MediaAssetResponse, summary="Restore a media asset from the trash")
+def restore(request, media_id: uuid.UUID):
+    enforce_http_rate_limits(request, is_write=True)
+    _require_perm(request, "delete_media")
+    asset = get_object_or_404(_trashed_assets_qs(request), id=media_id)
+    restore_asset(asset)
+    log_audit_entry(request, action="media.restore", target_id=asset.id, status_code=200)
+    return MediaAssetResponse.from_asset(asset)

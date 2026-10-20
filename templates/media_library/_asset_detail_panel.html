@@ -1,17 +1,22 @@
-{% comment %}Slide-over detail panel content. Expects: asset, workspace, versions{% endcomment %}
+{% comment %}Slide-over detail panel content. Expects: asset, workspace, versions.
+standalone=True when rendered on the asset page instead of the library slide-over
+(no ``detailOpen`` there: close is a link back, delete redirects).{% endcomment %}
 
 <div class="flex flex-col h-full" x-data="{ showDeleteConfirm: false }">
   <!-- Header -->
   <div class="flex items-center justify-between px-5 py-4 border-b" style="border-color: var(--border, #E7E5E4);">
     <h2 class="text-sm font-bold truncate pr-4" style="color: var(--text-primary, #1C1917);">{{ asset.original_filename }}</h2>
+    {% if not standalone %}
     <button @click="detailOpen = false"
-            class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors btn-surface-2"
+            class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors btn-surface-2 cursor-pointer"
             style="color: var(--text-tertiary, #78716C);">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
     </button>
+    {% endif %}
   </div>
 
-  <!-- Preview -->
+  <!-- Preview (the asset page shows the large preview next to/above the panel) -->
+  {% if not standalone %}
   <div class="px-5 py-4">
     <div class="rounded-xl overflow-hidden border" style="border-color: var(--border, #E7E5E4); background: var(--surface-1, #FAFAF9);">
       {% if asset.file_type == 'image' or asset.file_type == 'gif' %}
@@ -31,9 +36,10 @@
       {% endif %}
     </div>
   </div>
+  {% endif %}
 
   <!-- Actions -->
-  <div class="px-5 pb-3 flex items-center gap-2">
+  <div class="px-5 {% if standalone %}pt-4 {% endif %}pb-3 flex flex-wrap items-center gap-2">
     {% if is_shared_library and is_admin %}
     <a href="{% url 'media_library_org:shared_asset_edit' asset_id=asset.id %}"
        class="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white rounded-full transition-all btn-primary-hover"
@@ -69,7 +75,7 @@
             style="color: var(--error-500, #EF4444);"
             @click="showDeleteConfirm = true">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-      Delete
+      {% if is_shared_library %}Delete{% else %}Move to trash{% endif %}
     </button>
 
     <!-- Delete confirmation modal -->
@@ -82,8 +88,8 @@
              style="background: var(--error-50, #FEF2F2);">
           <svg class="w-5 h-5" style="color: var(--error-500, #EF4444);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
         </div>
-        <h3 class="text-base font-semibold text-center mb-1" style="color: var(--text-primary, #1C1917);">Delete asset?</h3>
-        <p class="text-sm text-center mb-5" style="color: var(--text-secondary, #57534E);">{% if is_shared_library %}This shared asset will be removed for all workspaces. This cannot be undone.{% else %}This cannot be undone. The file will be permanently removed.{% endif %}</p>
+        <h3 class="text-base font-semibold text-center mb-1" style="color: var(--text-primary, #1C1917);">{% if is_shared_library %}Delete asset?{% else %}Move to trash?{% endif %}</h3>
+        <p class="text-sm text-center mb-5" style="color: var(--text-secondary, #57534E);">{% if is_shared_library %}This shared asset will be removed for all workspaces. This cannot be undone.{% else %}You can restore it from the trash.{% endif %}</p>
         <div class="flex gap-2">
           <button type="button" @click="showDeleteConfirm = false"
                   class="flex-1 px-4 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer btn-surface-2"
@@ -102,9 +108,14 @@
                   hx-post="{% url 'media_library:asset_delete' workspace_id=workspace.id asset_id=asset.id %}"
                   hx-target="#detail-panel"
                   hx-swap="innerHTML"
-                  @htmx:after-request.camel="if ($event.detail.successful) { detailOpen = false; htmx.ajax('GET', window.location.href, {target: '#asset-grid', swap: 'innerHTML'}); }"
+                  {% if standalone %}
+                  hx-vals='{"standalone": "1"}'
+                  @htmx:after-request.camel="showDeleteConfirm = false"
+                  {% else %}
+                  @htmx:after-request.camel="showDeleteConfirm = false; if ($event.detail.successful && $event.detail.xhr.getResponseHeader('HX-Trigger') === 'assetDeleted') { detailOpen = false; htmx.ajax('GET', window.location.href, {target: '#asset-grid', swap: 'innerHTML'}); }"
+                  {% endif %}
                   {% endif %}>
-            Delete
+            {% if is_shared_library %}Delete{% else %}Move to trash{% endif %}
           </button>
         </div>
       </div>
@@ -119,34 +130,34 @@
     <div class="px-5 py-4">
       <h3 class="text-xs font-bold uppercase tracking-wider mb-3" style="color: var(--text-tertiary, #78716C);">Details</h3>
       <dl class="space-y-2.5">
-        <div class="flex justify-between">
-          <dt class="text-xs" style="color: var(--text-tertiary);">File size</dt>
-          <dd class="text-xs font-medium" style="color: var(--text-primary);">{{ asset.human_file_size }}</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">File size</dt>
+          <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ asset.human_file_size }}</dd>
         </div>
-        <div class="flex justify-between">
-          <dt class="text-xs" style="color: var(--text-tertiary);">Format</dt>
-          <dd class="text-xs font-medium" style="color: var(--text-primary);">{{ asset.mime_type }}</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Format</dt>
+          <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ asset.mime_type }}</dd>
         </div>
         {% if asset.width and asset.height %}
-        <div class="flex justify-between">
-          <dt class="text-xs" style="color: var(--text-tertiary);">Dimensions</dt>
-          <dd class="text-xs font-medium" style="color: var(--text-primary);">{{ asset.width }} &times; {{ asset.height }}px</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Dimensions</dt>
+          <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ asset.width }} &times; {{ asset.height }}px</dd>
         </div>
         {% endif %}
         {% if asset.duration_seconds %}
-        <div class="flex justify-between">
-          <dt class="text-xs" style="color: var(--text-tertiary);">Duration</dt>
-          <dd class="text-xs font-medium" style="color: var(--text-primary);">{{ asset.duration_seconds }}s</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Duration</dt>
+          <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ asset.duration_seconds }}s</dd>
         </div>
         {% endif %}
-        <div class="flex justify-between">
-          <dt class="text-xs" style="color: var(--text-tertiary);">Uploaded</dt>
-          <dd class="text-xs font-medium" style="color: var(--text-primary);">{{ asset.created_at|date:"M j, Y g:i A" }}</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Uploaded</dt>
+          <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ asset.created_at|date:"M j, Y g:i A" }}</dd>
         </div>
         {% if asset.uploaded_by %}
-        <div class="flex justify-between">
-          <dt class="text-xs" style="color: var(--text-tertiary);">Uploaded by</dt>
-          <dd class="text-xs font-medium" style="color: var(--text-primary);">{{ asset.uploaded_by.display_name }}</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Uploaded by</dt>
+          <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ asset.uploaded_by.display_name }}</dd>
         </div>
         {% endif %}
       </dl>

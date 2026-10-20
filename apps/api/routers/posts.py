@@ -22,7 +22,7 @@ import uuid
 
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
-from ninja import Router
+from ninja import Query, Router
 from ninja.errors import HttpError
 
 from apps.api.limits import check_platform_quota, enforce_http_rate_limits
@@ -43,9 +43,13 @@ from apps.api.schemas import (
 )
 from apps.composer.models import Post
 from apps.composer.services import (
+    PostInFlightError,
     create_post,
+    purge_post,
+    restore_post,
     sync_post_scheduled_at,
     transition_platform_post,
+    trash_post,
 )
 from apps.social_accounts.models import SocialAccount
 
@@ -134,6 +138,24 @@ def _get_workspace_post(request: HttpRequest, post_id: uuid.UUID) -> Post:
     if not pp_account_ids or not pp_account_ids.issubset(allowed_ids):
         raise Http404()
     return post
+
+
+def _trashed_posts_qs(request: HttpRequest):
+    """Trashed posts of the key's workspace whose every child is in the key's allowlist."""
+    from django.db.models import Exists, OuterRef
+
+    from apps.composer.models import PlatformPost
+
+    allowed_ids = [sa.id for sa in request.api_key.social_accounts.all()]  # type: ignore[attr-defined]
+    children = PlatformPost.all_objects.filter(post=OuterRef("pk"))
+    return (
+        Post.all_objects.filter(
+            workspace_id=request.api_key.workspace_id,  # type: ignore[attr-defined]
+            deleted_at__isnull=False,
+        )
+        .filter(Exists(children))
+        .exclude(Exists(children.exclude(social_account_id__in=allowed_ids)))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +678,14 @@ def create(request, payload: CreatePostRequest):
     return status_code, body
 
 
+@router.get("/trash", response=list[PostResponse], summary="List posts in the trash (newest deletion first)")
+def list_trash(request, limit: int = Query(50, ge=1, le=200)):
+    enforce_http_rate_limits(request, is_write=False)
+    posts = list(_trashed_posts_qs(request).order_by("-deleted_at")[:limit])
+    log_audit_entry(request, action="post.trash.read", target_id=None, status_code=200)
+    return [_post_to_response(request, p) for p in posts]
+
+
 @router.get("/{post_id}", response=PostResponse, summary="Read a single post")
 def retrieve(request, post_id: uuid.UUID):
     enforce_http_rate_limits(request, is_write=False)
@@ -1101,4 +1131,55 @@ def cancel(request, post_id: uuid.UUID):
 
     post.refresh_from_db()
     log_audit_entry(request, action="post.cancel", target_id=post.id, status_code=200)
+    return _post_to_response(request, post)
+
+
+@router.delete(
+    "/{post_id}",
+    response={200: PostResponse, 204: None},
+    summary="Move a post to the trash; with ?permanent=true delete a trashed post for good",
+)
+def delete(request, post_id: uuid.UUID, permanent: bool = Query(False)):
+    """Trash first, purge second.
+
+    Without ``permanent`` the post goes to the trash: scheduled children
+    return to draft (nothing publishes), published children stay live on the
+    platform, the post disappears from every list and can be restored with
+    ``POST /posts/{id}/restore``. ``409`` while a child is publishing.
+
+    ``permanent=true`` only works on a post that is already in the trash
+    (``409`` otherwise) and deletes it with all children.
+    """
+    enforce_http_rate_limits(request, is_write=True)
+    _require_perm(request, "create_posts")
+    if permanent:
+        post = _trashed_posts_qs(request).filter(id=post_id).first()
+        if post is None:
+            _get_workspace_post(request, post_id)  # 404 if it does not exist at all
+            raise HttpError(409, "Move the post to the trash first (DELETE without permanent).")
+        purge_post(post)
+        log_audit_entry(request, action="post.purge", target_id=post_id, status_code=204)
+        return 204, None
+    post = _get_workspace_post(request, post_id)
+    try:
+        trash_post(post)
+    except PostInFlightError as exc:
+        raise HttpError(409, str(exc)) from exc
+    post.refresh_from_db()
+    log_audit_entry(request, action="post.trash", target_id=post.id, status_code=200)
+    return 200, _post_to_response(request, post)
+
+
+@router.post("/{post_id}/restore", response=PostResponse, summary="Restore a post from the trash (children stay drafts)")
+def restore(request, post_id: uuid.UUID):
+    enforce_http_rate_limits(request, is_write=True)
+    _require_perm(request, "create_posts")
+    post = _trashed_posts_qs(request).filter(id=post_id).first()
+    if post is None:
+        from django.http import Http404
+
+        raise Http404()
+    restore_post(post)
+    post = _get_workspace_post(request, post_id)
+    log_audit_entry(request, action="post.restore", target_id=post.id, status_code=200)
     return _post_to_response(request, post)

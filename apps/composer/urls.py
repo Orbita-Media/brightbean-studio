@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import views, views_trash
 
 app_name = "composer"
 
@@ -59,6 +59,12 @@ urlpatterns = [
     path("drafts/", views.drafts_list, name="drafts_list"),
     # Post delete
     path("compose/<uuid:post_id>/delete/", views.post_delete, name="post_delete"),
+    # Trash (posts + media): restore or delete for good
+    path("trash/", views_trash.trash_index, name="trash"),
+    path("trash/posts/<uuid:post_id>/restore/", views_trash.trash_post_restore, name="trash_post_restore"),
+    path("trash/posts/<uuid:post_id>/purge/", views_trash.trash_post_purge, name="trash_post_purge"),
+    path("trash/media/<uuid:asset_id>/restore/", views_trash.trash_asset_restore, name="trash_asset_restore"),
+    path("trash/media/<uuid:asset_id>/purge/", views_trash.trash_asset_purge, name="trash_asset_purge"),
     # Clone / Repost
     path("compose/<uuid:post_id>/clone/", views.clone_post_view, name="clone_post"),
     # Content Categories

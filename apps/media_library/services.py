@@ -332,6 +332,36 @@ def delete_asset(asset):
     asset.delete()
 
 
+def trash_asset(asset):
+    """Move an asset to the trash (soft delete). The file stays on storage.
+
+    Same guard as ``delete_asset``: an asset used by a scheduled or
+    publishing post cannot be trashed (the publisher would still upload it).
+    """
+    from django.utils import timezone
+
+    referencing_posts = _check_post_references(asset)
+    if referencing_posts:
+        raise ProtectedAssetError(referencing_posts)
+    asset.deleted_at = timezone.now()
+    asset.save(update_fields=["deleted_at", "updated_at"])
+    return asset
+
+
+def restore_asset(asset):
+    """Take an asset out of the trash."""
+    asset.deleted_at = None
+    asset.save(update_fields=["deleted_at", "updated_at"])
+    return asset
+
+
+def purge_asset(asset):
+    """Delete a trashed asset permanently (second step after ``trash_asset``)."""
+    if asset.deleted_at is None:
+        raise ValueError("Only trashed assets can be deleted permanently.")
+    delete_asset(asset)
+
+
 def _check_post_references(asset):
     """Check if an asset is referenced by any scheduled or publishing posts.
 

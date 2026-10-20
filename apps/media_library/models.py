@@ -174,8 +174,13 @@ class MediaAsset(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Trash: set when the asset is deleted, the file stays until it is
+    # deleted permanently from the trash. ``objects`` hides trashed assets,
+    # ``all_objects`` sees everything (trash view, restore, purge).
+    deleted_at = models.DateTimeField(blank=True, null=True, db_index=True)
 
     objects = MediaAssetManager()
+    all_objects = models.Manager()
 
     class Meta:
         db_table = "media_library_media_asset"

@@ -1,0 +1,100 @@
+{% extends "layouts/workspace_settings.html" %}
+{% block title %}Trash - {{ workspace.name }} - Orbita Social{% endblock %}
+{% block content %}
+<div x-data="{ purgeUrl: '', purgeTarget: '', purgeName: '', purging: false }"
+     @keydown.escape.window="purgeUrl = ''">
+  <div class="mb-6">
+    <h2 class="text-xl font-semibold" style="color: var(--text-primary);">Trash</h2>
+  </div>
+
+  <!-- Posts -->
+  <div class="mb-8 overflow-hidden" style="background: var(--surface-0); border: 1px solid var(--border); border-radius: var(--radius-xl);">
+    <div class="px-4 sm:px-6 py-4" style="border-bottom: 1px solid var(--border);">
+      <h3 class="text-base font-semibold" style="color: var(--text-primary);">Posts ({{ posts|length }})</h3>
+    </div>
+    {% for post in posts %}
+    <div id="trash-post-{{ post.id }}" class="px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-3" style="border-bottom: 1px solid var(--border);">
+      <div class="min-w-0 flex-1">
+        <p class="text-sm font-semibold break-words" style="color: var(--text-primary);">{{ post.title|default:post.caption|truncatechars:110|default:"(no text)" }}</p>
+        <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {% for pp in post.trash_children %}
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full" style="background: var(--surface-2, #F5F5F4); color: var(--text-secondary);">{{ pp.social_account.account_name|default:pp.social_account.platform }} · {{ pp.get_status_display }}</span>
+          {% endfor %}
+          <span class="text-sm" style="color: var(--text-tertiary);">Deleted {{ post.deleted_at|date:"M j, Y H:i" }}</span>
+        </div>
+      </div>
+      <div class="flex gap-2 flex-shrink-0">
+        <button type="button"
+                class="h-10 px-4 text-sm font-semibold rounded-full cursor-pointer transition-colors btn-surface-2"
+                style="color: var(--text-primary); border: 1px solid var(--border);"
+                hx-post="{% url 'composer:trash_post_restore' workspace_id=workspace.id post_id=post.id %}"
+                hx-target="#trash-post-{{ post.id }}" hx-swap="outerHTML">Restore</button>
+        <button type="button"
+                class="h-10 px-4 text-sm font-semibold rounded-full cursor-pointer transition-colors btn-danger-soft-bg"
+                style="color: var(--error-500, #EF4444);"
+                @click="purgeUrl = '{% url 'composer:trash_post_purge' workspace_id=workspace.id post_id=post.id %}'; purgeTarget = '#trash-post-{{ post.id }}'; purgeName = 'this post'">Delete forever</button>
+      </div>
+    </div>
+    {% empty %}
+    <p class="px-4 sm:px-6 py-10 text-center text-sm" style="color: var(--text-tertiary);">No posts in the trash.</p>
+    {% endfor %}
+  </div>
+
+  <!-- Media -->
+  <div class="overflow-hidden" style="background: var(--surface-0); border: 1px solid var(--border); border-radius: var(--radius-xl);">
+    <div class="px-4 sm:px-6 py-4" style="border-bottom: 1px solid var(--border);">
+      <h3 class="text-base font-semibold" style="color: var(--text-primary);">Media ({{ assets|length }})</h3>
+    </div>
+    {% for asset in assets %}
+    <div id="trash-asset-{{ asset.id }}" class="px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-3" style="border-bottom: 1px solid var(--border);">
+      <div class="flex items-center gap-3 min-w-0 flex-1">
+        <div class="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0" style="background: var(--surface-2, #F5F5F4);">
+          {% if asset.thumbnail %}<img src="{{ asset.thumbnail.url }}" alt="" class="w-full h-full object-cover">
+          {% elif asset.media_type == 'image' or asset.media_type == 'gif' %}<img src="{{ asset.file.url }}" alt="" class="w-full h-full object-cover">{% endif %}
+        </div>
+        <div class="min-w-0">
+          <p class="text-sm font-semibold break-all" style="color: var(--text-primary);">{{ asset.filename }}</p>
+          <p class="text-sm" style="color: var(--text-tertiary);">{{ asset.file_size_display }} · Deleted {{ asset.deleted_at|date:"M j, Y H:i" }}</p>
+        </div>
+      </div>
+      <div class="flex gap-2 flex-shrink-0">
+        <button type="button"
+                class="h-10 px-4 text-sm font-semibold rounded-full cursor-pointer transition-colors btn-surface-2"
+                style="color: var(--text-primary); border: 1px solid var(--border);"
+                hx-post="{% url 'composer:trash_asset_restore' workspace_id=workspace.id asset_id=asset.id %}"
+                hx-target="#trash-asset-{{ asset.id }}" hx-swap="outerHTML">Restore</button>
+        <button type="button"
+                class="h-10 px-4 text-sm font-semibold rounded-full cursor-pointer transition-colors btn-danger-soft-bg"
+                style="color: var(--error-500, #EF4444);"
+                @click="purgeUrl = '{% url 'composer:trash_asset_purge' workspace_id=workspace.id asset_id=asset.id %}'; purgeTarget = '#trash-asset-{{ asset.id }}'; purgeName = '{{ asset.filename|escapejs }}'">Delete forever</button>
+      </div>
+    </div>
+    {% empty %}
+    <p class="px-4 sm:px-6 py-10 text-center text-sm" style="color: var(--text-tertiary);">No media in the trash.</p>
+    {% endfor %}
+  </div>
+
+  <!-- Confirm permanent deletion -->
+  <div x-show="purgeUrl" x-cloak class="fixed inset-0 z-[60] flex items-center justify-center"
+       x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+       x-transition:leave="transition ease-in duration-200" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0">
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="purgeUrl = ''"></div>
+    <div class="relative bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6" @click.stop
+         x-show="purgeUrl"
+         x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+         x-transition:leave="transition ease-in duration-200" x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+      <h3 class="text-base font-semibold text-center mb-1" style="color: var(--text-primary);">Delete forever?</h3>
+      <p class="text-sm text-center mb-5 break-words" style="color: var(--text-secondary);"><span x-text="purgeName"></span> will be removed for good. This cannot be undone.</p>
+      <div class="flex gap-2">
+        <button type="button" @click="purgeUrl = ''"
+                class="flex-1 h-10 px-4 text-sm font-medium rounded-full cursor-pointer transition-colors btn-surface-2"
+                style="color: var(--text-secondary); border: 1px solid var(--border);">Cancel</button>
+        <button type="button" :disabled="purging"
+                @click="purging = true; htmx.ajax('POST', purgeUrl, {target: purgeTarget, swap: 'outerHTML'}).finally(() => { purging = false; purgeUrl = ''; })"
+                class="flex-1 h-10 px-4 text-sm font-semibold text-white rounded-full cursor-pointer transition-colors btn-error-darker"
+                style="background: #EF4444;">Delete forever</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

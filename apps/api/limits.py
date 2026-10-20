@@ -170,8 +170,10 @@ def publish_times(
         Value(now, output_field=DateTimeField()),
     )
     done_at = Coalesce(F("published_at"), F("updated_at"))
+    # all_objects: a post published and then trashed here still counts on
+    # the platform's 24h quota.
     qs = (
-        PlatformPost.objects.filter(
+        PlatformPost.all_objects.filter(
             social_account=social_account,
             status__in=QUOTA_CONSUMING_STATUSES,
         )

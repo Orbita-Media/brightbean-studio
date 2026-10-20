@@ -2479,8 +2479,8 @@ def post_delete(request, workspace_id, post_id):
 
     When an ``account`` query parameter is provided, only the PlatformPost for
     that social account is removed.  If it was the last PlatformPost the parent
-    Post is deleted as well.  Without the parameter the entire Post (and all
-    its PlatformPosts) is deleted.
+    Post is deleted as well.  Without the parameter the entire Post goes to
+    the trash (``trash_post``) and can be restored.
     """
     workspace = _get_workspace(request, workspace_id)
     post = get_object_or_404(Post, id=post_id, workspace=workspace)
@@ -2493,7 +2493,13 @@ def post_delete(request, workspace_id, post_id):
         if not post.platform_posts.exists():
             post.delete()
     else:
-        post.delete()
+        # Whole post: to the trash (restore under Workspace Settings → Trash).
+        from .services import PostInFlightError, trash_post
+
+        try:
+            trash_post(post)
+        except PostInFlightError:
+            return HttpResponse("This post is being published right now.", status=409)
 
     return HttpResponse(
         status=204,

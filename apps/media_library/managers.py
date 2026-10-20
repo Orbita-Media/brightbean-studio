@@ -5,6 +5,11 @@ from django.db.models import Max, Q
 
 
 class MediaAssetManager(models.Manager):
+    """Default manager: never returns trashed assets (``deleted_at`` set)."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
     def for_workspace(self, workspace_id):
         return self.get_queryset().filter(workspace_id=workspace_id)
 

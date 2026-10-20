@@ -18,7 +18,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from apps.common.managers import WorkspaceScopedManager
+from apps.common.managers import TrashAwareWorkspaceManager, WorkspaceScopedManager
 from apps.common.validators import validate_hex_color
 
 
@@ -267,8 +267,13 @@ class Post(models.Model):
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Trash: a trashed post is hidden everywhere (``objects`` and the
+    # PlatformPost default manager filter it out) and can be restored.
+    # ``all_objects`` sees everything (trash view, restore, purge).
+    deleted_at = models.DateTimeField(blank=True, null=True, db_index=True)
 
-    objects = WorkspaceScopedManager()
+    objects = TrashAwareWorkspaceManager()
+    all_objects = WorkspaceScopedManager()
 
     class Meta:
         db_table = "composer_post"
@@ -333,6 +338,13 @@ class Post(models.Model):
         from providers.story import is_story
 
         return any(is_story(pp.platform_extra) for pp in self.platform_posts.all())
+
+
+class PlatformPostManager(models.Manager):
+    """Default manager: hides children of trashed posts."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(post__deleted_at__isnull=True)
 
 
 class PlatformPost(models.Model):
@@ -453,6 +465,12 @@ class PlatformPost(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Children of a trashed Post are hidden as well; ``all_objects`` for
+    # restore and for counting platform quota (a published post still
+    # counts on the platform after it was trashed here).
+    objects = PlatformPostManager()
+    all_objects = models.Manager()
 
     class Meta:
         db_table = "composer_platform_post"

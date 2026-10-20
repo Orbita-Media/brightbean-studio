@@ -291,6 +291,49 @@ def transition_platform_post(
     return platform_post
 
 
+class PostInFlightError(Exception):
+    """Raised when a post that is being published right now is trashed."""
+
+
+def trash_post(post):
+    """Move a post to the trash (soft delete).
+
+    Scheduled children go back to draft first, so the publisher never picks
+    up a trashed post. Children in ``publishing`` block the trash (the
+    platform call is running). Published children stay published on the
+    platform; only the copy here is hidden.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+
+    from apps.composer.models import PlatformPost
+
+    with transaction.atomic():
+        children = list(PlatformPost.all_objects.select_for_update().filter(post=post))
+        if any(pp.status == PlatformPost.Status.PUBLISHING for pp in children):
+            raise PostInFlightError("Post is being published right now.")
+        for pp in children:
+            if pp.status == PlatformPost.Status.SCHEDULED:
+                transition_platform_post(pp, "draft")
+        post.deleted_at = timezone.now()
+        post.save(update_fields=["deleted_at", "updated_at"])
+    return post
+
+
+def restore_post(post):
+    """Take a post out of the trash. Its children stay drafts."""
+    post.deleted_at = None
+    post.save(update_fields=["deleted_at", "updated_at"])
+    return post
+
+
+def purge_post(post):
+    """Delete a trashed post permanently (second step after ``trash_post``)."""
+    if post.deleted_at is None:
+        raise ValueError("Only trashed posts can be deleted permanently.")
+    post.delete()
+
+
 def clone_post(post, *, author=None):
     """Create a fresh DRAFT duplicate of *post* (Clone / Repost).
 

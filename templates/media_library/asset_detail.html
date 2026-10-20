@@ -18,9 +18,9 @@
 {% endblock %}
 
 {% block content %}
-<div class="grid grid-cols-3 gap-6">
-  <!-- Preview (2 cols) -->
-  <div class="col-span-2">
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <!-- Preview (2 cols on desktop, full width on top on phones) -->
+  <div class="lg:col-span-2 min-w-0">
     <div class="rounded-xl overflow-hidden border" style="border-color: var(--border); background: var(--surface-1);">
       {% if asset.file_type == 'image' or asset.file_type == 'gif' %}
         <img src="{{ asset.file.url }}" alt="{{ asset.original_filename }}" class="w-full max-h-[600px] object-contain">
@@ -36,9 +36,10 @@
     </div>
   </div>
 
-  <!-- Sidebar (1 col) -->
-  <div class="space-y-5">
-    {% include "media_library/_asset_detail_panel.html" %}
+  <!-- Sidebar (1 col on desktop, below the preview on phones). #detail-panel
+       is the htmx target of the delete dialog (blocked-delete message). -->
+  <div id="detail-panel" class="min-w-0 rounded-xl border" style="border-color: var(--border); background: #fff;">
+    {% include "media_library/_asset_detail_panel.html" with standalone=True %}
   </div>
 </div>
 {% endblock %}

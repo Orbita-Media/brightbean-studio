@@ -636,8 +636,11 @@ class PostResponse(Schema):
     )
     created_at: dt.datetime
     updated_at: dt.datetime
+    deleted_at: dt.datetime | None = Field(
+        default=None, description="Set while the post is in the trash (restore with POST /posts/{id}/restore)."
+    )
 
-    @field_serializer("scheduled_at", "published_at", "proposed_publish_at", "created_at", "updated_at")
+    @field_serializer("scheduled_at", "published_at", "proposed_publish_at", "created_at", "updated_at", "deleted_at")
     def _serialize_dt(self, value: dt.datetime | None) -> str | None:
         return _serialize_utc_z(value)
 
@@ -661,7 +664,16 @@ class PostResponse(Schema):
         # waeren zwei Datenbankabfragen fuer dieselbe Zeilenmenge - und die
         # zweite haette das ``select_related`` genauso gebraucht, sonst holt
         # jedes Kind sein Konto einzeln nach.
-        kinder = list(post.platform_posts.select_related("social_account"))
+        if post.deleted_at:
+            # Children of a trashed post are hidden by the default manager.
+            from apps.composer.models import PlatformPost as _PlatformPost
+            from apps.composer.status import derive_post_status
+
+            kinder = list(_PlatformPost.all_objects.filter(post=post).select_related("social_account"))
+            status = derive_post_status([k.status for k in kinder])
+        else:
+            kinder = list(post.platform_posts.select_related("social_account"))
+            status = post.status
         platform_posts = [PlatformPostSummary.from_platform_post(pp) for pp in kinder]
         return cls(
             id=post.id,
@@ -673,11 +685,12 @@ class PostResponse(Schema):
             scheduled_at=post.scheduled_at,
             published_at=post.published_at,
             proposed_publish_at=post.proposed_publish_at,
-            status=post.status,
+            status=status,
             platform_posts=platform_posts,
             platform_overrides=[PlatformOverrideOut.from_platform_post(pp) for pp in kinder],
             created_at=post.created_at,
             updated_at=post.updated_at,
+            deleted_at=post.deleted_at,
         )
 
 
@@ -728,8 +741,9 @@ class MediaAssetResponse(Schema):
     last_used_at: dt.datetime | None = None
     created_at: dt.datetime
     updated_at: dt.datetime
+    deleted_at: dt.datetime | None = None
 
-    @field_serializer("last_used_at", "created_at", "updated_at")
+    @field_serializer("last_used_at", "created_at", "updated_at", "deleted_at")
     def _serialize_dt(self, value: dt.datetime | None) -> str | None:
         return _serialize_utc_z(value)
 
@@ -760,6 +774,7 @@ class MediaAssetResponse(Schema):
             last_used_at=last_used_at,
             created_at=asset.created_at,
             updated_at=asset.updated_at,
+            deleted_at=getattr(asset, "deleted_at", None),
         )
 
 

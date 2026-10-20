@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from apps.common.homoglyphs import beanstandungen
@@ -21,6 +22,7 @@ from .services import (
     create_folder,
     create_version,
     delete_asset,
+    trash_asset,
     restore_version,
 )
 from .tasks import process_image_edit, process_media_asset, process_video_trim
@@ -522,7 +524,7 @@ def asset_delete(request, workspace_id, asset_id):
         return JsonResponse({"error": "Cannot delete shared assets from workspace context"}, status=403)
 
     try:
-        delete_asset(asset)
+        trash_asset(asset)
     except ProtectedAssetError as e:
         if request.htmx:
             return render(
@@ -547,8 +549,11 @@ def asset_delete(request, workspace_id, asset_id):
 
         response = HttpResponse(status=200)
         response["HX-Trigger"] = "assetDeleted"
+        if request.POST.get("standalone"):
+            # Asset page: there is no grid to refresh, go back to the library.
+            response["HX-Redirect"] = reverse("media_library:index", kwargs={"workspace_id": workspace.id})
         return response
-    return JsonResponse({"status": "deleted"})
+    return JsonResponse({"status": "trashed"})
 
 
 @login_required

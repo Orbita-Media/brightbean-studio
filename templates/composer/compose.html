@@ -2315,7 +2315,7 @@
                         <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                     </div>
                     <h3 class="text-base font-semibold text-stone-900 mb-1">Delete post?</h3>
-                    <p class="text-sm text-stone-500 mb-6">This action cannot be undone. The post and all associated data will be permanently removed.</p>
+                    <p class="text-sm text-stone-500 mb-6" x-text="new URLSearchParams(window.location.search).get('account') ? 'This removes the post from this account. This cannot be undone.' : 'The post moves to the trash. Restore it under Workspace Settings → Trash.'"></p>
                 </div>
                 <div class="flex gap-3">
                     <button @click="showDeleteModal = false"
