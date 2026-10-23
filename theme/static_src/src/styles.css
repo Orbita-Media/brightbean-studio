@@ -44,7 +44,7 @@
 /* Tailwind-Palettenklassen der Templates auf Orbita-Farben:
    stone  -> kühle Orbita-Neutraltöne (Schrifttöne 400-900 mit mind. 4,5:1 auf Weiß und #F3F4F6)
    orange -> Orbita-Primär (#635BFF) und seine Abstufungen
-   blue   -> Info = Primär, green -> Orbita-Erfolgsgrün */
+   blue   -> Info = Primär, green -> Orbita-Erfolgsgrün, red -> Orbita-Danger (lesbar) */
 @theme {
   --font-sans: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: "Gambetta", Georgia, "Times New Roman", serif;
@@ -81,6 +81,12 @@
   --color-blue-500: #635BFF;
   --color-blue-600: #5851EA;
   --color-blue-700: #4C44E5;
+
+  /* Rot: Textstufen 500-700 als lesbare Schrift (mind. 4,5:1 auch auf Rosa) */
+  --color-red-50: #FEECEC;
+  --color-red-500: #CC1F1F;
+  --color-red-600: #B91C1C;
+  --color-red-700: #991B1B;
 
   --color-green-50: #E7F6F1;
   --color-green-100: #CFEEE3;
