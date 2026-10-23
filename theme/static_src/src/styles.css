@@ -194,6 +194,14 @@
   --shadow-xl:  0 20px 25px rgba(16,24,40,0.08), 0 8px 10px rgba(16,24,40,0.04);
   --shadow-primary: 0 4px 14px rgba(99,91,255,0.28);
 
+  /* Von den Templates benutzte Variablen, die es im Upstream nur als Fallback gab
+     (Fallback war Orange/Rosa): jetzt definiert, damit die Orbita-Werte greifen */
+  --primary-rgb: 99, 91, 255;
+  --error-soft: var(--error-50);
+  --warning-soft: var(--warning-50);
+  --success-soft: var(--success-50);
+  --danger: #CC1F1F;
+
   /* Radii */
   --radius-sm:   0.375rem;
   --radius-md:   0.5rem;
@@ -896,3 +904,215 @@ span.flatpickr-weekday {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   ANGLEICHUNG HART CODIERTER TEMPLATE-FARBEN (Baukasten v3)
+   Die Templates tragen Hex-Werte in <style>-Blöcken (laden nach dieser
+   Datei) und in style=-Attributen. Ohne Template-Änderung werden sie hier
+   überschrieben: Selektoren mit "html body" (höhere Spezifität als die
+   Template-Regeln), !important nur dort, wo ein Inline-style sonst gewinnt.
+   Akzent überall Primary (#635BFF, Hover #5851EA), Neutralgrau kühl,
+   jede Schrift mind. 4,5:1.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Kalender (calendar.html, cross_calendar.html) ─────────────── */
+html body .cal-day,
+html body .cross-cal-day {
+  border-right-color: var(--border);
+  border-bottom-color: var(--border);
+}
+html body .cal-day:hover,
+html body .cross-cal-day:hover { background: var(--surface-1); }
+html body .cal-day.past,
+html body .cross-cal-day.past { background: var(--surface-2); }
+html body .cal-day.past:hover,
+html body .cross-cal-day.past:hover { background: var(--neutral-200); }
+html body .cal-day.today,
+html body .cross-cal-day.today { background: var(--primary-soft); }
+html body .cal-day .day-num { color: var(--neutral-700); }
+html body .cal-day.past .day-num,
+html body .cross-cal-day.past .day-num { color: var(--text-tertiary); }
+html body .cal-day.today .day-num,
+html body .cross-cal-day.today .day-num { background: var(--primary); color: #fff; }
+
+/* Statuschips */
+html body .status-draft { background: var(--surface-2); color: var(--neutral-600); border-color: var(--border); }
+html body .status-draft .chip-dot { background: var(--neutral-400); }
+html body .status-pending_review,
+html body .status-pending_client { background: var(--primary-soft); color: var(--brand-700); border-color: var(--primary-ring); }
+html body .status-pending_review .chip-dot,
+html body .status-pending_client .chip-dot { background: var(--primary); }
+html body .status-changes_requested { background: var(--warning-50); color: var(--warning-700); border-color: #F3D5A8; }
+html body .status-changes_requested .chip-dot { background: var(--warning-500); }
+html body .status-published,
+html body .status-partially_published { background: var(--success-50); color: var(--success-700); border-color: #BFE5D9; }
+html body .status-published .chip-dot { background: var(--success-500); }
+html body .status-partially_published { background: var(--warning-50); color: var(--warning-700); border-color: #F3D5A8; }
+html body .status-partially_published .chip-dot { background: var(--warning-500); }
+html body .status-rejected,
+html body .status-failed { background: var(--error-50); color: var(--error-700); }
+
+/* Ansichts-Knöpfe, Reiter, Filter */
+html body .view-btn { color: var(--text-tertiary); }
+html body .view-btn:hover { color: var(--text-primary); background: var(--surface-2); }
+html body .view-btn.active {
+  color: var(--brand-700); background: var(--primary-soft);
+  border: 1px solid var(--primary-ring); box-shadow: 0 1px 2px rgba(99,91,255,0.10);
+}
+html body .filter-chip,
+html body .tag-chip { background: var(--primary-soft); color: var(--brand-700); border-color: var(--primary-ring); }
+html body .filter-chip button,
+html body .tag-chip button { color: var(--primary-hover); }
+html body .filter-chip button:hover,
+html body .tag-chip button:hover { background: var(--primary-muted); }
+html body .publish-tab,
+html body .create-tab { color: var(--text-tertiary); }
+html body .publish-tab:hover,
+html body .create-tab:hover { color: var(--text-primary); border-bottom-color: var(--border-hover); }
+html body .publish-tab.active,
+html body .create-tab.active { color: var(--brand-700); border-bottom-color: var(--primary); }
+
+html body .publish-filter-select,
+html body .cal-filter-select,
+html body .org-filter-select {
+  color: var(--neutral-600); border-color: var(--border);
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23565D6D' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+html body .publish-filter-select:hover,
+html body .cal-filter-select:hover,
+html body .org-filter-select:hover { border-color: var(--border-hover); }
+html body .publish-filter-select:focus,
+html body .cal-filter-select:focus,
+html body .org-filter-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99,91,255,0.15); }
+html body .publish-filter-icon,
+html body .cal-filter-icon,
+html body .org-filter-icon { color: var(--text-tertiary); }
+
+/* Plus-Knöpfe in den Zellen */
+html body .cal-add-btn,
+html body .cal-add-cell:not(.has-posts) .cal-add-btn {
+  background: var(--primary); color: #fff; box-shadow: 0 2px 6px rgba(99,91,255,0.35);
+}
+html body .cal-add-btn:hover,
+html body .cal-add-cell:not(.has-posts) .cal-add-btn:hover { background: var(--primary-hover); }
+html body .cal-add-cell:not(.has-posts) .cal-add-btn:hover { box-shadow: 0 6px 20px rgba(99,91,255,0.35); }
+
+/* Leere Kanal-Plätze in Tages- und Wochenansicht */
+html body .calendar-channel-slot { border-color: var(--border); color: var(--text-tertiary); }
+html body .calendar-channel-slot.is-past-open { background: var(--surface-1); }
+html body .calendar-slot-platform-icon { background: var(--surface-2); color: var(--text-tertiary); }
+html body .calendar-slot-add { background: var(--primary-muted); color: var(--brand-700); }
+html body .calendar-slot-add:hover { background: var(--primary-ring); }
+html body .calendar-post-slot-check { color: var(--success-700); }
+
+/* Legende unter dem Kalender (Inline-Farben in publish_calendar_shell.html) */
+html body span[style="background:#A8A29E"] { background: var(--neutral-400) !important; }
+html body span[style="color:#57534E"] { color: var(--neutral-600) !important; }
+html body span[style="background:#F97316"] { background: var(--primary) !important; }
+html body span[style="color:#C2410C"] { color: var(--brand-700) !important; }
+
+/* ── Composer / Erstellen (compose.html, create_landing.html) ──── */
+html body .acct-pill { border-color: var(--border); }
+html body .acct-pill:hover { border-color: var(--border-hover); background: var(--surface-1); }
+html body .acct-pill.selected {
+  border-color: var(--primary); background: var(--primary-soft);
+  box-shadow: 0 0 0 3px rgba(99,91,255,0.10);
+}
+html body .acct-pill .checkmark { border-color: var(--border-hover); }
+html body .acct-pill.selected .checkmark { background: var(--primary); border-color: var(--primary); }
+html body .char-bar { background: var(--border); }
+html body .caption-wrap { border-color: var(--border); }
+html body .caption-wrap:hover { border-color: var(--border-hover); }
+html body .caption-wrap:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,91,255,0.12); }
+html body .caption-editor { color: var(--text-primary); }
+html body .caption-editor::placeholder,
+html body .comment-editor::placeholder { color: var(--text-ghost); }
+html body .comment-editor { border-color: var(--border); color: var(--text-primary); }
+html body .comment-editor:hover { border-color: var(--border-hover); }
+html body .comment-editor:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,91,255,0.12); }
+html body .media-dropzone-inline { border-color: var(--border-hover); }
+html body .media-dropzone-inline:hover,
+html body .media-dropzone-inline.dragover { border-color: var(--primary); background: var(--primary-soft); }
+html body .media-unsplash-btn { color: var(--neutral-700); }
+html body .media-unsplash-btn:hover { color: var(--text-primary); }
+html body .media-thumb { border-color: var(--border); }
+html body .media-thumb .remove-btn:hover { background: #DC2626; }
+html body .preview-card { border-color: var(--border); }
+html body .preview-card:hover { box-shadow: var(--shadow-md); border-color: transparent; }
+html body .action-bar { border-top-color: var(--border); }
+html body .a-drawer-backdrop { background: rgba(26,31,54,0.32); }
+html body .toast-saved { background: var(--neutral-900); box-shadow: 0 10px 15px rgba(16,24,40,0.2); }
+html body .panel-scroll::-webkit-scrollbar-thumb { background: var(--neutral-300); }
+html body .panel-scroll::-webkit-scrollbar-thumb:hover { background: var(--neutral-400); }
+
+/* Rückmeldungs-Kasten im Composer (Inline-Farben) */
+html body [style*="background:#FFF7ED" i] { background: var(--primary-soft) !important; border-color: var(--primary-muted) !important; }
+html body [style*="background:#FFEDD5" i] { background: var(--primary-muted) !important; color: var(--brand-700) !important; }
+
+/* Ideen-Spalten */
+html body .kanban-column { background: var(--surface-2); }
+html body .kanban-cards.drag-over { background: var(--primary-soft); outline-color: var(--brand-300); }
+html body .kanban-column.column-drag-over { background: var(--primary-soft); outline-color: var(--brand-300); }
+html body .idea-card { border-color: var(--border); }
+html body .idea-card:hover { border-color: var(--border-hover); box-shadow: 0 2px 8px rgba(16,24,40,0.06); }
+html body .new-idea-inline { color: var(--text-tertiary); }
+html body .new-idea-inline:hover { color: var(--neutral-800); background: rgba(26,31,54,0.05); }
+
+/* ── Anmeldung und Registrierung ────────────────────────────────── */
+html body .auth-card .btn-brand {
+  background-color: var(--primary); color: #fff;
+  box-shadow: 0 4px 14px rgba(99,91,255,0.28);
+}
+html body .auth-card .btn-brand:hover {
+  background-color: var(--primary-hover);
+  box-shadow: 0 6px 20px rgba(99,91,255,0.35);
+}
+html body .auth-card .btn-brand:focus { box-shadow: 0 0 0 3px rgba(99,91,255,0.35); }
+html body span[style*="color: #93a240" i] { color: var(--primary-hover) !important; }
+
+/* ── Löschen, Ablehnen (rote Fläche mit weißer Schrift, mind. 4,5:1) ── */
+html body .btn-danger-soft { color: var(--error-700) !important; }
+html body .btn-danger-soft:hover { background: #DC2626 !important; color: #fff !important; }
+html body [style*="background: #EF4444" i],
+html body [style*="background:#EF4444" i],
+html body [style*="background: var(--error-500" i],
+html body [style*="background:var(--error-500" i] { background: #DC2626 !important; }
+/* Rote Schrift auf hellem Grund (var(--error-500) = #EF4444 nur 3,8:1): dunkleres Rot.
+   Anker vor "color", damit "border-color: var(--error-500" nicht mitgreift. */
+html body [style^="color: var(--error-500" i],
+html body [style*=" color: var(--error-500" i],
+html body [style^="color:var(--error-500" i],
+html body [style*=";color:var(--error-500" i],
+html body [style^="color: #DC2626" i],
+html body [style*=" color: #DC2626" i] { color: var(--danger) !important; }
+
+/* Hinweis-Leisten (Toasts der Freigaben) */
+html body .bb-toast { background: var(--neutral-900) !important; }
+html body .bb-toast-body { color: var(--neutral-300); }
+html body .bb-toast span[style*="#FB923C" i] { color: var(--brand-300) !important; }
+
+/* ── Sonstige Inline-Farben ─────────────────────────────────────── */
+html body [style*="border-color: #E7E5E4" i],
+html body [style*="border: 2px solid #E7E5E4" i] { border-color: var(--border) !important; }
+html body [style*="border-color: #D6D3D1" i] { border-color: var(--border-hover) !important; }
+html body [style*="background: #f5f5f4" i] { background: var(--surface-2) !important; }
+html body [style*="border: 1px solid #e7e5e4" i] { border-color: var(--border) !important; }
+html body [class*="rgba(249,115,22"] { box-shadow: var(--shadow-primary); }
+html body [class*="rgba(249,115,22"]:hover { box-shadow: 0 6px 20px rgba(99,91,255,0.35); }
+
+/* Analytics: die Linie wird in base.html mit festem Orange gezeichnet (Canvas).
+   Farbdreh auf die Primärfarbe (#F97316 -> ca. #6460FF), Gitter und Achsen bleiben neutral. */
+html body #analytics-area-chart { filter: hue-rotate(220deg) saturate(3.9); }
+
+/* Intelligence (nur sichtbar, wenn aktiviert) */
+html body .intel-input:hover { border-color: var(--border-hover); background: var(--surface-2); }
+html body .intel-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,91,255,0.15); }
+html body .intel-tooltip { background: var(--neutral-900); }
+html body .intel-tooltip::after { border-top-color: var(--neutral-900); }
+html body .cg-gap-pill { border-color: var(--border); color: var(--neutral-600); }
+html body .cg-gap-pill:hover { border-color: var(--border-hover); background: var(--surface-1); }
+html body label > input[type="checkbox"]:checked + .cg-gap-pill { border-color: var(--primary); background: var(--primary-soft); color: var(--brand-700); }
+html body label > input[type="checkbox"]:focus + .cg-gap-pill { box-shadow: 0 0 0 3px rgba(99,91,255,0.15); }
+html body label.plan-card[data-popular="1"] { box-shadow: 0 4px 16px rgba(99,91,255,0.10); }
+html body .ml-trim-selection { background: rgba(99,91,255,0.15); }
