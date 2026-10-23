@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,11 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Invitation Expired - Orbita Social</title>
     <style>
+        @font-face { font-family: "Manrope"; font-weight: 400 800; font-display: swap; src: url("{% static 'fonts/manrope-latin.woff2' %}") format("woff2"); }
+        @font-face { font-family: "Gambetta"; font-weight: 300 700; font-display: swap; src: url("{% static 'fonts/Gambetta-Variable.woff2' %}") format("woff2"); }
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: system-ui, -apple-system, sans-serif;
-            background: #FAFAF9;
-            color: #1C1917;
+            font-family: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
+            background: #F7F8FA;
+            color: #1A1F36;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -18,7 +21,7 @@
         }
         .card {
             background: #FFFFFF;
-            border: 1px solid #E7E5E4;
+            border: 1px solid #E5E7EB;
             border-radius: 16px;
             padding: 40px;
             max-width: 440px;
@@ -26,14 +29,14 @@
             text-align: center;
             box-shadow: 0 1px 3px rgba(0,0,0,0.04);
         }
-        .logo { font-size: 18px; font-weight: 800; color: #F97316; margin-bottom: 24px; letter-spacing: -0.02em; }
-        .icon { margin-bottom: 16px; color: #A8A29E; }
-        h1 { font-size: 20px; font-weight: 700; margin-bottom: 8px; color: #1C1917; }
-        .message { font-size: 15px; color: #78716C; line-height: 1.6; margin-bottom: 24px; }
+        .logo { font-size: 18px; font-weight: 800; color: #635BFF; margin-bottom: 24px; letter-spacing: -0.02em; }
+        .icon { margin-bottom: 16px; color: #656C7B; }
+        h1 { font-family: "Gambetta", Georgia, serif; font-size: 24px; font-weight: 600; margin-bottom: 8px; color: #1A1F36; }
+        .message { font-size: 15px; color: #444B5C; line-height: 1.6; margin-bottom: 24px; }
         .link {
             display: inline-block;
             font-size: 14px;
-            color: #F97316;
+            color: #635BFF;
             text-decoration: none;
             font-weight: 600;
         }

@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,11 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Join {{ invitation.organization.name }} - Orbita Social</title>
     <style>
+        @font-face { font-family: "Manrope"; font-weight: 400 800; font-display: swap; src: url("{% static 'fonts/manrope-latin.woff2' %}") format("woff2"); }
+        @font-face { font-family: "Gambetta"; font-weight: 300 700; font-display: swap; src: url("{% static 'fonts/Gambetta-Variable.woff2' %}") format("woff2"); }
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: system-ui, -apple-system, sans-serif;
-            background: #FAFAF9;
-            color: #1C1917;
+            font-family: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
+            background: #F7F8FA;
+            color: #1A1F36;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -18,37 +21,37 @@
         }
         .card {
             background: #FFFFFF;
-            border: 1px solid #E7E5E4;
+            border: 1px solid #E5E7EB;
             border-radius: 16px;
             padding: 40px;
             max-width: 440px;
             width: 100%;
             box-shadow: 0 1px 3px rgba(0,0,0,0.04);
         }
-        .logo { font-size: 18px; font-weight: 800; color: #F97316; margin-bottom: 24px; letter-spacing: -0.02em; }
-        h1 { font-size: 20px; font-weight: 700; margin-bottom: 8px; color: #1C1917; }
-        .subtitle { font-size: 15px; color: #78716C; line-height: 1.6; margin-bottom: 24px; }
+        .logo { font-size: 18px; font-weight: 800; color: #635BFF; margin-bottom: 24px; letter-spacing: -0.02em; }
+        h1 { font-family: "Gambetta", Georgia, serif; font-size: 24px; font-weight: 600; margin-bottom: 8px; color: #1A1F36; }
+        .subtitle { font-size: 15px; color: #444B5C; line-height: 1.6; margin-bottom: 24px; }
         .info-box {
-            background: #FAFAF9;
-            border: 1px solid #E7E5E4;
+            background: #F7F8FA;
+            border: 1px solid #E5E7EB;
             border-radius: 10px;
             padding: 16px;
             margin-bottom: 24px;
         }
-        .info-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #A8A29E; margin-bottom: 8px; }
-        .info-value { font-size: 14px; color: #1C1917; }
+        .info-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #656C7B; margin-bottom: 8px; }
+        .info-value { font-size: 14px; color: #1A1F36; }
         .workspace-list { list-style: none; }
         .workspace-list li {
             font-size: 14px;
-            color: #44403C;
+            color: #353B4F;
             padding: 4px 0;
             display: flex;
             justify-content: space-between;
         }
         .workspace-list li .role {
             font-size: 12px;
-            background: #F5F5F4;
-            color: #78716C;
+            background: #F3F4F6;
+            color: #444B5C;
             padding: 2px 8px;
             border-radius: 9999px;
         }
@@ -65,14 +68,14 @@
             text-decoration: none;
             transition: opacity 0.15s;
         }
-        .btn:hover { opacity: 0.9; }
-        .btn-primary { background: #F97316; color: #FFFFFF; }
-        .btn-secondary { background: #F5F5F4; color: #1C1917; margin-top: 8px; }
-        .error { color: #DC2626; font-size: 14px; margin-bottom: 16px; }
+        .btn-primary:hover { background: #5851EA; }
+        .btn-primary { background: #635BFF; color: #FFFFFF; }
+        .btn-secondary { background: #F3F4F6; color: #1A1F36; margin-top: 8px; }
+        .error { color: #B91C1C; font-size: 14px; margin-bottom: 16px; }
         .or-divider {
             text-align: center;
             font-size: 13px;
-            color: #A8A29E;
+            color: #656C7B;
             margin: 12px 0;
         }
     </style>
