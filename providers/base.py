@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
 
 import httpx
 
-from .exceptions import APIError, RateLimitError
+from .exceptions import APIError, PublishLookupUnavailableError, PublishOutcomeUnknownError, RateLimitError
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -187,6 +188,89 @@ class SocialProvider(ABC):
     @abstractmethod
     def publish_post(self, access_token: str, content: PublishContent) -> PublishResult:
         """Publish content to the platform."""
+
+    # ------------------------------------------------------------------
+    # Unknown publish outcome (double-post protection)
+    # ------------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def publish_commit(self):
+        """Wrap the one request that makes a post public, plus reading its answer.
+
+        An error in here may come AFTER the platform published the post: the
+        response got lost (read timeout, dropped connection), the platform
+        answered 5xx or "unknown error" although it had published, or the
+        success body cannot be read. Such an error is turned into
+        ``PublishOutcomeUnknownError`` so the engine looks before it retries.
+        Errors that prove the request never arrived or was refused (no
+        connection, 4xx, 429) pass through unchanged and stay retryable.
+
+        Staging steps before the commit (uploads, Instagram/Threads
+        containers) must stay outside: a container is never published on its
+        own, so repeating it is harmless.
+        """
+        try:
+            yield
+        except PublishOutcomeUnknownError:
+            raise
+        except Exception as exc:
+            if not self._may_have_published(exc):
+                raise
+            raise PublishOutcomeUnknownError(
+                f"{self.platform_name}: Antwort auf die Veröffentlichung unklar ({type(exc).__name__}: {exc})",
+                platform=self.platform_name,
+                raw_response=getattr(exc, "raw_response", None),
+            ) from exc
+
+    def _may_have_published(self, exc: BaseException) -> bool:
+        """Whether an error raised during the commit request leaves the outcome open."""
+        if isinstance(exc, RateLimitError):
+            return False
+        if isinstance(exc, APIError):
+            return self._is_ambiguous_api_error(exc)
+        # False when the request never left this machine (no connection, no TLS
+        # handshake, no pool slot; ConnectTimeout is a TimeoutException, hence
+        # explicit). True for read/write timeouts, a connection dropped
+        # mid-response, a 2xx body without the expected id: the platform may
+        # have published.
+        return not isinstance(
+            exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol)
+        )
+
+    def _is_ambiguous_api_error(self, exc: APIError) -> bool:
+        """Whether an HTTP error answer still allows that the post went out.
+
+        A 4xx is a refusal; a 5xx (or an error without status) is not.
+        Providers whose platform reports "unknown error" under a 4xx override
+        this (Meta, see providers/published_lookup.py).
+        """
+        return exc.status_code is None or exc.status_code >= 500
+
+    def find_published_post(
+        self,
+        access_token: str,
+        content: PublishContent,
+        *,
+        since: datetime,
+        exclude_ids: frozenset[str] | set[str] = frozenset(),
+    ) -> PublishResult | None:
+        """Find a post with this content that went live on the account since ``since``.
+
+        Called by the engine after ``PublishOutcomeUnknownError`` and before
+        every further attempt of such a row. Returns the earliest match (the
+        result is adopted as the published post instead of posting again) or
+        None when the platform shows no such post. ``exclude_ids`` are posts
+        that already belong to other rows and never count as a match.
+
+        Raises ``PublishLookupUnavailableError`` when the platform cannot tell
+        reliably (no text to match on, a story, too many posts in the window);
+        the engine then fails the row for a human to check. The default
+        cannot look at all.
+        """
+        raise PublishLookupUnavailableError(
+            f"{self.platform_name} bietet keinen Abgleich bereits veröffentlichter Beiträge an.",
+            platform=self.platform_name,
+        )
 
     def publish_comment(self, access_token: str, post_id: str, text: str) -> CommentResult:
         """Post a comment on an existing post (e.g. first comment)."""

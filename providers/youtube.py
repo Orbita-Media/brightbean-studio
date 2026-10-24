@@ -7,7 +7,8 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 from .base import SocialProvider
-from .exceptions import OAuthError, PublishError
+from .exceptions import OAuthError, PublishError, PublishLookupUnavailableError
+from .published_lookup import Candidate, find_by_text, parse_time
 from .types import (
     AccountMetrics,
     AccountProfile,
@@ -211,12 +212,8 @@ class YouTubeProvider(SocialProvider):
                 platform=self.platform_name,
             )
 
-        title = content.title or content.text or ""
+        title = self._video_title(content)
         description = content.description or content.text or ""
-
-        # Shorts: add #Shorts tag if not already present
-        if content.post_type == PostType.SHORT and "#Shorts" not in title:
-            title = f"{title} #Shorts".strip()
 
         privacy_status = content.extra.get("privacy_status", "public")
         made_for_kids = content.extra.get("self_declared_made_for_kids", False)
@@ -225,7 +222,7 @@ class YouTubeProvider(SocialProvider):
 
         metadata = {
             "snippet": {
-                "title": title[:100],
+                "title": title,
                 "description": description[: self.max_caption_length],
                 "tags": tags,
                 "categoryId": category_id,
@@ -257,18 +254,28 @@ class YouTubeProvider(SocialProvider):
             with open(video_path, "rb") as f:
                 video_data = f.read()
 
-            upload_resp = self._request(
-                "PUT",
-                upload_uri,
-                headers={
-                    "Content-Type": "video/*",
-                    "Content-Length": str(len(video_data)),
-                },
-                data=video_data,
-                timeout=300.0,
-            )
-            upload_body = upload_resp.json()
-            video_id = upload_body.get("id", "")
+            # The commit: the upload session above is safe to open again, the
+            # finished upload creates the video. A 500 here (19.10.2026) may
+            # hide a live video (providers/base.py).
+            with self.publish_commit():
+                upload_resp = self._request(
+                    "PUT",
+                    upload_uri,
+                    headers={
+                        "Content-Type": "video/*",
+                        "Content-Length": str(len(video_data)),
+                    },
+                    data=video_data,
+                    timeout=300.0,
+                )
+                upload_body = upload_resp.json()
+                video_id = upload_body.get("id", "")
+                if not video_id:
+                    raise PublishError(
+                        "YouTube finished the upload without returning a video id",
+                        platform=self.platform_name,
+                        raw_response=upload_body,
+                    )
 
             # Step 3 (optional): upload custom thumbnail
             thumbnail_path = content.extra.get("thumbnail_file")
@@ -293,6 +300,81 @@ class YouTubeProvider(SocialProvider):
         raise PublishError(
             "No video file provided (media_files required)",
             platform=self.platform_name,
+        )
+
+    @staticmethod
+    def _video_title(content: PublishContent) -> str:
+        """The title as sent to YouTube (Shorts tagged, cut to 100 characters)."""
+        title = content.title or content.text or ""
+        # Shorts: add #Shorts tag if not already present
+        if content.post_type == PostType.SHORT and "#Shorts" not in title:
+            title = f"{title} #Shorts".strip()
+        return title[:100]
+
+    # ------------------------------------------------------------------
+    # Unknown publish outcome
+    # ------------------------------------------------------------------
+
+    def find_published_post(
+        self,
+        access_token: str,
+        content: PublishContent,
+        *,
+        since: datetime,
+        exclude_ids=frozenset(),
+    ) -> PublishResult | None:
+        """Look for the title in the channel's uploads playlist since ``since``.
+
+        Two quota units per page (channels.list once, playlistItems.list).
+        """
+        channels = self._request(
+            "GET",
+            f"{API_BASE}/channels",
+            access_token=access_token,
+            params={"part": "contentDetails", "mine": "true"},
+        ).json()
+        items = channels.get("items") or []
+        uploads = (
+            ((items[0].get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads") if items else None
+        )
+        if not uploads:
+            raise PublishLookupUnavailableError(
+                "Die Upload-Liste des YouTube-Kanals ist nicht lesbar.", platform=self.platform_name
+            )
+
+        def fetch(cursor):
+            params = {"part": "snippet", "playlistId": uploads, "maxResults": 50}
+            if cursor:
+                params["pageToken"] = cursor
+            body = self._request("GET", f"{API_BASE}/playlistItems", access_token=access_token, params=params).json()
+            candidates = []
+            for item in body.get("items") or []:
+                snippet = item.get("snippet") or {}
+                video_id = (snippet.get("resourceId") or {}).get("videoId")
+                if video_id:
+                    candidates.append(
+                        Candidate(
+                            id=video_id,
+                            text=snippet.get("title") or "",
+                            published_at=parse_time(snippet.get("publishedAt")),
+                            url=f"https://www.youtube.com/watch?v={video_id}",
+                        )
+                    )
+            return candidates, body.get("nextPageToken")
+
+        found = find_by_text(
+            fetch,
+            text=self._video_title(content),
+            since=since,
+            exclude_ids=exclude_ids,
+            platform=self.platform_name,
+        )
+        if found is None:
+            return None
+        return PublishResult(
+            platform_post_id=found.id,
+            url=found.url,
+            extra={"id": found.id, "adopted_existing_post": True},
         )
 
     # ------------------------------------------------------------------

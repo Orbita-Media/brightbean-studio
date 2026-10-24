@@ -33,7 +33,7 @@ from apps.common.homoglyphs import beanstandungen
 from apps.composer.models import PlatformPost
 from apps.credentials.models import resolve_platform_credentials
 from providers import get_provider
-from providers.exceptions import PublishError
+from providers.exceptions import PublishError, PublishLookupUnavailableError, PublishOutcomeUnknownError
 from providers.story import is_story
 from providers.types import PostType, PublishContent
 
@@ -107,6 +107,16 @@ MAX_CONCURRENT_POSTS = getattr(settings, "PUBLISHER_MAX_CONCURRENT_POSTS", 4)
 # – the old one gets 10 minutes to finish on a deploy (stop_grace_period in
 # docker-compose.coolify.yml).
 STUCK_PUBLISHING_AFTER = timedelta(minutes=getattr(settings, "PUBLISHER_STUCK_PUBLISHING_MINUTES", 30))
+
+# After an unclear answer to the publish request (PublishOutcomeUnknownError)
+# the engine waits this long before it looks the post up on the platform: a
+# post the platform accepted despite its error shows up within seconds (the
+# Instagram reel of 22.10.2026 carried a timestamp 7 s before the 500 came
+# back). Every further attempt of the row looks again before it posts.
+OUTCOME_LOOKUP_DELAY = getattr(settings, "PUBLISHER_OUTCOME_LOOKUP_DELAY", 15)
+# The lookup window opens this much before the attempt started: the clocks
+# of this server and the platform are not exactly in step.
+OUTCOME_LOOKUP_SLACK = timedelta(minutes=2)
 
 
 def _platform_label(platform_post) -> str:
@@ -285,6 +295,19 @@ class PublishEngine:
                 platform_post,
                 on_dispatch=lambda: self._mark_dispatched(platform_post),
             )
+        except PublishOutcomeUnknownError as e:
+            # The post may be live. Never through the plain retry below: that
+            # posted IG 128a96a9 (22.10.2026) and FB f3d0b1be (15.10.2026) twice.
+            PublishLog.objects.create(
+                platform_post=platform_post,
+                attempt_number=platform_post.retry_count + 1,
+                status_code=getattr(e.__cause__, "status_code", None),
+                response_body=str(e.raw_response or "")[:1000],
+                error_message=str(e),
+                duration_ms=int((time.monotonic() - start_time) * 1000),
+            )
+            self._settle_outcome_unknown(platform_post, e)
+            return {"success": False, "error": platform_post.publish_error}
         except Exception as e:
             duration_ms = int((time.monotonic() - start_time) * 1000)
             error_msg = str(e)
@@ -347,6 +370,7 @@ class PublishEngine:
         # The error of an earlier attempt no longer applies (the API returns
         # publish_error for every status); the PublishLog keeps the history.
         platform_post.publish_error = ""
+        platform_post.outcome_unknown_since = None
         platform_post.save()
 
         # A published post leaves the queue: drop the QueueEntry that held
@@ -609,11 +633,42 @@ class PublishEngine:
                 len(media_files),
             )
             self._block_on_dropped_media(provider, platform_post, len(media_files))
+
+            if platform_post.outcome_unknown_since:
+                # An earlier attempt of this series got an unclear answer and
+                # may have published: look before posting again.
+                adopted = self._adopt_if_published(
+                    provider,
+                    access_token,
+                    content,
+                    platform_post,
+                    since=platform_post.outcome_unknown_since,
+                    cause=None,
+                )
+                if adopted is not None:
+                    return adopted
+
             # Last stop before the platform: from here on a crash leaves the
             # outcome unknown, so the stuck-row recovery must not retry.
             if on_dispatch is not None:
                 on_dispatch()
-            result = provider.publish_post(access_token, content)
+            try:
+                result = provider.publish_post(access_token, content)
+            except PublishOutcomeUnknownError as exc:
+                since = (
+                    platform_post.outcome_unknown_since
+                    or platform_post.publishing_started_at
+                    or platform_post.dispatched_at
+                    or timezone.now()
+                )
+                if OUTCOME_LOOKUP_DELAY:
+                    time.sleep(OUTCOME_LOOKUP_DELAY)
+                adopted = self._adopt_if_published(
+                    provider, access_token, content, platform_post, since=since, cause=exc
+                )
+                if adopted is not None:
+                    return adopted
+                raise
             return {
                 "success": True,
                 "platform_post_id": result.platform_post_id,
@@ -625,6 +680,120 @@ class PublishEngine:
             for path in temp_files:
                 with contextlib.suppress(OSError):
                     os.unlink(path)
+
+    def _adopt_if_published(self, provider, access_token, content, platform_post, *, since, cause):
+        """Look the post up on the platform after (or before repeating) an unclear attempt.
+
+        Returns a success result for the post found there – it is adopted
+        instead of posting again – or None when the platform shows no such
+        post. When the platform cannot be asked (``PublishLookupUnavailableError``)
+        or the lookup itself fails, ``PublishOutcomeUnknownError`` is raised
+        with the reason attached; ``_settle_outcome_unknown`` decides.
+
+        ``cause`` is the error of the attempt that just ran, or None when this
+        is the check before a further attempt (the platform was not called).
+        """
+        label = _platform_label(platform_post)
+        exclude_ids = set(
+            PlatformPost.all_objects.filter(
+                social_account_id=platform_post.social_account_id,
+                published_at__gte=since - timedelta(days=1),
+            )
+            .exclude(pk=platform_post.pk)
+            .exclude(platform_post_id="")
+            .values_list("platform_post_id", flat=True)
+        )
+        try:
+            found = provider.find_published_post(
+                access_token,
+                content,
+                since=since - OUTCOME_LOOKUP_SLACK,
+                exclude_ids=exclude_ids,
+            )
+        except Exception as lookup_exc:
+            if cause is not None:
+                error = cause
+            else:
+                error = PublishOutcomeUnknownError(
+                    f"Ein früherer Versuch hat von {label} keine eindeutige Antwort erhalten.",
+                    platform=label,
+                )
+            error.outcome_since = since
+            if isinstance(lookup_exc, PublishLookupUnavailableError):
+                error.lookup_unavailable = str(lookup_exc)
+            else:
+                logger.warning("Lookup of PlatformPost %s on %s failed: %s", platform_post.id, label, lookup_exc)
+                error.lookup_failed = f"{type(lookup_exc).__name__}: {lookup_exc}"
+            raise error from (cause.__cause__ if cause is not None else lookup_exc)
+
+        if found is None:
+            if cause is not None:
+                cause.outcome_since = since
+            return None
+
+        logger.warning(
+            "PlatformPost %s: %s already shows the post (%s) after an unclear attempt, adopting it",
+            platform_post.id,
+            label,
+            found.platform_post_id,
+        )
+        warning = (
+            f"{label} hatte auf einen Veröffentlichungsversuch nicht eindeutig geantwortet, der Beitrag "
+            f"war dort aber schon erschienen (ID {found.platform_post_id}). Er wurde übernommen und nicht "
+            f"erneut gepostet."
+        )
+        return {
+            "success": True,
+            "platform_post_id": found.platform_post_id,
+            "url": found.url,
+            "response": {**(found.extra or {}), "publish_warning": warning},
+        }
+
+    def _settle_outcome_unknown(self, platform_post, error):
+        """Settle an attempt whose post may be live (``PublishOutcomeUnknownError``).
+
+        The lookup right after the error found nothing (or could not run).
+        With retries left and a platform that can be checked, the row is
+        retried with ``outcome_unknown_since`` set, so the next attempt looks
+        again before it posts. Otherwise it fails for a human to check –
+        no automatic retry.
+        """
+        label = _platform_label(platform_post)
+        since = (
+            platform_post.outcome_unknown_since
+            or error.outcome_since
+            or platform_post.publishing_started_at
+            or timezone.now()
+        )
+        technical = f" Technische Ursache: {error}"
+        if error.lookup_unavailable or platform_post.retry_count >= MAX_RETRIES:
+            if error.lookup_unavailable:
+                reason = f" Nachsehen ist nicht möglich: {error.lookup_unavailable}"
+            else:
+                reason = f" Auch nach {MAX_RETRIES + 1} Versuchen war das nicht zu klären."
+            if error.lookup_failed:
+                reason += f" Das letzte Nachsehen schlug fehl ({error.lookup_failed})."
+            message = (
+                f"Möglicherweise schon veröffentlicht – bitte auf {label} prüfen und nur neu einplanen, "
+                f"wenn der Beitrag dort fehlt. {label} hat auf die Veröffentlichung nicht eindeutig "
+                f"geantwortet; ein automatischer neuer Versuch könnte ihn doppelt posten.{reason}{technical}"
+            )
+            # _fail_permanently would prefix its own warning for a row with an
+            # unclear earlier attempt; this message already says it all.
+            platform_post.outcome_unknown_since = None
+            self._fail_permanently(platform_post, message, reason="outcome unknown")
+            return
+
+        platform_post.outcome_unknown_since = since
+        if error.lookup_failed:
+            found_text = f"nachsehen, ob er dort schon erschienen ist, ging nicht ({error.lookup_failed})"
+        else:
+            found_text = "der Beitrag war dort aber nicht zu finden"
+        message = (
+            f"{label} hat auf die Veröffentlichung nicht eindeutig geantwortet, {found_text}. Vor dem "
+            f"nächsten Versuch wird erneut nachgesehen, damit er nicht doppelt erscheint.{technical}"
+        )
+        self._schedule_retry(platform_post, message)
 
     @staticmethod
     def _block_on_foreign_characters(content) -> None:
@@ -756,10 +925,20 @@ class PublishEngine:
         series (first-attempt path, full backoff) instead of inheriting
         ``retry_count=3`` and failing for good after a single try.
         """
+        if platform_post.outcome_unknown_since:
+            # The series ends on another error, but an earlier attempt got an
+            # unclear answer and may be live: whoever reschedules must know.
+            label = _platform_label(platform_post)
+            error_msg = (
+                f"Möglicherweise schon veröffentlicht – ein früherer Versuch bekam von {label} keine "
+                f"eindeutige Antwort; bitte auf {label} prüfen, bevor der Beitrag neu eingeplant wird. "
+                f"Letzter Fehler: {error_msg}"
+            )
         platform_post.status = PlatformPost.Status.FAILED
         platform_post.publish_error = error_msg
         platform_post.retry_count = 0
         platform_post.next_retry_at = None
+        platform_post.outcome_unknown_since = None
         platform_post.save()
         logger.warning(
             "PlatformPost %s failed (%s): %s",
@@ -897,17 +1076,32 @@ class PublishEngine:
                 self._fail_permanently(pp, message, reason="interrupted after the platform accepted it")
             elif pp.publishing_started_at is not None and pp.dispatched_at is None:
                 if pp.retry_count >= MAX_RETRIES:
-                    message = (
-                        f"Die Veröffentlichung wurde {MAX_RETRIES + 1}-mal abgebrochen, jedes Mal vor der "
-                        f"Übergabe an {label}. Nichts ist erschienen; bitte Ursache prüfen und neu "
-                        f"einplanen.{detail}"
-                    )
+                    if pp.outcome_unknown_since:
+                        # _fail_permanently adds the "may already be live" warning.
+                        message = (
+                            f"Die Veröffentlichung wurde {MAX_RETRIES + 1}-mal abgebrochen, der letzte "
+                            f"Versuch vor der Übergabe an {label}.{detail}"
+                        )
+                    else:
+                        message = (
+                            f"Die Veröffentlichung wurde {MAX_RETRIES + 1}-mal abgebrochen, jedes Mal vor der "
+                            f"Übergabe an {label}. Nichts ist erschienen; bitte Ursache prüfen und neu "
+                            f"einplanen.{detail}"
+                        )
                     self._fail_permanently(pp, message, reason="interrupted before dispatch, retries exhausted")
                 else:
-                    message = (
-                        f"Der letzte Versuch wurde vor der Übergabe an {label} abgebrochen (Worker-Neustart "
-                        f"oder Absturz), es ist nichts erschienen. Er wird automatisch wiederholt.{detail}"
-                    )
+                    if pp.outcome_unknown_since:
+                        message = (
+                            f"Der letzte Versuch wurde vor der Übergabe an {label} abgebrochen (Worker-Neustart "
+                            f"oder Absturz). Ein früherer Versuch bekam keine eindeutige Antwort; vor dem "
+                            f"automatischen neuen Versuch wird auf {label} nachgesehen, ob der Beitrag schon "
+                            f"erschienen ist.{detail}"
+                        )
+                    else:
+                        message = (
+                            f"Der letzte Versuch wurde vor der Übergabe an {label} abgebrochen (Worker-Neustart "
+                            f"oder Absturz), es ist nichts erschienen. Er wird automatisch wiederholt.{detail}"
+                        )
                     # Same backoff as any other failed attempt.
                     backoff_seconds = RETRY_BACKOFF[min(pp.retry_count, len(RETRY_BACKOFF) - 1)]
                     pp.retry_count += 1

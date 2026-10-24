@@ -355,13 +355,15 @@ class GoogleBusinessProvider(SocialProvider):
         """Publish a local post to Google Business Profile."""
         body = self.build_post_body(content)
         parent = self._post_parent(access_token, content.extra)
-        resp = self._request(
-            "POST",
-            f"{POSTS_API}/{parent}/localPosts",
-            access_token=access_token,
-            json=body,
-        )
-        data = resp.json()
+        # The commit: an unclear answer may hide a live post (providers/base.py).
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{POSTS_API}/{parent}/localPosts",
+                access_token=access_token,
+                json=body,
+            )
+            data = resp.json()
         if data.get("state") == "REJECTED":
             raise PublishError(
                 "Google rejected the local post (state REJECTED) – check text and image against the content policy",

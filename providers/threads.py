@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from urllib.parse import urlencode
 
 from .base import SocialProvider
-from .exceptions import OAuthError, PublishError
+from .exceptions import APIError, OAuthError, PublishError, PublishLookupUnavailableError
+from .published_lookup import find_by_text, graph_page_fetcher, is_meta_ambiguous_error
 from .types import (
     AccountProfile,
     AuthType,
@@ -308,17 +310,73 @@ class ThreadsProvider(SocialProvider):
             self._wait_for_container(access_token, creation_id)
 
         # Step 2: Publish the container
-        publish_resp = self._request(
-            "POST",
-            f"{API_BASE}/{user_id}/threads_publish",
-            access_token=access_token,
-            data={"creation_id": creation_id},
-        )
-        publish_body = publish_resp.json()
-        thread_id = publish_body.get("id", "")
+        return self._publish_container(access_token, user_id, creation_id)
+
+    def _publish_container(self, access_token: str, user_id: str, creation_id: str) -> PublishResult:
+        """threads_publish – the commit. Containers before it are safe to repeat;
+        an unclear answer from here on is not (Threads answered 500 "unexpected
+        error" on four publishes between 26.09. and 14.10.2026)."""
+        with self.publish_commit():
+            publish_resp = self._request(
+                "POST",
+                f"{API_BASE}/{user_id}/threads_publish",
+                access_token=access_token,
+                data={"creation_id": creation_id},
+            )
+            publish_body = publish_resp.json()
+            thread_id = publish_body.get("id", "")
+            if not thread_id:
+                raise PublishError(
+                    "Threads threads_publish answered without a thread id",
+                    platform=self.platform_name,
+                    raw_response=publish_body,
+                )
         return PublishResult(
             platform_post_id=thread_id,
             extra=publish_body,
+        )
+
+    # ------------------------------------------------------------------
+    # Unknown publish outcome
+    # ------------------------------------------------------------------
+
+    def _is_ambiguous_api_error(self, exc: APIError) -> bool:
+        return is_meta_ambiguous_error(exc)
+
+    def find_published_post(
+        self,
+        access_token: str,
+        content: PublishContent,
+        *,
+        since: datetime,
+        exclude_ids=frozenset(),
+    ) -> PublishResult | None:
+        """Look for the text among the profile's threads since ``since``."""
+        user_id = content.extra.get("user_id") or self.get_profile(access_token).platform_id
+        if not user_id:
+            raise PublishLookupUnavailableError("Threads-Profil unbekannt.", platform=self.platform_name)
+        found = find_by_text(
+            graph_page_fetcher(
+                self,
+                access_token,
+                f"{API_BASE}/{user_id}/threads",
+                fields="id,text,timestamp,permalink",
+                text_key="text",
+                time_key="timestamp",
+                url_key="permalink",
+            ),
+            # Sent truncated to the limit (see _publish_single).
+            text=(content.text or "")[: self.max_caption_length],
+            since=since,
+            exclude_ids=exclude_ids,
+            platform=self.platform_name,
+        )
+        if found is None:
+            return None
+        return PublishResult(
+            platform_post_id=found.id,
+            url=found.url or None,
+            extra={"adopted_existing_post": True},
         )
 
     def _wait_for_container(self, access_token: str, creation_id: str) -> None:
@@ -437,18 +495,7 @@ class ThreadsProvider(SocialProvider):
         self._wait_for_container(access_token, creation_id)
 
         # Step 3: Publish
-        publish_resp = self._request(
-            "POST",
-            f"{API_BASE}/{user_id}/threads_publish",
-            access_token=access_token,
-            data={"creation_id": creation_id},
-        )
-        publish_body = publish_resp.json()
-        thread_id = publish_body.get("id", "")
-        return PublishResult(
-            platform_post_id=thread_id,
-            extra=publish_body,
-        )
+        return self._publish_container(access_token, user_id, creation_id)
 
     # ------------------------------------------------------------------
     # Comments (replies)

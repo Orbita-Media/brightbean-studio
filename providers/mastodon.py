@@ -322,16 +322,20 @@ class MastodonProvider(SocialProvider):
         if content.extra.get("in_reply_to_id"):
             params["in_reply_to_id"] = content.extra["in_reply_to_id"]
 
-        resp = self._request(
-            "POST",
-            f"{self.instance_url}/api/v1/statuses",
-            access_token=access_token,
-            data=params,
-        )
-        data = resp.json()
+        # The commit: media uploads above are safe to repeat. An unclear
+        # answer here may hide a live status (see providers/base.py).
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{self.instance_url}/api/v1/statuses",
+                access_token=access_token,
+                data=params,
+            )
+            data = resp.json()
+            status_id = data["id"]
 
         return PublishResult(
-            platform_post_id=data["id"],
+            platform_post_id=status_id,
             url=data.get("url"),
             extra=data,
         )

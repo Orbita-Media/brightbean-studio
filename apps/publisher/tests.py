@@ -155,6 +155,9 @@ def _build_dispatch_mocks(
     platform_post.effective_title = None
     platform_post.effective_first_comment = None
     platform_post.platform_extra = platform_extra or {}
+    # No unclear earlier attempt: the dispatch goes straight to the provider
+    # (a MagicMock attribute would be truthy and trigger the lookup).
+    platform_post.outcome_unknown_since = None
 
     mock_provider = MagicMock()
     mock_provider.auth_type = AuthType.OAUTH2

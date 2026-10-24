@@ -19,9 +19,10 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 from .base import SocialProvider
-from .exceptions import APIError, OAuthError, PublishError
+from .exceptions import APIError, OAuthError, PublishError, PublishLookupUnavailableError
 from .instagram_trial import build_trial_params, trial_params_field
 from .meta_insights import fetch_insights_safe
+from .published_lookup import is_meta_ambiguous_error, lookup_instagram_media
 from .story import instagram_story_fields
 from .types import (
     AccountMetrics,
@@ -480,18 +481,57 @@ class InstagramLoginProvider(SocialProvider):
         )
 
     def _publish_container(self, access_token: str, container_id: str) -> PublishResult:
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/me/media_publish",
-            access_token=access_token,
-            json={"creation_id": container_id},
-        )
-        data = resp.json()
-        media_id = data.get("id", "")
+        # The commit: containers and status polls before it are safe to repeat,
+        # an unclear answer from here on is not (see InstagramProvider).
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{API_BASE}/me/media_publish",
+                access_token=access_token,
+                json={"creation_id": container_id},
+            )
+            data = resp.json()
+            media_id = data.get("id", "")
+            if not media_id:
+                raise PublishError(
+                    "Instagram media_publish answered without a media id",
+                    platform=self.platform_name,
+                    raw_response=data,
+                )
         return PublishResult(
             platform_post_id=media_id,
             url=f"https://www.instagram.com/p/{media_id}/",
             extra=data,
+        )
+
+    # ------------------------------------------------------------------
+    # Unknown publish outcome
+    # ------------------------------------------------------------------
+
+    def _is_ambiguous_api_error(self, exc: APIError) -> bool:
+        return is_meta_ambiguous_error(exc)
+
+    def find_published_post(
+        self,
+        access_token: str,
+        content: PublishContent,
+        *,
+        since: datetime,
+        exclude_ids=frozenset(),
+    ) -> PublishResult | None:
+        """Look for the caption among the account's media (stories: see InstagramProvider)."""
+        if content.post_type == PostType.STORY:
+            raise PublishLookupUnavailableError(
+                "Eine Instagram-Story hat keinen Text, an dem sie sich sicher wiedererkennen ließe.",
+                platform=self.platform_name,
+            )
+        return lookup_instagram_media(
+            self,
+            access_token,
+            f"{API_BASE}/me/media",
+            content,
+            since=since,
+            exclude_ids=exclude_ids,
         )
 
     # ------------------------------------------------------------------

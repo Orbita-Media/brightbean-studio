@@ -176,19 +176,20 @@ def test_publish_multi_photo_rejects_too_many_photos():
 
 
 def test_publish_multi_photo_cleans_up_staged_photos_on_feed_failure():
-    """If the feed post fails, every already-staged photo is deleted (best effort)."""
+    """If Facebook refuses the feed post, every already-staged photo is deleted (best effort)."""
     provider = FacebookProvider({"client_id": "id", "client_secret": "secret"})
+    refused = APIError("Facebook API error 400: invalid attached_media", status_code=400)
     provider._request = MagicMock(
         side_effect=[
             MagicMock(json=MagicMock(return_value={"id": "photo-1"})),
             MagicMock(json=MagicMock(return_value={"id": "photo-2"})),
-            MagicMock(json=MagicMock(return_value={"success": True})),  # feed: no id
+            refused,  # feed refused
             MagicMock(json=MagicMock(return_value={})),  # delete photo-1
             MagicMock(json=MagicMock(return_value={})),  # delete photo-2
         ]
     )
 
-    with pytest.raises(PublishError, match="Failed to publish Facebook multi-photo post"):
+    with pytest.raises(APIError, match="invalid attached_media"):
         provider.publish_post(
             "page-token",
             PublishContent(

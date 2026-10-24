@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 from .base import SocialProvider
 from .exceptions import PublishError
+from .published_lookup import Candidate, find_by_text, parse_time
 from .types import (
     AccountProfile,
     AuthType,
@@ -335,17 +336,90 @@ class BlueskyProvider(SocialProvider):
         if embed:
             record["embed"] = embed
 
-        resp = self._request(
-            "POST",
-            f"{self.pds_url}/xrpc/com.atproto.repo.createRecord",
+        # The commit: blobs above are safe to upload again, a record whose
+        # answer got lost (read timeout 01.10.2026, 502 UpstreamFailure
+        # 25.09.2026) may already be live.
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{self.pds_url}/xrpc/com.atproto.repo.createRecord",
+                access_token=access_token,
+                json={
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "record": record,
+                },
+            )
+            data = resp.json()
+            if not data.get("uri"):
+                raise PublishError(
+                    "Bluesky createRecord answered without a record uri",
+                    platform=self.platform_name,
+                    raw_response=data,
+                )
+        return data
+
+    # ------------------------------------------------------------------
+    # Unknown publish outcome
+    # ------------------------------------------------------------------
+
+    def find_published_post(
+        self,
+        access_token: str,
+        content: PublishContent,
+        *,
+        since: datetime,
+        exclude_ids=frozenset(),
+    ) -> PublishResult | None:
+        """Look for the text among the repo's own post records since ``since``.
+
+        ``createdAt`` is written by this app, so it is compared against the
+        same clock as ``since``.
+        """
+        session = self._request(
+            "GET",
+            f"{self.pds_url}/xrpc/com.atproto.server.getSession",
             access_token=access_token,
-            json={
-                "repo": did,
-                "collection": "app.bsky.feed.post",
-                "record": record,
-            },
+        ).json()
+        did = session["did"]
+        handle = session.get("handle", "")
+
+        def fetch(cursor):
+            params = {"repo": did, "collection": "app.bsky.feed.post", "limit": 50}
+            if cursor:
+                params["cursor"] = cursor
+            body = self._request(
+                "GET",
+                f"{self.pds_url}/xrpc/com.atproto.repo.listRecords",
+                access_token=access_token,
+                params=params,
+            ).json()
+            candidates = [
+                Candidate(
+                    id=record["uri"],
+                    text=(record.get("value") or {}).get("text") or "",
+                    published_at=parse_time((record.get("value") or {}).get("createdAt")),
+                )
+                for record in body.get("records") or []
+                if record.get("uri")
+            ]
+            return candidates, body.get("cursor") if candidates else None
+
+        found = find_by_text(
+            fetch,
+            text=content.text,
+            since=since,
+            exclude_ids=exclude_ids,
+            platform=self.platform_name,
         )
-        return resp.json()
+        if found is None:
+            return None
+        rkey = found.id.split("/")[-1]
+        return PublishResult(
+            platform_post_id=found.id,
+            url=f"https://bsky.app/profile/{handle}/post/{rkey}" if handle else None,
+            extra={"uri": found.id, "adopted_existing_post": True},
+        )
 
     # ------------------------------------------------------------------
     # Rich text facet parsing

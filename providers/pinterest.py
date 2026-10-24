@@ -313,14 +313,24 @@ class PinterestProvider(SocialProvider):
         return result
 
     def _create_pin(self, access_token: str, payload: dict) -> PublishResult:
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/pins",
-            access_token=access_token,
-            json=payload,
-        )
-        body = resp.json()
-        pin_id = body.get("id", "")
+        # The commit of every pin type: video uploads before it are safe to
+        # repeat, an unclear answer here may hide a live pin (providers/base.py).
+        # A 400 still passes through unchanged for the carousel fallback.
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{API_BASE}/pins",
+                access_token=access_token,
+                json=payload,
+            )
+            body = resp.json()
+            pin_id = body.get("id", "")
+            if not pin_id:
+                raise PublishError(
+                    "Pinterest created the pin without returning its id",
+                    platform=self.platform_name,
+                    raw_response=body,
+                )
         return PublishResult(
             platform_post_id=pin_id,
             url=f"https://www.pinterest.com/pin/{pin_id}/" if pin_id else None,

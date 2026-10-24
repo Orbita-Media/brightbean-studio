@@ -299,6 +299,28 @@ class LinkedInProvider(SocialProvider):
             "lifecycleState": "PUBLISHED",
         }
 
+    def _create_post(self, access_token: str, body: dict) -> str:
+        """POST /rest/posts – the commit of every post type; returns the post URN.
+
+        Image, document and video uploads before it are safe to repeat. An
+        unclear answer here may hide a live post (providers/base.py).
+        """
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{API_BASE}/rest/posts",
+                access_token=access_token,
+                headers=LINKEDIN_HEADERS,
+                json=body,
+            )
+            post_urn = resp.headers.get("x-restli-id", "")
+            if not post_urn:
+                raise PublishError(
+                    "LinkedIn created the post without returning its URN (x-restli-id)",
+                    platform=self.platform_name,
+                )
+        return post_urn
+
     def _publish_text_post(self, access_token: str, author: str, content: PublishContent) -> PublishResult:
         body = self._build_post_body(author, content.text)
 
@@ -311,14 +333,7 @@ class LinkedInProvider(SocialProvider):
                 }
             }
 
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/rest/posts",
-            access_token=access_token,
-            headers=LINKEDIN_HEADERS,
-            json=body,
-        )
-        post_urn = resp.headers.get("x-restli-id", "")
+        post_urn = self._create_post(access_token, body)
         return PublishResult(
             platform_post_id=post_urn,
             url=self._post_urn_to_url(post_urn),
@@ -369,14 +384,7 @@ class LinkedInProvider(SocialProvider):
             media["altText"] = alt_text
         body["content"] = {"media": media}
 
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/rest/posts",
-            access_token=access_token,
-            headers=LINKEDIN_HEADERS,
-            json=body,
-        )
-        post_urn = resp.headers.get("x-restli-id", "")
+        post_urn = self._create_post(access_token, body)
         return PublishResult(
             platform_post_id=post_urn,
             url=self._post_urn_to_url(post_urn),
@@ -414,14 +422,7 @@ class LinkedInProvider(SocialProvider):
         body = self._build_post_body(author, content.text)
         body["content"] = {"multiImage": {"images": images}}
 
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/rest/posts",
-            access_token=access_token,
-            headers=LINKEDIN_HEADERS,
-            json=body,
-        )
-        post_urn = resp.headers.get("x-restli-id", "")
+        post_urn = self._create_post(access_token, body)
         return PublishResult(
             platform_post_id=post_urn,
             url=self._post_urn_to_url(post_urn),
@@ -486,14 +487,7 @@ class LinkedInProvider(SocialProvider):
         title = (content.title or os.path.basename(source.split("?")[0]) or "Dokument")[:400]
         body["content"] = {"media": {"title": title, "id": document_urn}}
 
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/rest/posts",
-            access_token=access_token,
-            headers=LINKEDIN_HEADERS,
-            json=body,
-        )
-        post_urn = resp.headers.get("x-restli-id", "")
+        post_urn = self._create_post(access_token, body)
         return PublishResult(
             platform_post_id=post_urn,
             url=self._post_urn_to_url(post_urn),
@@ -628,14 +622,7 @@ class LinkedInProvider(SocialProvider):
             media["altText"] = alt_text
         body["content"] = {"media": media}
 
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/rest/posts",
-            access_token=access_token,
-            headers=LINKEDIN_HEADERS,
-            json=body,
-        )
-        post_urn = resp.headers.get("x-restli-id", "")
+        post_urn = self._create_post(access_token, body)
         return PublishResult(
             platform_post_id=post_urn,
             url=self._post_urn_to_url(post_urn),
@@ -651,14 +638,7 @@ class LinkedInProvider(SocialProvider):
                 "description": content.description or "",
             }
         }
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/rest/posts",
-            access_token=access_token,
-            headers=LINKEDIN_HEADERS,
-            json=body,
-        )
-        post_urn = resp.headers.get("x-restli-id", "")
+        post_urn = self._create_post(access_token, body)
         return PublishResult(
             platform_post_id=post_urn,
             url=self._post_urn_to_url(post_urn),
@@ -686,14 +666,7 @@ class LinkedInProvider(SocialProvider):
                 },
             }
         }
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/rest/posts",
-            access_token=access_token,
-            headers=LINKEDIN_HEADERS,
-            json=body,
-        )
-        post_urn = resp.headers.get("x-restli-id", "")
+        post_urn = self._create_post(access_token, body)
         return PublishResult(
             platform_post_id=post_urn,
             url=self._post_urn_to_url(post_urn),

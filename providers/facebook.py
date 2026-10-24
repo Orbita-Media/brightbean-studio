@@ -8,11 +8,12 @@ from datetime import datetime
 from urllib.parse import urlencode, urlparse
 
 from .base import SocialProvider
-from .exceptions import APIError, OAuthError, PublishError
+from .exceptions import APIError, OAuthError, PublishError, PublishLookupUnavailableError, PublishOutcomeUnknownError
 from .meta_business import pages_when_me_accounts_is_empty
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe, parse_insights_response
 from .meta_pages import SOURCE_ME_ACCOUNTS
+from .published_lookup import find_by_text, graph_page_fetcher, is_meta_ambiguous_error
 from .story import check_story_content
 from .types import (
     AccountMetrics,
@@ -354,14 +355,15 @@ class FacebookProvider(SocialProvider):
         payload: dict = {"message": content.text}
         if content.link_url:
             payload["link"] = content.link_url
-        resp = self._request(
-            "POST",
-            f"{BASE_URL}/{page_id}/feed",
-            access_token=access_token,
-            json=payload,
-        )
-        data = resp.json()
-        post_id = self._stored_post_id(data["id"])
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{BASE_URL}/{page_id}/feed",
+                access_token=access_token,
+                json=payload,
+            )
+            data = resp.json()
+            post_id = self._stored_post_id(data["id"])
         return PublishResult(
             platform_post_id=post_id,
             url=f"https://www.facebook.com/{data['id']}",
@@ -378,14 +380,17 @@ class FacebookProvider(SocialProvider):
         alt_text = content.alt_text_for(0, FACEBOOK_MAX_ALT_TEXT_LENGTH)
         if alt_text:
             payload["alt_text_custom"] = alt_text
-        resp = self._request(
-            "POST",
-            f"{BASE_URL}/{page_id}/photos",
-            access_token=access_token,
-            json=payload,
-        )
-        data = resp.json()
-        graph_post_id = data.get("post_id", data["id"])
+        # A published photo is the post itself: this upload is the commit
+        # (the "read operation timed out" of 15.10.2026 had published).
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{BASE_URL}/{page_id}/photos",
+                access_token=access_token,
+                json=payload,
+            )
+            data = resp.json()
+            graph_post_id = data.get("post_id", data["id"])
         post_id = self._stored_post_id(graph_post_id)
         return PublishResult(
             platform_post_id=post_id,
@@ -441,19 +446,24 @@ class FacebookProvider(SocialProvider):
             if content.text:
                 payload["message"] = content.text
 
-            data = self._request(
-                "POST",
-                f"{BASE_URL}/{page_id}/feed",
-                access_token=access_token,
-                json=payload,
-            ).json()
-            graph_post_id = data.get("id")
-            if not graph_post_id:
-                raise PublishError(
-                    "Failed to publish Facebook multi-photo post",
-                    platform=self.platform_name,
-                    raw_response=data,
-                )
+            with self.publish_commit():
+                data = self._request(
+                    "POST",
+                    f"{BASE_URL}/{page_id}/feed",
+                    access_token=access_token,
+                    json=payload,
+                ).json()
+                graph_post_id = data.get("id")
+                if not graph_post_id:
+                    raise PublishError(
+                        "Failed to publish Facebook multi-photo post",
+                        platform=self.platform_name,
+                        raw_response=data,
+                    )
+        except PublishOutcomeUnknownError:
+            # The post may be live with exactly these photos: deleting them
+            # would gut it. A retry stages fresh ones anyway.
+            raise
         except Exception:
             # Best-effort: remove any photos already staged as unpublished so a
             # partial failure (or a retry by the publisher) doesn't accumulate
@@ -491,14 +501,15 @@ class FacebookProvider(SocialProvider):
         payload: dict = {"file_url": content.media_urls[0]}
         if content.text:
             payload["description"] = content.text
-        resp = self._request(
-            "POST",
-            f"{BASE_URL}/{page_id}/videos",
-            access_token=access_token,
-            json=payload,
-        )
-        data = resp.json()
-        video_id = data["id"]
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{BASE_URL}/{page_id}/videos",
+                access_token=access_token,
+                json=payload,
+            )
+            data = resp.json()
+            video_id = data["id"]
         # Resolve the feed post id + permalink so analytics target the page post
         # and the stored URL is shareable. Best-effort: video processing is async,
         # so post_id may not be ready yet — fall back to the bare video id.
@@ -577,18 +588,22 @@ class FacebookProvider(SocialProvider):
                 raw_response=staged,
             )
         try:
-            data = self._request(
-                "POST",
-                f"{BASE_URL}/{page_id}/photo_stories",
-                access_token=access_token,
-                json={"photo_id": photo_id},
-            ).json()
-            if not data.get("success") or not data.get("post_id"):
-                raise PublishError(
-                    "Facebook: Foto-Story nicht veröffentlicht",
-                    platform=self.platform_name,
-                    raw_response=data,
-                )
+            with self.publish_commit():
+                data = self._request(
+                    "POST",
+                    f"{BASE_URL}/{page_id}/photo_stories",
+                    access_token=access_token,
+                    json={"photo_id": photo_id},
+                ).json()
+                if not data.get("success") or not data.get("post_id"):
+                    raise PublishError(
+                        "Facebook: Foto-Story nicht veröffentlicht",
+                        platform=self.platform_name,
+                        raw_response=data,
+                    )
+        except PublishOutcomeUnknownError:
+            # The story may be live and shows exactly this photo.
+            raise
         except Exception:
             # The staged photo is unpublished and useless without the story;
             # a retry uploads a fresh one ("a photo … can not have been used
@@ -633,18 +648,19 @@ class FacebookProvider(SocialProvider):
 
         self._wait_for_story_upload(access_token, video_id)
 
-        data = self._request(
-            "POST",
-            f"{BASE_URL}/{page_id}/video_stories",
-            access_token=access_token,
-            json={"upload_phase": "finish", "video_id": video_id},
-        ).json()
-        if not data.get("success") or not data.get("post_id"):
-            raise PublishError(
-                "Facebook: Video-Story nicht veröffentlicht",
-                platform=self.platform_name,
-                raw_response=data,
-            )
+        with self.publish_commit():
+            data = self._request(
+                "POST",
+                f"{BASE_URL}/{page_id}/video_stories",
+                access_token=access_token,
+                json={"upload_phase": "finish", "video_id": video_id},
+            ).json()
+            if not data.get("success") or not data.get("post_id"):
+                raise PublishError(
+                    "Facebook: Video-Story nicht veröffentlicht",
+                    platform=self.platform_name,
+                    raw_response=data,
+                )
         return self._story_result(access_token, page_id, data, media_id=video_id, media_type="video")
 
     def _wait_for_story_upload(self, access_token: str, video_id: str) -> None:
@@ -706,6 +722,59 @@ class FacebookProvider(SocialProvider):
             platform_post_id=post_id,
             url=url or f"https://www.facebook.com/stories/{page_id}/",
             extra={**data, "story": True, "media_id": media_id, "media_type": media_type},
+        )
+
+    # ------------------------------------------------------------------
+    # Unknown publish outcome
+    # ------------------------------------------------------------------
+
+    def _is_ambiguous_api_error(self, exc: APIError) -> bool:
+        return is_meta_ambiguous_error(exc)
+
+    def find_published_post(
+        self,
+        access_token: str,
+        content: PublishContent,
+        *,
+        since: datetime,
+        exclude_ids=frozenset(),
+    ) -> PublishResult | None:
+        """Look for the text among the page's ``published_posts`` since ``since``.
+
+        Photo, video, text and multi-photo posts all land there with their
+        text as ``message``. A story has no text and cannot be told apart.
+        """
+        if content.post_type == PostType.STORY:
+            raise PublishLookupUnavailableError(
+                "Eine Facebook-Story hat keinen Text, an dem sie sich sicher wiedererkennen ließe.",
+                platform=self.platform_name,
+            )
+        page_id = content.extra.get("page_id") or self.credentials.get("page_id")
+        if not page_id:
+            raise PublishLookupUnavailableError("Facebook-Seite unbekannt.", platform=self.platform_name)
+        found = find_by_text(
+            graph_page_fetcher(
+                self,
+                access_token,
+                f"{BASE_URL}/{page_id}/published_posts",
+                fields="id,message,created_time,permalink_url",
+                text_key="message",
+                time_key="created_time",
+                url_key="permalink_url",
+                params={"since": int(since.timestamp())},
+                id_of=self._stored_post_id,
+            ),
+            text=content.text,
+            since=since,
+            exclude_ids=exclude_ids,
+            platform=self.platform_name,
+        )
+        if found is None:
+            return None
+        return PublishResult(
+            platform_post_id=found.id,
+            url=found.url or f"https://www.facebook.com/{page_id}_{found.id}",
+            extra={"adopted_existing_post": True},
         )
 
     def set_video_thumbnail(self, access_token: str, video_id: str, image_path: str) -> dict:

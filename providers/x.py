@@ -260,21 +260,23 @@ class XProvider(SocialProvider):
         if len(text) > self.max_caption_length:
             text = text[: self.max_caption_length - 1] + "…"
 
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/tweets",
-            access_token=access_token,
-            json={"text": text},
-        )
-        body = resp.json()
-        data = body.get("data", {})
-        tweet_id = data.get("id", "")
-        if not tweet_id:
-            raise PublishError(
-                f"X tweet creation returned no id: {body}",
-                platform=self.platform_name,
-                raw_response=body,
+        # The commit: an unclear answer may hide a live tweet (providers/base.py).
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{API_BASE}/tweets",
+                access_token=access_token,
+                json={"text": text},
             )
+            body = resp.json()
+            data = body.get("data", {})
+            tweet_id = data.get("id", "")
+            if not tweet_id:
+                raise PublishError(
+                    f"X tweet creation returned no id: {body}",
+                    platform=self.platform_name,
+                    raw_response=body,
+                )
 
         username = data.get("edit_history_tweet_ids") and self.credentials.get("_handle_hint") or "i/web"
         return PublishResult(

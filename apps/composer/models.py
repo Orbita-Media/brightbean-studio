@@ -470,6 +470,11 @@ class PlatformPost(models.Model):
     # knows whether the post went out, so a human has to decide.
     publishing_started_at = models.DateTimeField(blank=True, null=True)
     dispatched_at = models.DateTimeField(blank=True, null=True)
+    # Start of the earliest attempt in the current series whose answer from
+    # the platform was unclear (lost response, 5xx after sending), so the post
+    # may already be live. While set, every further attempt first looks the
+    # post up on the platform and adopts it instead of posting it again.
+    outcome_unknown_since = models.DateTimeField(blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -141,20 +141,22 @@ class DevtoProvider(SocialProvider):
         if main_image:
             article["main_image"] = main_image
 
-        resp = self._request(
-            "POST",
-            f"{API_BASE}/articles",
-            headers=self._auth_headers(access_token),
-            json={"article": article},
-        )
-        data = resp.json()
-        article_id = data.get("id")
-        if not article_id:
-            raise PublishError(
-                f"DEV.to article creation returned no id: {data}",
-                platform=self.platform_name,
-                raw_response=data,
+        # The commit: an unclear answer may hide a live article (providers/base.py).
+        with self.publish_commit():
+            resp = self._request(
+                "POST",
+                f"{API_BASE}/articles",
+                headers=self._auth_headers(access_token),
+                json={"article": article},
             )
+            data = resp.json()
+            article_id = data.get("id")
+            if not article_id:
+                raise PublishError(
+                    f"DEV.to article creation returned no id: {data}",
+                    platform=self.platform_name,
+                    raw_response=data,
+                )
         return PublishResult(
             platform_post_id=str(article_id),
             url=data.get("url"),

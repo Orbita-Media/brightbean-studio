@@ -389,22 +389,30 @@ class TikTokProvider(SocialProvider):
             )
         return privacy_level
 
-    def _init_video_publish(self, access_token: str, payload: dict) -> dict:
+    def _init_video_publish(self, access_token: str, payload: dict, *, commit: bool) -> dict:
         """POST to /post/publish/video/init/ and return the parsed body.
 
         Permanent TikTok error codes are re-raised as non-retryable
         PublishErrors via :meth:`_raise_classified_publish_error`.
+
+        ``commit``: with PULL_FROM_URL this call starts the publish itself, so
+        an unclear answer may hide a live video (providers/base.py). With
+        FILE_UPLOAD it only opens the upload slot and is safe to repeat.
         """
+        guard = self.publish_commit() if commit else contextlib.nullcontext()
         try:
-            resp = self._request(
-                "POST",
-                f"{API_BASE}/post/publish/video/init/",
-                access_token=access_token,
-                json=payload,
-            )
+            with guard:
+                resp = self._request(
+                    "POST",
+                    f"{API_BASE}/post/publish/video/init/",
+                    access_token=access_token,
+                    json=payload,
+                )
+                body = resp.json()
         except APIError as exc:
+            # A 4xx passes publish_commit unchanged and is classified here.
             self._raise_classified_publish_error(exc)
-        return resp.json()
+        return body
 
     def _build_post_info(self, content: PublishContent, privacy_level: str) -> dict:
         post_info: dict[str, str | bool | int] = {
@@ -507,17 +515,19 @@ class TikTokProvider(SocialProvider):
             "media_type": "PHOTO",
         }
 
+        # The commit: the photo post starts with this call (providers/base.py).
         try:
-            resp = self._request(
-                "POST",
-                f"{API_BASE}/post/publish/content/init/",
-                access_token=access_token,
-                json=payload,
-            )
+            with self.publish_commit():
+                resp = self._request(
+                    "POST",
+                    f"{API_BASE}/post/publish/content/init/",
+                    access_token=access_token,
+                    json=payload,
+                )
+                body = resp.json()
         except APIError as exc:
             self._raise_classified_publish_error(exc)
 
-        body = resp.json()
         publish_id = body.get("data", {}).get("publish_id", "")
         return PublishResult(
             platform_post_id=publish_id,
@@ -538,7 +548,7 @@ class TikTokProvider(SocialProvider):
                 "video_url": content.media_urls[0],
             },
         }
-        body = self._init_video_publish(access_token, payload)
+        body = self._init_video_publish(access_token, payload, commit=True)
         publish_id = body.get("data", {}).get("publish_id", "")
         return PublishResult(
             platform_post_id=publish_id,
@@ -575,7 +585,7 @@ class TikTokProvider(SocialProvider):
                 "total_chunk_count": 1,
             },
         }
-        init_body = self._init_video_publish(access_token, payload)
+        init_body = self._init_video_publish(access_token, payload, commit=False)
         upload_url = init_body.get("data", {}).get("upload_url")
         publish_id = init_body.get("data", {}).get("publish_id", "")
 
@@ -589,17 +599,20 @@ class TikTokProvider(SocialProvider):
         # Step 2: stream the video binary to TikTok's presigned URL
         with open(video_path, "rb") as f:
             video_bytes = f.read()
-        self._request(
-            "PUT",
-            upload_url,
-            headers={
-                "Content-Type": content_type,
-                "Content-Length": str(video_size),
-                "Content-Range": f"bytes 0-{video_size - 1}/{video_size}",
-            },
-            data=video_bytes,
-            timeout=120.0,
-        )
+        # The commit: the single chunk completes the upload and TikTok
+        # publishes it (providers/base.py).
+        with self.publish_commit():
+            self._request(
+                "PUT",
+                upload_url,
+                headers={
+                    "Content-Type": content_type,
+                    "Content-Length": str(video_size),
+                    "Content-Range": f"bytes 0-{video_size - 1}/{video_size}",
+                },
+                data=video_bytes,
+                timeout=120.0,
+            )
 
         return PublishResult(
             platform_post_id=publish_id,

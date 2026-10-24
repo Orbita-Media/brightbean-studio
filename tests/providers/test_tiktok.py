@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from providers.exceptions import APIError, PublishError
+from providers.exceptions import APIError, PublishError, PublishOutcomeUnknownError
 from providers.tiktok import MAX_PHOTO_IMAGES, TikTokProvider
 from providers.types import PostType, PublishContent
 
@@ -532,12 +532,32 @@ class TestPublishPost:
         assert "to publish now" not in str(excinfo.value)
 
     @patch.object(TikTokProvider, "_request")
-    def test_init_unknown_error_stays_retryable(self, mock_request):
+    def test_init_server_error_on_pull_from_url_leaves_the_outcome_open(self, mock_request):
+        """PULL_FROM_URL init starts the publish itself: a 500 may hide a live video."""
         original = APIError(
             "TikTok API error 500",
             platform="TikTok",
             status_code=500,
             raw_response={"error": {"code": "internal_error"}},
+        )
+        mock_request.side_effect = [
+            _creator_info_response(["PUBLIC_TO_EVERYONE"]),
+            original,
+        ]
+
+        provider = TikTokProvider({"client_key": "k", "client_secret": "s"})
+        with pytest.raises(PublishOutcomeUnknownError) as excinfo:
+            provider.publish_post("tok", _video_content())
+
+        assert excinfo.value.__cause__ is original
+
+    @patch.object(TikTokProvider, "_request")
+    def test_init_unknown_4xx_error_stays_retryable(self, mock_request):
+        original = APIError(
+            "TikTok API error 400",
+            platform="TikTok",
+            status_code=400,
+            raw_response={"error": {"code": "invalid_params"}},
         )
         mock_request.side_effect = [
             _creator_info_response(["PUBLIC_TO_EVERYONE"]),
