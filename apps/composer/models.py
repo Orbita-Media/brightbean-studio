@@ -462,6 +462,14 @@ class PlatformPost(models.Model):
     )
     retry_count = models.PositiveIntegerField(default=0)
     next_retry_at = models.DateTimeField(blank=True, null=True)
+    # Publish-attempt bookkeeping for the stuck-row recovery in the publisher
+    # (apps/publisher/engine.py). ``publishing_started_at`` is stamped when the
+    # engine claims the row (→ publishing); ``dispatched_at`` right before the
+    # provider call. A row left in ``publishing`` without ``dispatched_at``
+    # provably never reached the platform and may be retried; with it, nobody
+    # knows whether the post went out, so a human has to decide.
+    publishing_started_at = models.DateTimeField(blank=True, null=True)
+    dispatched_at = models.DateTimeField(blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

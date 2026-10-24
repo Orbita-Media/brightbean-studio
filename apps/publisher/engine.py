@@ -25,6 +25,7 @@ from background_task import background
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -99,6 +100,22 @@ FIRST_COMMENT_DELAY = getattr(settings, "PUBLISHER_FIRST_COMMENT_DELAY", 120)
 MAX_CONCURRENT_PUBLISHES = getattr(settings, "PUBLISHER_MAX_CONCURRENT_PUBLISHES", 10)
 MAX_CONCURRENT_POSTS = getattr(settings, "PUBLISHER_MAX_CONCURRENT_POSTS", 4)
 
+# A row still in ``publishing`` this long after it was claimed has no live
+# attempt behind it any more. A cycle runs synchronously (it waits for every
+# publish thread before it returns), so within one worker nothing is in flight
+# when the sweep runs; the age only guards against a second, overlapping worker
+# – the old one gets 10 minutes to finish on a deploy (stop_grace_period in
+# docker-compose.coolify.yml).
+STUCK_PUBLISHING_AFTER = timedelta(minutes=getattr(settings, "PUBLISHER_STUCK_PUBLISHING_MINUTES", 30))
+
+
+def _platform_label(platform_post) -> str:
+    account = platform_post.social_account
+    try:
+        return account.get_platform_display() or account.platform
+    except Exception:
+        return getattr(account, "platform", "") or "der Plattform"
+
 
 class PublishEngine:
     """Orchestrates the publishing of scheduled posts."""
@@ -109,12 +126,27 @@ class PublishEngine:
         Called every ~15 seconds by the background worker. Groups due
         PlatformPosts by parent Post and publishes each group.
         """
-        due_pps = self._get_due_platform_posts()
+        # First settle rows an earlier attempt left in ``publishing`` (worker
+        # killed, thread crashed); see _recover_stuck_publishing.
+        try:
+            self._recover_stuck_publishing()
+        except Exception:
+            logger.exception("Recovery of stuck publishing rows failed")
 
-        # Group by parent post_id
+        published_count = self._publish_groups(self._get_due_platform_posts())
+
+        # Always process retries, even when no new posts are due
+        published_count += self._process_retries()
+
+        return published_count
+
+    def _publish_groups(self, due_pps):
+        """Group due PlatformPosts by parent Post and publish the groups in parallel."""
         groups: dict = {}
         for pp in due_pps:
             groups.setdefault(pp.post_id, []).append(pp)
+        if not groups:
+            return 0
 
         published_count = 0
         with ThreadPoolExecutor(max_workers=min(len(groups), MAX_CONCURRENT_POSTS) or 1) as executor:
@@ -128,16 +160,10 @@ class PublishEngine:
                     published_count += 1
                 except Exception:
                     logger.exception("Unexpected error publishing post group %s", post_id)
-
-        # Always process retries, even when no new posts are due
-        self._process_retries()
-
         return published_count
 
-    def _get_due_platform_posts(self):
-        """Find PlatformPosts due for publishing, using Coalesce fallback."""
-        now = timezone.now()
-        return list(
+    def _due_queryset(self, now):
+        return (
             PlatformPost.objects.filter(
                 status=PlatformPost.Status.SCHEDULED,
             )
@@ -148,8 +174,20 @@ class PublishEngine:
             # platform is already scheduled.
             .exclude(post__platform_posts__status=PlatformPost.Status.ON_HOLD)
             .select_related("post__workspace", "social_account")
-            .order_by("effective_at")[:MAX_CONCURRENT_PUBLISHES]
         )
+
+    def _get_due_platform_posts(self):
+        """Find fresh PlatformPosts due for publishing, using Coalesce fallback.
+
+        Only first attempts (``retry_count=0``). A row waiting for a retry is
+        SCHEDULED as well and its scheduled time lies in the past, so without
+        this filter the primary path grabbed it on the very next tick and the
+        backoff never applied (seen 14.10.2026: retries 10 s and 39 s apart
+        instead of 5 and 30 minutes; 23.10.2026: the retry ran before its
+        next_retry_at). Retries belong to _process_retries.
+        """
+        now = timezone.now()
+        return list(self._due_queryset(now).filter(retry_count=0).order_by("effective_at")[:MAX_CONCURRENT_PUBLISHES])
 
     def _publish_post_group(self, post, due_pps):
         """Publish a group of due PlatformPosts belonging to the same Post.
@@ -179,9 +217,7 @@ class PublishEngine:
             if not platform_posts:
                 return
 
-            PlatformPost.objects.filter(id__in=[pp.id for pp in platform_posts]).update(
-                status=PlatformPost.Status.PUBLISHING
-            )
+            self._claim(platform_posts)
 
         # Publish in parallel
         results = {}
@@ -192,7 +228,18 @@ class PublishEngine:
                 try:
                     results[pp.id] = future.result()
                 except Exception as e:
+                    # _publish_platform_post settles every expected failure
+                    # itself. Reaching this means it died half-way (e.g. the
+                    # database write of the failure itself failed) and the row
+                    # is still ``publishing``. This used to be swallowed
+                    # silently and left two posts hanging for a day (23.10.2026).
+                    logger.exception("Publishing PlatformPost %s crashed, settling the row", pp.id)
                     results[pp.id] = {"success": False, "error": str(e)}
+                    try:
+                        self._settle_interrupted(pp.id, cause=str(e) or type(e).__name__)
+                    except Exception:
+                        # The periodic sweep picks it up later.
+                        logger.exception("Could not settle crashed PlatformPost %s", pp.id)
 
         # Reflect the aggregate onto Post.published_at so dashboards that
         # display "last published" don't need to query every child.
@@ -234,79 +281,10 @@ class PublishEngine:
 
         try:
             # Get the provider for this platform
-            result = self._dispatch_to_provider(platform_post)
-
-            duration_ms = int((time.monotonic() - start_time) * 1000)
-
-            if result["success"]:
-                platform_post.platform_post_id = result.get("platform_post_id", "")
-                response_extra = result.get("response")
-                if isinstance(response_extra, dict) and response_extra:
-                    platform_post.platform_extra = {
-                        **(platform_post.platform_extra or {}),
-                        **response_extra,
-                    }
-                platform_post.status = PlatformPost.Status.PUBLISHED
-                platform_post.published_at = timezone.now()
-                platform_post.save()
-
-                # A published post leaves the queue: drop the QueueEntry that
-                # held this channel's slot so the queue shows only upcoming posts
-                # and the slot frees up as a gap. Best-effort and isolated: the
-                # publish has already succeeded, so a cleanup failure here must
-                # NOT fall through to the `except` below (which would schedule a
-                # retry and double-post). The PlatformPost + published_at are kept.
-                try:
-                    from apps.calendar.models import QueueEntry
-
-                    QueueEntry.objects.filter(
-                        post_id=platform_post.post_id,
-                        queue__social_account_id=platform_post.social_account_id,
-                    ).delete()
-                except Exception:
-                    logger.warning(
-                        "Failed to drop QueueEntry for published PlatformPost %s",
-                        platform_post.id,
-                        exc_info=True,
-                    )
-
-                # Log success. A provider may report a partial result on an
-                # otherwise successful publish (Bluesky: the root post is live
-                # but a continuation reply failed). That belongs in the log
-                # even though the post counts as published, because nothing
-                # else in the app would ever mention it.
-                warning = response_extra.get("publish_warning", "") if isinstance(response_extra, dict) else ""
-                if warning:
-                    logger.warning("PlatformPost %s published with a warning: %s", platform_post.id, warning)
-                PublishLog.objects.create(
-                    platform_post=platform_post,
-                    attempt_number=platform_post.retry_count + 1,
-                    status_code=result.get("status_code", 200),
-                    response_body=str(result.get("response", ""))[:1000],
-                    error_message=warning,
-                    duration_ms=duration_ms,
-                )
-
-                # Update rate limit state
-                self._update_rate_limit(account, result)
-
-                return result
-            else:
-                error_msg = result.get("error", "Unknown publish error")
-                duration_ms = int((time.monotonic() - start_time) * 1000)
-
-                PublishLog.objects.create(
-                    platform_post=platform_post,
-                    attempt_number=platform_post.retry_count + 1,
-                    status_code=result.get("status_code"),
-                    response_body=str(result.get("response", ""))[:1000],
-                    error_message=error_msg,
-                    duration_ms=duration_ms,
-                )
-
-                self._schedule_retry(platform_post, error_msg)
-                return result
-
+            result = self._dispatch_to_provider(
+                platform_post,
+                on_dispatch=lambda: self._mark_dispatched(platform_post),
+            )
         except Exception as e:
             duration_ms = int((time.monotonic() - start_time) * 1000)
             error_msg = str(e)
@@ -324,7 +302,93 @@ class PublishEngine:
                 self._fail_permanently(platform_post, error_msg)
             return {"success": False, "error": error_msg}
 
-    def _dispatch_to_provider(self, platform_post):
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        if not result["success"]:
+            error_msg = result.get("error", "Unknown publish error")
+
+            PublishLog.objects.create(
+                platform_post=platform_post,
+                attempt_number=platform_post.retry_count + 1,
+                status_code=result.get("status_code"),
+                response_body=str(result.get("response", ""))[:1000],
+                error_message=error_msg,
+                duration_ms=duration_ms,
+            )
+
+            self._schedule_retry(platform_post, error_msg)
+            return result
+
+        # The platform accepted the post. Nothing below may lead to a retry:
+        # it lived inside the try above, so a failing save or log write here
+        # rescheduled an already published post and it went out twice. Should
+        # it raise now, the row stays ``publishing`` with ``dispatched_at`` set
+        # and _publish_post_group settles it as "outcome unknown".
+        try:
+            self._record_success(platform_post, account, result, duration_ms)
+        except Exception as e:
+            platform_id = result.get("platform_post_id") or "?"
+            raise RuntimeError(
+                f"{_platform_label(platform_post)} meldete die Beitrags-ID {platform_id}, "
+                f"das Speichern als veröffentlicht schlug fehl: {e}"
+            ) from e
+        return result
+
+    def _record_success(self, platform_post, account, result, duration_ms):
+        platform_post.platform_post_id = result.get("platform_post_id", "")
+        response_extra = result.get("response")
+        if isinstance(response_extra, dict) and response_extra:
+            platform_post.platform_extra = {
+                **(platform_post.platform_extra or {}),
+                **response_extra,
+            }
+        platform_post.status = PlatformPost.Status.PUBLISHED
+        platform_post.published_at = timezone.now()
+        platform_post.save()
+
+        # A published post leaves the queue: drop the QueueEntry that held
+        # this channel's slot so the queue shows only upcoming posts and the
+        # slot frees up as a gap. Best-effort and isolated: the publish has
+        # already succeeded, so a cleanup failure here must not escalate. The
+        # PlatformPost + published_at are kept.
+        try:
+            from apps.calendar.models import QueueEntry
+
+            QueueEntry.objects.filter(
+                post_id=platform_post.post_id,
+                queue__social_account_id=platform_post.social_account_id,
+            ).delete()
+        except Exception:
+            logger.warning(
+                "Failed to drop QueueEntry for published PlatformPost %s",
+                platform_post.id,
+                exc_info=True,
+            )
+
+        # Log success. A provider may report a partial result on an otherwise
+        # successful publish (Bluesky: the root post is live but a
+        # continuation reply failed). That belongs in the log even though the
+        # post counts as published, because nothing else in the app would
+        # ever mention it.
+        warning = response_extra.get("publish_warning", "") if isinstance(response_extra, dict) else ""
+        if warning:
+            logger.warning("PlatformPost %s published with a warning: %s", platform_post.id, warning)
+        try:
+            PublishLog.objects.create(
+                platform_post=platform_post,
+                attempt_number=platform_post.retry_count + 1,
+                status_code=result.get("status_code", 200),
+                response_body=str(result.get("response", ""))[:1000],
+                error_message=warning,
+                duration_ms=duration_ms,
+            )
+            # Update rate limit state
+            self._update_rate_limit(account, result)
+        except Exception:
+            # Bookkeeping only; the post is published and saved as such.
+            logger.exception("Post-publish bookkeeping failed for PlatformPost %s", platform_post.id)
+
+    def _dispatch_to_provider(self, platform_post, on_dispatch=None):
         """Dispatch to the appropriate platform provider.
 
         Resolves credentials, refreshes tokens if needed, builds a
@@ -542,6 +606,10 @@ class PublishEngine:
                 len(media_files),
             )
             self._block_on_dropped_media(provider, platform_post, len(media_files))
+            # Last stop before the platform: from here on a crash leaves the
+            # outcome unknown, so the stuck-row recovery must not retry.
+            if on_dispatch is not None:
+                on_dispatch()
             result = provider.publish_post(access_token, content)
             return {
                 "success": True,
@@ -678,9 +746,17 @@ class PublishEngine:
         return PostType.TEXT
 
     def _fail_permanently(self, platform_post, error_msg, *, reason="non-retryable"):
-        """Mark a post FAILED with no further retries."""
+        """Mark a post FAILED with no further retries.
+
+        The retry counters belong to the attempt series that just ended and
+        are reset: a failed post that someone schedules again starts a fresh
+        series (first-attempt path, full backoff) instead of inheriting
+        ``retry_count=3`` and failing for good after a single try.
+        """
         platform_post.status = PlatformPost.Status.FAILED
         platform_post.publish_error = error_msg
+        platform_post.retry_count = 0
+        platform_post.next_retry_at = None
         platform_post.save()
         logger.warning(
             "PlatformPost %s failed (%s): %s",
@@ -698,8 +774,8 @@ class PublishEngine:
         backoff_seconds = RETRY_BACKOFF[min(platform_post.retry_count, len(RETRY_BACKOFF) - 1)]
         platform_post.retry_count += 1
         platform_post.next_retry_at = timezone.now() + timedelta(seconds=backoff_seconds)
-        # Drop back to SCHEDULED so the next _process_retries tick picks it up
-        # once next_retry_at passes.
+        # Drop back to SCHEDULED so _process_retries picks it up once
+        # next_retry_at passes (the first-attempt path skips retry rows).
         platform_post.status = PlatformPost.Status.SCHEDULED
         platform_post.publish_error = error_msg
         platform_post.save()
@@ -712,33 +788,150 @@ class PublishEngine:
         )
 
     def _process_retries(self):
-        """Process platform posts that are due for retry."""
-        now = timezone.now()
-        # Mirror the primary due-query's hold guard: a retrying child must not
-        # publish while any sibling is on_hold (the exclude covers the query
-        # window; the per-row re-check below closes a hold placed after it).
-        retry_posts = (
-            PlatformPost.objects.filter(
-                status=PlatformPost.Status.SCHEDULED,
-                retry_count__gt=0,
-                retry_count__lte=MAX_RETRIES,
-                next_retry_at__lte=now,
-            )
-            .exclude(post__platform_posts__status=PlatformPost.Status.ON_HOLD)
-            .select_related("social_account", "post")
-        )
+        """Publish platform posts whose retry backoff has elapsed.
 
-        for pp in retry_posts:
-            if pp.post.platform_posts.filter(status=PlatformPost.Status.ON_HOLD).exists():
-                continue
+        Runs through the same group path as first attempts (row lock, hold
+        re-check, first comment, parent published_at), so a retry is claimed
+        exactly like a first attempt. A row only counts as due when both its
+        backoff and its (possibly rescheduled) publish time have passed.
+        """
+        now = timezone.now()
+        retry_pps = list(
+            self._due_queryset(now)
+            .filter(retry_count__gt=0, retry_count__lte=MAX_RETRIES)
+            .filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=now))
+            .order_by("next_retry_at")[:MAX_CONCURRENT_PUBLISHES]
+        )
+        return self._publish_groups(retry_pps)
+
+    # ------------------------------------------------------------------
+    # Attempt bookkeeping and recovery of rows stuck in ``publishing``
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _claim(platform_posts):
+        """Move the locked, due rows to PUBLISHING and stamp the attempt start.
+
+        ``updated_at`` is set explicitly: a queryset update skips ``auto_now``,
+        which made the stuck rows of 23.10.2026 look as if nothing had touched
+        them since their last retry was scheduled.
+        """
+        now = timezone.now()
+        PlatformPost.all_objects.filter(id__in=[pp.id for pp in platform_posts]).update(
+            status=PlatformPost.Status.PUBLISHING,
+            publishing_started_at=now,
+            dispatched_at=None,
+            updated_at=now,
+        )
+        # Keep the in-memory rows in step: later full saves write these fields.
+        for pp in platform_posts:
+            pp.status = PlatformPost.Status.PUBLISHING
+            pp.publishing_started_at = now
+            pp.dispatched_at = None
+
+    @staticmethod
+    def _mark_dispatched(platform_post):
+        """Persist that the provider is about to be called for this attempt."""
+        now = timezone.now()
+        PlatformPost.all_objects.filter(pk=platform_post.pk).update(dispatched_at=now)
+        platform_post.dispatched_at = now
+
+    def _recover_stuck_publishing(self):
+        """Settle rows an earlier attempt left in ``publishing``.
+
+        Nothing else ever looks at a ``publishing`` row again, so one that
+        lost its attempt (worker killed mid-publish, crashed thread) used to
+        hang forever. Rows older than STUCK_PUBLISHING_AFTER are settled by
+        _settle_interrupted. Returns the number of rows settled.
+        """
+        cutoff = timezone.now() - STUCK_PUBLISHING_AFTER
+        stuck_ids = list(
+            PlatformPost.all_objects.filter(status=PlatformPost.Status.PUBLISHING)
+            .annotate(attempt_started=Coalesce("publishing_started_at", "updated_at"))
+            .filter(attempt_started__lt=cutoff)
+            .order_by("attempt_started")
+            .values_list("id", flat=True)[:50]
+        )
+        settled = 0
+        for pp_id in stuck_ids:
             try:
-                pp.status = PlatformPost.Status.PUBLISHING
-                pp.save(update_fields=["status", "updated_at"])
-                result = self._publish_platform_post(pp)
-                if result.get("success"):
-                    self._sync_parent_published_at(pp.post)
+                if self._settle_interrupted(pp_id) is not None:
+                    settled += 1
             except Exception:
-                logger.exception("Error retrying PlatformPost %s", pp.id)
+                logger.exception("Could not settle stuck PlatformPost %s", pp_id)
+        return settled
+
+    def _settle_interrupted(self, platform_post_id, *, cause=""):
+        """Settle one row whose attempt ended without a result.
+
+        Double posting is the worse failure, so an automatic retry happens
+        only when the row proves the platform was never called: the attempt
+        was claimed with a start stamp and ``dispatched_at`` is still empty.
+        Everything else goes to FAILED with a message that tells a human what
+        to check. Returns the new status, or None if the row is no longer
+        ``publishing`` (or is locked by someone else).
+        """
+        with transaction.atomic():
+            pp = (
+                PlatformPost.all_objects.select_for_update(skip_locked=True, of=("self",))
+                .select_related("social_account")
+                .filter(pk=platform_post_id, status=PlatformPost.Status.PUBLISHING)
+                .first()
+            )
+            if pp is None:
+                return None
+
+            label = _platform_label(pp)
+            detail = f" Technische Ursache: {cause}" if cause else ""
+            attempt_number = pp.retry_count + 1
+
+            if pp.platform_post_id:
+                message = (
+                    f"{label} hat den Beitrag angenommen (ID {pp.platform_post_id}), der Abschluss wurde "
+                    f"aber nicht gespeichert. Er ist sehr wahrscheinlich live: bitte auf {label} nachsehen "
+                    f"und nicht erneut einplanen.{detail}"
+                )
+                self._fail_permanently(pp, message, reason="interrupted after the platform accepted it")
+            elif pp.publishing_started_at is not None and pp.dispatched_at is None:
+                if pp.retry_count >= MAX_RETRIES:
+                    message = (
+                        f"Die Veröffentlichung wurde {MAX_RETRIES + 1}-mal abgebrochen, jedes Mal vor der "
+                        f"Übergabe an {label}. Nichts ist erschienen; bitte Ursache prüfen und neu "
+                        f"einplanen.{detail}"
+                    )
+                    self._fail_permanently(pp, message, reason="interrupted before dispatch, retries exhausted")
+                else:
+                    message = (
+                        f"Der letzte Versuch wurde vor der Übergabe an {label} abgebrochen (Worker-Neustart "
+                        f"oder Absturz), es ist nichts erschienen. Er wird automatisch wiederholt.{detail}"
+                    )
+                    # Same backoff as any other failed attempt.
+                    backoff_seconds = RETRY_BACKOFF[min(pp.retry_count, len(RETRY_BACKOFF) - 1)]
+                    pp.retry_count += 1
+                    pp.next_retry_at = timezone.now() + timedelta(seconds=backoff_seconds)
+                    pp.status = PlatformPost.Status.SCHEDULED
+                    pp.publish_error = message
+                    pp.save()
+                    logger.warning("PlatformPost %s was interrupted before dispatch, requeued", pp.id)
+            else:
+                not_recorded = (
+                    " Der Zeitpunkt der Übergabe wurde für diesen Versuch nicht erfasst."
+                    if pp.publishing_started_at is None
+                    else ""
+                )
+                message = (
+                    f"Die Veröffentlichung wurde unterbrochen, nachdem der Beitrag an {label} übergeben "
+                    f"worden sein kann. Ob er erschienen ist, ist unklar: bitte auf {label} nachsehen und "
+                    f"nur dann erneut einplanen, wenn er dort fehlt.{not_recorded}{detail}"
+                )
+                self._fail_permanently(pp, message, reason="interrupted, outcome unknown")
+
+            PublishLog.objects.create(
+                platform_post=pp,
+                attempt_number=attempt_number,
+                error_message=message,
+            )
+            return pp.status
 
     def _update_rate_limit(self, account, result):
         """Update rate limit state from API response headers."""

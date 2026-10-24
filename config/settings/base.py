@@ -201,6 +201,18 @@ if STORAGE_BACKEND.lower() == "s3":
     AWS_S3_OBJECT_PARAMETERS = {
         "CacheControl": "max-age=86400",
     }
+    # Bounded timeouts for R2. botocore's defaults (60 s connect, 60 s read,
+    # legacy retries) let one unreachable endpoint hold a publish attempt for
+    # over two minutes (23.10.2026: 131 s until "Could not connect to the
+    # endpoint URL"). Replaces django-storages' default Config, which only
+    # carried addressing_style / signature_version / proxies – all unset here.
+    from botocore.config import Config as _BotoConfig
+
+    AWS_S3_CLIENT_CONFIG = _BotoConfig(
+        connect_timeout=env.int("S3_CONNECT_TIMEOUT", default=10),
+        read_timeout=env.int("S3_READ_TIMEOUT", default=30),
+        retries={"max_attempts": 3, "mode": "standard"},
+    )
 else:
     # Local FS fallback so dev + test environments without S3 credentials
     # can still call default_storage / save uploaded files.
