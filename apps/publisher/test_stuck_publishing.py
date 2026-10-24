@@ -110,7 +110,11 @@ class RetryBackoffTest(_Base):
     def test_retry_runs_once_backoff_has_passed(self):
         from apps.composer.models import PlatformPost
 
-        pp = self._pp(retry_count=1, next_retry_at=timezone.now() - timedelta(seconds=1))
+        pp = self._pp(
+            retry_count=1,
+            next_retry_at=timezone.now() - timedelta(seconds=1),
+            publish_error="Could not connect to the endpoint URL",
+        )
         with patch.object(PublishEngine, "_dispatch_to_provider", return_value=SUCCESS) as dispatch:
             PublishEngine().poll_and_publish()
 
@@ -118,6 +122,7 @@ class RetryBackoffTest(_Base):
         pp.refresh_from_db()
         self.assertEqual(pp.status, PlatformPost.Status.PUBLISHED)
         self.assertEqual(pp.platform_post_id, "fb-123")
+        self.assertEqual(pp.publish_error, "")
         self.post.refresh_from_db()
         self.assertEqual(self.post.published_at, pp.published_at)
 

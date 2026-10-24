@@ -344,6 +344,9 @@ class PublishEngine:
             }
         platform_post.status = PlatformPost.Status.PUBLISHED
         platform_post.published_at = timezone.now()
+        # The error of an earlier attempt no longer applies (the API returns
+        # publish_error for every status); the PublishLog keeps the history.
+        platform_post.publish_error = ""
         platform_post.save()
 
         # A published post leaves the queue: drop the QueueEntry that held
