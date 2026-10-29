@@ -25,6 +25,6 @@ Abzeichen mit derselben ``data-bp-abzeichen``-ID.
   {% else %}
   <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l2.5 2.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
   {% endif %}
-  {% if form == 'thumb' %}<span class="truncate">{{ bp.kurz }}</span>{% elif form == 'karte' %}<span class="truncate"><span class="hidden sm:inline">Bildprüfung: </span>{{ bp.kurz }}</span>{% else %}<span class="truncate">{{ bp.titel }}</span>{% endif %}
+  {% if form == 'thumb' %}<span class="truncate">{{ bp.kurz }}</span>{% elif form == 'karte' %}<span class="truncate">{{ bp.kurz }}</span>{% else %}<span class="truncate">{{ bp.titel }}</span>{% endif %}
 </button>
 {% endif %}

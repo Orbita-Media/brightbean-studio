@@ -245,6 +245,14 @@ def apply_cover(pp, change: CoverChange) -> dict:
             pp, RESULT_ERROR, f"{label}: Keine Video-ID gespeichert, das Titelbild lässt sich nicht zuordnen."
         )
 
+    from apps.media_library.bildpruefung import sperrgrund_sofort
+
+    # Das Bild geht sofort raus, ohne Publisher und ohne Zurückhalten: deshalb
+    # hier dieselbe Bildprüfung (docs/BILDPRUEFUNG.md).
+    gesperrt = sperrgrund_sofort(own.asset)
+    if gesperrt:
+        return _result(pp, RESULT_ERROR, f"{label}: Titelbild nicht gesetzt – {gesperrt}")
+
     try:
         _set_live_thumbnail(pp.social_account, video_id, own.asset)
     except Exception as exc:  # noqa: BLE001 - every provider/storage failure becomes a per-channel error

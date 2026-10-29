@@ -335,6 +335,26 @@ def von_hand_freigeben(asset, *, benutzer, notiz: str) -> dict:
     )
 
 
+def sperrgrund_sofort(asset) -> str | None:
+    """Warum dieses Medium jetzt nicht veröffentlicht werden darf, oder None.
+
+    Für Aktionen, die sofort etwas veröffentlichen und nicht zurückgehalten
+    werden können (Titelbild eines schon veröffentlichten Videos ändern).
+    Gleiche Regeln wie die Publisher-Sperre: gültig durchgefallen sperrt immer,
+    ungeprüft nur bei Schalter an; gerechnet wird frisch über die Datei.
+    """
+    pflicht = pflicht_an()
+    daten = asset.bildpruefung if isinstance(asset.bildpruefung, dict) else None
+    if not pflicht and not (daten and daten.get("status") == DURCHGEFALLEN):
+        return None
+    stand = pruefstand(asset, frisch=True)
+    if stand.durchgefallen:
+        return "Bildprüfung durchgefallen: " + ("; ".join(stand.befunde) or "ohne Befund")
+    if stand.offen and pflicht:
+        return "Bildprüfung fehlt (" + stand.grund_text.rstrip(".") + "). Erst prüfen lassen, dann erneut setzen."
+    return None
+
+
 def darf_von_hand_freigeben(user, workspace, asset=None) -> bool:
     """Owner/Admin der Organisation oder Owner des Workspace.
 

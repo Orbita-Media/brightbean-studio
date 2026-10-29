@@ -27,12 +27,14 @@ register = template.Library()
 #: Bilder, GIFs und Videos gehen durch die Bildprüfung.
 PRUEF_TYPEN = ("image", "gif", "video")
 
-#: Kurzwort für das kleine Abzeichen (Composer-Vorschaubild).
+#: Kurztext für die kleinen Abzeichen (Composer-Vorschau 96 px, Mediathek-Kachel
+#: ab 140 px): höchstens 13 Zeichen, damit der Status nie abgeschnitten wird.
+#: Der volle Titel „Bildprüfung: …“ steht im Tooltip und im Dialog.
 KURZ = {
     bildpruefung.BESTANDEN: "bestanden",
     bildpruefung.DURCHGEFALLEN: "durchgefallen",
-    bildpruefung.VON_HAND_FREIGEGEBEN: "von Hand",
-    bildpruefung.OFFEN: "offen",
+    bildpruefung.VON_HAND_FREIGEGEBEN: "von Hand frei",
+    bildpruefung.OFFEN: "Prüfung offen",
 }
 
 #: Formen des Abzeichens: thumb (Composer), karte (Raster), zeile (Liste, Detail).

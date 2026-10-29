@@ -80,6 +80,15 @@ alle durch diese eine Stelle gehen.
 - Wird ein Medium nach dem Zurückhalten geprüft, geht der Beitrag beim nächsten
   Blick (höchstens 10 min) als ganz normaler Versuch raus.
 
+### Titelbild eines schon veröffentlichten Videos
+
+`POST /api/v1/posts/{id}/cover` auf einen veröffentlichten YouTube- oder
+Facebook-Beitrag setzt das Bild sofort live, ohne Publisher und ohne
+Zurückhalten. `apps/publisher/cover.py` fragt deshalb vorher
+`bildpruefung.sperrgrund_sofort(asset)`: gültig durchgefallen → Ergebnis
+`error` mit Befunden (immer), ungeprüft → `error` „Bildprüfung fehlt“ (nur bei
+Schalter an). Es wird nichts an die Plattform geschickt und nichts gespeichert.
+
 ## Schalter `bildpruefung_pflicht`
 
 In der DB (`publisher_schalter`), wirkt ohne Redeploy ab dem nächsten
@@ -190,12 +199,14 @@ freigegeben“ an jedem Bild und Video (Dokumente nicht):
 
 | Ort | Template | Form |
 |---|---|---|
-| Composer, angehängte Medien (96-px-Vorschau) | `composer/partials/media_list.html` | `thumb`: Leiste unten, nur Statuswort |
-| Mediathek, Raster | `media_library/_asset_card.html`, `_shared_asset_card.html` | `karte`: Pille unten links (ab `sm` mit „Bildprüfung:“) |
+| Composer, angehängte Medien (96-px-Vorschau) | `composer/partials/media_list.html` | `thumb`: Leiste unten, Kurztext |
+| Mediathek, Raster | `media_library/_asset_card.html`, `_shared_asset_card.html` | `karte`: Pille unten links, Kurztext |
 | Mediathek, Liste | `media_library/_asset_list_row.html` | `zeile` |
 | Mediathek, Detail (Panel und eigene Seite) | `media_library/_asset_detail_panel.html` | Block mit Grund, Befunden, Prüfer, Zeit (Berlin), Notiz |
 
-Farben: bestanden grün, von Hand freigegeben blau, durchgefallen rot (weiße
+Kurztexte (höchstens 13 Zeichen, damit der Status in 96-px-Vorschauen nie
+abgeschnitten wird): „bestanden“, „durchgefallen“, „von Hand frei“, „Prüfung
+offen“; der volle Titel steht im Tooltip und im Dialog. Farben: bestanden grün, von Hand freigegeben blau, durchgefallen rot (weiße
 Schrift), offen gelb. Ein Klick auf ein Abzeichen öffnet den Dialog
 (`media_library/_bildpruefung_dialog.html`, einmal in `base.html`, Event
 `bildpruefung-zeigen`) mit Befunden, Prüfer, Modellen und Notiz.

@@ -535,6 +535,50 @@ class TestCoverEndpoint:
         pp.refresh_from_db()
         assert pp.platform_extra == {}
 
+    # ---- Bildprüfung (docs/BILDPRUEFUNG.md): das Live-Titelbild geht sofort raus
+
+    @staticmethod
+    def _pruefen(asset, status, befunde=()):
+        import hashlib
+
+        from apps.media_library.bildpruefung import pruefung_speichern
+
+        with asset.file.open("rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        pruefung_speichern(asset, {"status": status, "sha256": sha, "pruefer": "bildwache", "befunde": list(befunde)})
+
+    def test_published_failed_image_check_blocks_even_with_switch_off(self, client, workspace, accounts, video, jpeg):
+        self._pruefen(jpeg, "durchgefallen", ["Buch steht auf dem Schüsselrand"])
+        post, pp = self._published(workspace, accounts, video, "youtube")
+        provider = MagicMock()
+        with patch("providers.get_provider", return_value=provider):
+            r = _cover(client, post.id, {"cover_asset_id": str(jpeg.id)})
+        item = r.json()["results"][0]
+        assert item["result"] == "error", r.content
+        assert "Bildprüfung durchgefallen: Buch steht auf dem Schüsselrand" in item["message"]
+        provider.set_video_thumbnail.assert_not_called()
+        pp.refresh_from_db()
+        assert pp.platform_extra == {}
+
+    def test_published_unchecked_image_blocks_only_with_switch_on(self, client, workspace, accounts, video, jpeg):
+        from apps.media_library.bildpruefung import pflicht_setzen
+
+        pflicht_setzen(True, von="test")
+        post, pp = self._published(workspace, accounts, video, "youtube")
+        provider = MagicMock()
+        with patch("providers.get_provider", return_value=provider):
+            r = _cover(client, post.id, {"cover_asset_id": str(jpeg.id)})
+        item = r.json()["results"][0]
+        assert item["result"] == "error", r.content
+        assert "Bildprüfung fehlt" in item["message"]
+        provider.set_video_thumbnail.assert_not_called()
+
+        self._pruefen(jpeg, "bestanden")
+        with patch("providers.get_provider", return_value=provider):
+            r = _cover(client, post.id, {"cover_asset_id": str(jpeg.id)})
+        assert r.json()["results"][0]["result"] == "updated", r.content
+        provider.set_video_thumbnail.assert_called_once()
+
     def test_published_cover_cannot_be_removed(self, client, workspace, accounts, video, jpeg):
         post, _ = self._published(workspace, accounts, video, "youtube", thumbnail_asset_id=str(jpeg.id))
         r = _cover(client, post.id, {"cover_asset_id": None})
