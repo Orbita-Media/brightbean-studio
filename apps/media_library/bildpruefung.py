@@ -224,11 +224,11 @@ def pflicht_setzen(an: bool, *, von: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 
-class UngueltigePruefung(ValueError):
+class UngueltigePruefung(ValueError):  # noqa: N818 – Name aus dem Vertrag
     """Das übergebene Prüfobjekt verletzt den Vertrag (422)."""
 
 
-class ShaAbweichung(Exception):
+class ShaAbweichung(Exception):  # noqa: N818 – Name aus dem Vertrag
     """Der sha256 der Prüfung passt nicht zur aktuellen Datei (409)."""
 
     def __init__(self, gemeldet: str, aktuell: str | None):
@@ -365,6 +365,30 @@ def cover_asset_ids(platform_extra) -> list[str]:
     return [str(extra[k]) for k in COVER_SCHLUESSEL if extra.get(k)]
 
 
+def gehoert_zum_workspace(asset, workspace) -> bool:
+    """Darf das Asset an Beiträgen dieses Workspace hängen? (eigenes oder org-geteiltes)"""
+    if asset.workspace_id is not None:
+        return asset.workspace_id == workspace.id
+    return asset.organization_id is not None and asset.organization_id == workspace.organization_id
+
+
+def haengt_an_beitraegen(asset, workspace) -> bool:
+    """Hängt das Asset (Anhang oder Titelbild) an einem noch veröffentlichbaren Beitrag des Workspace?"""
+    from django.db.models import Q
+
+    from apps.composer.models import PlatformPost, PostMedia
+
+    if not gehoert_zum_workspace(asset, workspace):
+        return False
+    offen = PlatformPost.objects.filter(status__in=OFFENE_BEITRAGS_STATUS, post__workspace=workspace)
+    if PostMedia.objects.filter(media_asset=asset, post__in=offen.values("post_id")).exists():
+        return True
+    kennung = str(asset.id)
+    return offen.filter(
+        Q(platform_extra__thumbnail_asset_id=kennung) | Q(platform_extra__cover_image_asset_id=kennung)
+    ).exists()
+
+
 def uuids(werte) -> list[uuid.UUID]:
     ergebnis = []
     for wert in werte:
@@ -395,7 +419,7 @@ def offene_medien(*, workspace_ids=None, bis: datetime | None = None, limit: int
 
     pps = (
         PlatformPost.objects.filter(status__in=OFFENE_BEITRAGS_STATUS)
-        .select_related("post", "social_account")
+        .select_related("post__workspace", "social_account")
         .annotate(termin=Coalesce("scheduled_at", "post__scheduled_at"))
     )
     if workspace_ids is not None:
@@ -419,13 +443,22 @@ def offene_medien(*, workspace_ids=None, bis: datetime | None = None, limit: int
     eintraege = []
     durchgefallen = []
     for asset in MediaAsset.all_objects.filter(id__in=uuids(asset_beitraege)):
+        # Mandantengrenze: ein Asset zählt nur für Beiträge seines eigenen
+        # Workspace oder, wenn org-geteilt, derselben Organisation. Eine
+        # fremde ID in platform_extra macht so kein fremdes Medium sichtbar.
+        posts = sorted(
+            (
+                beitraege[pid]
+                for pid in asset_beitraege.get(str(asset.id), ())
+                if gehoert_zum_workspace(asset, beitraege[pid]["post"].workspace)
+            ),
+            key=lambda b: _sortkey(b["termin"]),
+        )
+        if not posts:
+            continue
         stand = pruefstand(asset)
         if not (stand.offen or stand.durchgefallen):
             continue
-        posts = sorted(
-            (beitraege[pid] for pid in asset_beitraege.get(str(asset.id), ())),
-            key=lambda b: _sortkey(b["termin"]),
-        )
         erster = posts[0]
         eintrag = {
             "asset": asset,

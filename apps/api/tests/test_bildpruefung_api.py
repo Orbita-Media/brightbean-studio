@@ -288,3 +288,55 @@ class TestPost:
         assert client.get("/api/v1/media/bildpruefung/offen/").json()["anzahl"] == 1
         client.post(f"/api/v1/media/{asset.id}/bildpruefung/", data=_pruefung(), content_type="application/json")
         assert client.get("/api/v1/media/bildpruefung/offen/").json()["anzahl"] == 0
+
+
+def _geteilt(organization, name="geteilt.png", inhalt=BILD):
+    from apps.media_library.models import MediaAsset
+
+    asset = MediaAsset(organization=organization, workspace=None, filename=name, media_type="image")
+    asset.file.save(name, ContentFile(inhalt), save=False)
+    asset.save()
+    return asset
+
+
+@pytest.mark.django_db
+class TestMandantengrenze:
+    def test_fremdes_titelbild_erscheint_nicht_in_der_liste(self, client, workspace, social_account):
+        from apps.composer.models import PlatformPost, Post
+        from apps.organizations.models import Organization
+        from apps.workspaces.models import Workspace
+
+        fremde_org = Organization.objects.create(name="Fremd")
+        fremder_ws = Workspace.objects.create(name="Fremd", organization=fremde_org)
+        fremd = _asset(fremder_ws, name="fremd.png")
+        post = Post.objects.create(workspace=workspace, caption="x")
+        PlatformPost.objects.create(
+            post=post,
+            social_account=social_account,
+            status="scheduled",
+            scheduled_at=timezone.now() + timedelta(hours=1),
+            platform_extra={"thumbnail_asset_id": str(fremd.id)},
+        )
+        body = client.get("/api/v1/media/bildpruefung/offen/").json()
+        assert [i["filename"] for i in body["items"]] == []
+
+    def test_geteiltes_asset_ohne_beitrag_403(self, client, organization):
+        asset = _geteilt(organization)
+        r = client.post(f"/api/v1/media/{asset.id}/bildpruefung/", data=_pruefung(), content_type="application/json")
+        assert r.status_code == 403
+
+    def test_geteiltes_asset_am_beitrag_mit_manage_media_ok(self, client, organization, workspace, social_account):
+        asset = _geteilt(organization)
+        _beitrag(workspace, social_account, asset, termin=timezone.now() + timedelta(hours=2))
+        r = client.post(f"/api/v1/media/{asset.id}/bildpruefung/", data=_pruefung(), content_type="application/json")
+        assert r.status_code == 200, r.content
+
+    def test_geteiltes_asset_am_beitrag_ohne_manage_media_403(self, db, user, organization, workspace, social_account):
+        key = _key(
+            user, organization, workspace, social_account, perms=[p for p in PERMISSION_KEYS if p != "manage_media"]
+        )
+        c = _SecureClient(HTTP_AUTHORIZATION=f"Bearer {key.plaintext_token}")
+        asset = _geteilt(organization)
+        _beitrag(workspace, social_account, asset, termin=timezone.now() + timedelta(hours=2))
+        r = c.post(f"/api/v1/media/{asset.id}/bildpruefung/", data=_pruefung(), content_type="application/json")
+        assert r.status_code == 403

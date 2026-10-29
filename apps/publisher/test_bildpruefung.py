@@ -453,3 +453,23 @@ class DoppelpostSchutzBleibtTest(_Base):
         self.assertEqual(pp.outcome_unknown_since, seit)
         self.assertEqual(provider.find_calls, [])
         self.assertEqual(provider.publish_calls, [])
+
+
+class FrischerHashTest(_Base):
+    def test_sperre_rechnet_frisch_statt_dem_gemerkten_hash_zu_trauen(self):
+        """Datei unter demselben Namen überschrieben: der gemerkte Hash ist veraltet."""
+        from apps.composer.models import PlatformPost
+
+        self._pflicht()
+        asset = self._asset(pruefung=self._pruefung(bp.BESTANDEN))
+        self.assertEqual(bp.datei_sha256(asset), SHA)
+        with open(asset.file.path, "wb") as fh:
+            fh.write(b"ueberschrieben")
+        self._anhängen(asset)
+        pp = self._pp()
+        provider = _FakeProvider(publish=[_ok()])
+        self._run(provider)
+
+        pp.refresh_from_db()
+        self.assertEqual(pp.status, PlatformPost.Status.SCHEDULED)
+        self.assertEqual(provider.publish_calls, [])

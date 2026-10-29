@@ -894,7 +894,9 @@ class PublishEngine:
             if not pflicht and not (daten and daten.get("status") == bp.DURCHGEFALLEN):
                 # Schalter aus: nur ein durchgefallenes Medium kann sperren.
                 continue
-            stand = bp.pruefstand(asset)
+            # Frisch gerechnet, nicht der gemerkte Hash: was hier geprüft wird,
+            # sind die Bytes, die gleich hochgeladen werden.
+            stand = bp.pruefstand(asset, frisch=True)
             if stand.durchgefallen:
                 befunde = "; ".join(stand.befunde) or "ohne Befund"
                 durchgefallen.append(f"{label} ({asset.filename}): {befunde}")

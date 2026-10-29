@@ -19,7 +19,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
-from datetime import timezone as dt_timezone
+from datetime import UTC
 
 from django.core.exceptions import ValidationError
 from django.http import HttpRequest
@@ -254,7 +254,7 @@ def bildpruefung_offen(
         if bis_dt is None:
             raise HttpError(422, "bis muss ein ISO-Zeitpunkt sein, z. B. 2026-11-12T00:00:00Z.")
         if bis_dt.tzinfo is None:
-            bis_dt = bis_dt.replace(tzinfo=dt_timezone.utc)
+            bis_dt = bis_dt.replace(tzinfo=UTC)
 
     ergebnis = offene_medien(workspace_ids=[key_workspace.id], bis=bis_dt)
     eintraege = ergebnis["eintraege"] if status == "offen" else ergebnis["durchgefallen"]
@@ -292,12 +292,26 @@ def bildpruefung_speichern(request, media_id: uuid.UUID, payload: BildpruefungIn
         ShaAbweichung,
         UngueltigePruefung,
         darf_von_hand_freigeben,
+        haengt_an_beitraegen,
         pruefung_speichern,
     )
 
     enforce_http_rate_limits(request, is_write=True)
     _require_perm(request, "edit_media")
     asset = get_object_or_404(_visible_assets_qs(request), id=media_id)
+    if asset.workspace_id is None and not (
+        # Org-geteiltes Asset: ein Workspace-Key bewertet es nur, wenn es an
+        # einem Beitrag seines Workspace hängt (die Bildwache muss alles prüfen
+        # können, was dort veröffentlicht wird) und der Key Medien verwalten darf.
+        haengt_an_beitraegen(asset, request.workspace)
+        and getattr(request, "workspace_membership", None) is not None
+        and request.workspace_membership.effective_permissions.get("manage_media", False)
+    ):
+        raise HttpError(
+            403,
+            "Org-geteilte Medien bewertet ein Workspace-Key nur, wenn sie an einem Beitrag dieses "
+            "Workspace hängen und der Key die Berechtigung manage_media hat.",
+        )
     if payload.status == VON_HAND_FREIGEGEBEN and not darf_von_hand_freigeben(request.user, request.workspace):
         raise HttpError(403, "Von Hand freigeben dürfen nur Owner und Admins.")
     try:
