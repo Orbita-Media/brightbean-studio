@@ -1,6 +1,7 @@
 {% comment %}Slide-over detail panel content. Expects: asset, workspace, versions.
 standalone=True when rendered on the asset page instead of the library slide-over
 (no ``detailOpen`` there: close is a link back, delete redirects).{% endcomment %}
+{% load bildpruefung_tags %}
 
 <div class="flex flex-col h-full" x-data="{ showDeleteConfirm: false }">
   <!-- Header -->
@@ -162,6 +163,9 @@ standalone=True when rendered on the asset page instead of the library slide-ove
         {% endif %}
       </dl>
     </div>
+
+    <!-- Bildprüfung: Stand, Befunde, Freigabe von Hand (docs/BILDPRUEFUNG.md) -->
+    {% bildpruefung_block asset %}
 
     <!-- Alt text: lives on the asset, so a correction here reaches every post
          that uses this image. Only images carry a description. -->

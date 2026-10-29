@@ -897,6 +897,9 @@
     <!-- Onboarding checklist popup (fixed bottom-right) -->
     {% include "onboarding/partials/_checklist.html" %}
 
+    <!-- Dialog der Bildprüfung (Abzeichen in Mediathek und Composer öffnen ihn) -->
+    {% include "media_library/_bildpruefung_dialog.html" %}
+
     {% else %}
     <main class="auth-bg min-h-screen flex items-center justify-center py-12 px-4" style="font-family: var(--font-body);">
         {% block auth_content %}{% endblock %}

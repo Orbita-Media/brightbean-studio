@@ -1,4 +1,5 @@
 {% comment %}Single asset card for grid view. Expects: asset, workspace{% endcomment %}
+{% load bildpruefung_tags %}
 
 <div class="ml-asset-card group cursor-pointer overflow-hidden"
      @click="openDetail('{{ asset.id }}')"
@@ -50,6 +51,8 @@
       SHARED
     </span>
     {% endif %}
+
+    {% bildpruefung_abzeichen asset "karte" %}
 
     <!-- Star button -->
     <button @click.stop

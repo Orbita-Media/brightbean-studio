@@ -335,9 +335,14 @@ def von_hand_freigeben(asset, *, benutzer, notiz: str) -> dict:
     )
 
 
-def darf_von_hand_freigeben(user, workspace) -> bool:
-    """Owner/Admin der Organisation oder Owner des Workspace."""
-    if user is None or not getattr(user, "is_authenticated", False):
+def darf_von_hand_freigeben(user, workspace, asset=None) -> bool:
+    """Owner/Admin der Organisation oder Owner des Workspace.
+
+    Ein org-geteiltes Asset (``asset.workspace_id is None``) gilt für alle
+    Workspaces der Organisation; das darf nur Owner/Admin der Organisation
+    von Hand freigeben, nicht der Owner eines einzelnen Workspace.
+    """
+    if user is None or not getattr(user, "is_authenticated", False) or workspace is None:
         return False
     from apps.members.models import OrgMembership, WorkspaceMembership
 
@@ -347,6 +352,8 @@ def darf_von_hand_freigeben(user, workspace) -> bool:
         org_role__in=[OrgMembership.OrgRole.OWNER, OrgMembership.OrgRole.ADMIN],
     ).exists():
         return True
+    if asset is not None and asset.workspace_id is None:
+        return False
     return WorkspaceMembership.objects.filter(
         user=user,
         workspace=workspace,

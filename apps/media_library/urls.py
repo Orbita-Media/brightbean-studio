@@ -26,4 +26,9 @@ urlpatterns = [
     path("<uuid:asset_id>/versions/", views.version_list, name="version_list"),
     path("<uuid:asset_id>/versions/<uuid:version_id>/restore/", views.version_restore, name="version_restore"),
     path("<uuid:asset_id>/processing-status/", views.processing_status, name="processing_status"),
+    path(
+        "<uuid:asset_id>/bildpruefung/freigeben/",
+        views.asset_bildpruefung_freigeben,
+        name="asset_bildpruefung_freigeben",
+    ),
 ]

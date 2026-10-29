@@ -312,7 +312,7 @@ def bildpruefung_speichern(request, media_id: uuid.UUID, payload: BildpruefungIn
             "Org-geteilte Medien bewertet ein Workspace-Key nur, wenn sie an einem Beitrag dieses "
             "Workspace hängen und der Key die Berechtigung manage_media hat.",
         )
-    if payload.status == VON_HAND_FREIGEGEBEN and not darf_von_hand_freigeben(request.user, request.workspace):
+    if payload.status == VON_HAND_FREIGEGEBEN and not darf_von_hand_freigeben(request.user, request.workspace, asset):
         raise HttpError(403, "Von Hand freigeben dürfen nur Owner und Admins.")
     try:
         pruefung_speichern(asset, payload.model_dump())

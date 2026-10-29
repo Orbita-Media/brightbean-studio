@@ -185,12 +185,37 @@ Liefern zusätzlich `bildpruefung` (Objekt oder `null`), `bildpruefung_status`
 
 ## Oberfläche
 
-Mediathek (Kachel und Detail) und Composer zeigen je Medium ein Abzeichen
-„Bildprüfung: bestanden / durchgefallen / offen“, im Detail mit Befunden,
-Prüfer und Zeitpunkt. Owner/Admin der Organisation und Owner des Workspace
-sehen „Von Hand freigeben“; der Dialog verlangt eine Notiz und schreibt
-`von_hand_freigegeben` mit dem Benutzer als `pruefer`. Befunde einer
-vorherigen Prüfung derselben Datei bleiben dabei stehen.
+Abzeichen „Bildprüfung: bestanden / durchgefallen / offen / von Hand
+freigegeben“ an jedem Bild und Video (Dokumente nicht):
+
+| Ort | Template | Form |
+|---|---|---|
+| Composer, angehängte Medien (96-px-Vorschau) | `composer/partials/media_list.html` | `thumb`: Leiste unten, nur Statuswort |
+| Mediathek, Raster | `media_library/_asset_card.html`, `_shared_asset_card.html` | `karte`: Pille unten links (ab `sm` mit „Bildprüfung:“) |
+| Mediathek, Liste | `media_library/_asset_list_row.html` | `zeile` |
+| Mediathek, Detail (Panel und eigene Seite) | `media_library/_asset_detail_panel.html` | Block mit Grund, Befunden, Prüfer, Zeit (Berlin), Notiz |
+
+Farben: bestanden grün, von Hand freigegeben blau, durchgefallen rot (weiße
+Schrift), offen gelb. Ein Klick auf ein Abzeichen öffnet den Dialog
+(`media_library/_bildpruefung_dialog.html`, einmal in `base.html`, Event
+`bildpruefung-zeigen`) mit Befunden, Prüfer, Modellen und Notiz.
+
+**Von Hand freigeben** (eigener Dialog, keine Browser-Popups): sichtbar nur für
+Owner/Admin der Organisation und Owner des Workspace, und nur solange das
+Medium nicht schon freigegeben ist. Org-geteilte Medien darf nur Owner/Admin
+der Organisation freigeben. Die Begründung ist Pflicht (höchstens 2000
+Zeichen). `POST /workspace/<ws>/media/<asset>/bildpruefung/freigeben/`
+(`media_library:asset_bildpruefung_freigeben`, Feld `notiz`) rechnet den
+sha256 der Datei frisch, schreibt `von_hand_freigegeben` mit dem Benutzer als
+`pruefer` („Name <E-Mail>“) und antwortet mit JSON (`bildpruefung`,
+`abzeichen` je Form, `block`), damit die Seite ohne Neuladen den neuen Stand
+zeigt. 403 ohne Recht, 422 ohne Begründung oder bei unlesbarer Datei. Befunde
+einer vorherigen Prüfung derselben Datei bleiben stehen.
+
+Der Stand wird je Seite und Medium einmal ausgewertet (Templatetag
+`apps/media_library/templatetags/bildpruefung_tags.py`); der sha256 wird nur
+gerechnet, wenn eine Prüfung vorliegt und kein gemerkter Wert zur Datei passt.
+Tests: `apps/media_library/tests/test_bildpruefung_ui.py`.
 
 ## Abweichungen vom ursprünglichen Vertrag
 
@@ -202,3 +227,6 @@ vorherigen Prüfung derselben Datei bleiben dabei stehen.
 - `workspace` ist optional und kann nur der Workspace des Keys sein (Keys sind
   je Workspace ausgestellt); für mehrere Workspaces je Workspace einen Key.
 - `sha256` in der Liste kann `null` sein (siehe oben).
+- Einzelabruf heißt `GET /api/v1/media/{id}` **ohne** Schrägstrich am Ende (so
+  sind alle bestehenden Einzelrouten der Medien-API gebaut; mit Schrägstrich
+  kommt 404). Die beiden neuen Bildprüfungs-Routen haben den Schrägstrich.

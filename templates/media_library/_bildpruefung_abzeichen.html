@@ -1,0 +1,30 @@
+{% comment %}
+Abzeichen der Bildprüfung. Kontext aus dem Tag ``bildpruefung_abzeichen``:
+bp (siehe apps/media_library/templatetags/bildpruefung_tags.py), form
+(thumb | karte | zeile). Ein Klick öffnet den Dialog (Event
+``bildpruefung-zeigen``); nach einer Freigabe von Hand ersetzt der Dialog alle
+Abzeichen mit derselben ``data-bp-abzeichen``-ID.
+{% endcomment %}
+{% if bp %}
+<button type="button" x-data
+        data-bp-abzeichen="{{ bp.id }}" data-bp-form="{{ form }}" data-bp-status="{{ bp.status }}"
+        data-bp="{{ bp.json }}"
+        @click.stop.prevent="$dispatch('bildpruefung-zeigen', JSON.parse($el.dataset.bp))"
+        @mousedown.stop @dragstart.stop.prevent
+        title="{{ bp.hinweis }}" aria-label="{{ bp.titel }} – Details anzeigen"
+        class="bp-abzeichen inline-flex items-center gap-1 font-semibold cursor-pointer select-none whitespace-nowrap overflow-hidden
+               {% if form == 'thumb' %}absolute inset-x-0 bottom-0 justify-center{% elif form == 'karte' %}absolute bottom-2 left-2 rounded-full shadow-sm{% else %}rounded-full{% endif %}"
+        style="{% if form == 'thumb' %}height: 20px; font-size: 10px; padding: 0 4px; z-index: 2;{% elif form == 'karte' %}max-width: calc(100% - 3rem); font-size: 11px; padding: 3px 8px; z-index: 2;{% else %}font-size: 11px; padding: 2px 8px;{% endif %}
+               {% if bp.status == 'bestanden' %}background: #DCFCE7; color: #166534;{% elif bp.status == 'von_hand_freigegeben' %}background: #DBEAFE; color: #1E40AF;{% elif bp.status == 'durchgefallen' %}background: #DC2626; color: #FFFFFF;{% else %}background: #FEF3C7; color: #92400E;{% endif %}">
+  {% if bp.status == 'bestanden' %}
+  <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+  {% elif bp.status == 'von_hand_freigegeben' %}
+  <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+  {% elif bp.status == 'durchgefallen' %}
+  <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+  {% else %}
+  <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l2.5 2.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+  {% endif %}
+  {% if form == 'thumb' %}<span class="truncate">{{ bp.kurz }}</span>{% elif form == 'karte' %}<span class="truncate"><span class="hidden sm:inline">Bildprüfung: </span>{{ bp.kurz }}</span>{% else %}<span class="truncate">{{ bp.titel }}</span>{% endif %}
+</button>
+{% endif %}

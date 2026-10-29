@@ -1,0 +1,58 @@
+{% comment %}
+Abschnitt „Bildprüfung“ im Detailpanel. Kontext aus dem Tag ``bildpruefung_block``:
+bp, asset. Der Dialog ersetzt den Block nach einer Freigabe von Hand
+(``data-bp-block``).
+{% endcomment %}
+{% load bildpruefung_tags %}
+{% if bp %}
+<div class="px-5 py-4 border-t" style="border-color: var(--surface-2, #F5F5F4);" data-bp-block="{{ bp.id }}">
+  <h3 class="text-xs font-bold uppercase tracking-wider mb-3" style="color: var(--text-tertiary, #78716C);">Bildprüfung</h3>
+  <div class="flex flex-wrap items-center gap-2">
+    {% bildpruefung_abzeichen asset "zeile" %}
+  </div>
+  {% if bp.stand.offen %}
+  <p class="text-xs mt-2" style="color: var(--text-secondary, #57534E);">{{ bp.stand.grund_text }} Ohne bestandene Prüfung hält der Verteiler das Medium zurück, sobald die Prüfpflicht an ist.</p>
+  {% endif %}
+  {% if bp.stand.durchgefallen %}
+  <p class="text-xs mt-2 font-medium" style="color: #B91C1C;">Dieses Medium wird nicht veröffentlicht. Beiträge damit scheitern, bis es ersetzt oder von Hand freigegeben ist.</p>
+  {% endif %}
+  {% if bp.stand.befunde %}
+  <ul class="mt-2 space-y-1">
+    {% for befund in bp.stand.befunde %}
+    <li class="text-xs flex gap-1.5" style="color: var(--text-primary, #1C1917);"><span aria-hidden="true" style="color: #DC2626;">•</span><span class="min-w-0 break-words">{{ befund }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if bp.stand.pruefer or bp.stand.geprueft_am %}
+  <dl class="mt-3 space-y-1.5">
+    {% if bp.stand.pruefer %}
+    <div class="flex justify-between gap-4">
+      <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Geprüft von</dt>
+      <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ bp.stand.pruefer }}</dd>
+    </div>
+    {% endif %}
+    {% if bp.stand.geprueft_am %}
+    <div class="flex justify-between gap-4">
+      <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Geprüft am</dt>
+      <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ bp.zeit }}</dd>
+    </div>
+    {% endif %}
+    {% if bp.stand.notiz %}
+    <div class="flex justify-between gap-4">
+      <dt class="text-xs flex-shrink-0" style="color: var(--text-tertiary);">Notiz</dt>
+      <dd class="text-xs font-medium text-right min-w-0 break-words" style="color: var(--text-primary);">{{ bp.stand.notiz }}</dd>
+    </div>
+    {% endif %}
+  </dl>
+  {% endif %}
+  {% if bp.darf and not bp.stand.freigegeben %}
+  <button type="button" x-data data-bp="{{ bp.json }}"
+          @click="$dispatch('bildpruefung-zeigen', Object.assign(JSON.parse($el.dataset.bp), { formular: true }))"
+          class="mt-3 inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-full border transition-all cursor-pointer btn-surface-1"
+          style="border-color: var(--border, #E7E5E4); color: var(--text-secondary, #57534E);">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+    Von Hand freigeben
+  </button>
+  {% endif %}
+</div>
+{% endif %}

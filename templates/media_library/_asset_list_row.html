@@ -1,4 +1,5 @@
 {% comment %}Single asset row for list view. Expects: asset, workspace{% endcomment %}
+{% load bildpruefung_tags %}
 
 <div class="grid grid-cols-12 gap-3 px-4 py-2.5 items-center border-b cursor-pointer transition-colors hover:bg-stone-50"
      style="border-color: var(--surface-2, #F5F5F4);"
@@ -25,6 +26,7 @@
     </div>
     <div class="min-w-0">
       <p class="text-sm font-medium truncate" style="color: var(--text-primary);">{{ asset.original_filename }}</p>
+      <div class="mt-0.5">{% bildpruefung_abzeichen asset "zeile" %}</div>
       {% if asset.tags %}
       <div class="flex gap-1 mt-0.5">
         {% for tag in asset.tags|slice:":3" %}

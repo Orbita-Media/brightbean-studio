@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.template import Context, Template
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
@@ -15,6 +16,7 @@ from apps.common.homoglyphs import beanstandungen
 from apps.common.validators import normalize_tags
 from apps.members.decorators import require_org_role, require_permission
 
+from . import bildpruefung
 from .models import MAX_ALT_TEXT_LENGTH, MediaAsset, MediaFolder
 from .services import (
     ProtectedAssetError,
@@ -22,10 +24,11 @@ from .services import (
     create_folder,
     create_version,
     delete_asset,
-    trash_asset,
     restore_version,
+    trash_asset,
 )
 from .tasks import process_image_edit, process_media_asset, process_video_trim
+from .templatetags import bildpruefung_tags
 from .validators import get_accepted_file_types
 
 
@@ -554,6 +557,61 @@ def asset_delete(request, workspace_id, asset_id):
             response["HX-Redirect"] = reverse("media_library:index", kwargs={"workspace_id": workspace.id})
         return response
     return JsonResponse({"status": "trashed"})
+
+
+# ──────────────────────────────────────────────────────────────
+#  Bildprüfung: Freigabe von Hand (docs/BILDPRUEFUNG.md)
+# ──────────────────────────────────────────────────────────────
+
+_BILDPRUEFUNG_TEILE = Template(
+    "{% load bildpruefung_tags %}{% if teil == 'block' %}{% bildpruefung_block asset %}"
+    "{% else %}{% bildpruefung_abzeichen asset teil %}{% endif %}"
+)
+
+
+@login_required
+@require_POST
+def asset_bildpruefung_freigeben(request, workspace_id, asset_id):
+    """Owner/Admin gibt ein Bild oder Video von Hand frei (Begründung Pflicht).
+
+    Schreibt ``bildpruefung`` mit Status ``von_hand_freigegeben``, dem sha256
+    der aktuellen Datei und dem Benutzer als Prüfer. Antwortet mit JSON: dem
+    neuen Stand für den Dialog und frisch gerenderten Abzeichen und Block,
+    damit die Seite ohne Neuladen den neuen Stand zeigt.
+    """
+    workspace = _get_workspace_or_404(request, workspace_id)
+    asset = get_object_or_404(
+        MediaAsset.objects.for_workspace_with_shared(
+            workspace_id=workspace.id,
+            organization_id=workspace.organization_id,
+        ),
+        pk=asset_id,
+    )
+    if asset.media_type not in bildpruefung_tags.PRUEF_TYPEN:
+        return JsonResponse({"fehler": "Nur Bilder und Videos gehen durch die Bildprüfung."}, status=422)
+    if not bildpruefung.darf_von_hand_freigeben(request.user, workspace, asset):
+        return JsonResponse({"fehler": "Von Hand freigeben dürfen nur Owner und Admins."}, status=403)
+    notiz = (request.POST.get("notiz") or "").strip()[:2000]
+    if not notiz:
+        return JsonResponse({"fehler": "Bitte begründe die Freigabe."}, status=422)
+    try:
+        bildpruefung.von_hand_freigeben(asset, benutzer=request.user, notiz=notiz)
+    except bildpruefung.UngueltigePruefung as exc:
+        return JsonResponse({"fehler": str(exc)}, status=422)
+
+    kontext = {"request": request, "workspace": workspace, "asset": asset}
+    request.__dict__.pop("_bildpruefung_stand", None)
+
+    def teil(name):
+        return _BILDPRUEFUNG_TEILE.render(Context({**kontext, "teil": name})).strip()
+
+    return JsonResponse(
+        {
+            "bildpruefung": json.loads(bildpruefung_tags.bildpruefung_daten(kontext, asset)["json"]),
+            "abzeichen": {form: teil(form) for form in bildpruefung_tags.FORMEN},
+            "block": teil("block"),
+        }
+    )
 
 
 @login_required

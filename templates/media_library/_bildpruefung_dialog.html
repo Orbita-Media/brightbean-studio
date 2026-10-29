@@ -1,0 +1,202 @@
+{% comment %}
+Dialog der Bildprüfung, einmal je Seite (base.html). Öffnet sich auf das
+Window-Event ``bildpruefung-zeigen`` (detail = JSON aus dem Abzeichen, siehe
+bildpruefung_tags.py; ``formular: true`` öffnet direkt die Freigabe).
+„Von Hand freigeben“ nur, wenn ``darf`` (Owner/Admin) und das Medium nicht
+schon freigegeben ist; die Begründung ist Pflicht. Nach dem Speichern werden
+alle Abzeichen und Blöcke des Mediums durch die frische Fassung ersetzt.
+{% endcomment %}
+<script nonce="{{ request.csp_nonce }}">
+  window.bildpruefungDialog = function () {
+    return {
+      offen: false,
+      bp: {},
+      formular: false,
+      notiz: '',
+      speichert: false,
+      fehler: '',
+      zeigen(detail) {
+        this.bp = detail || {};
+        this.formular = !!(detail && detail.formular && this.kannFreigeben());
+        this.notiz = '';
+        this.fehler = '';
+        this.speichert = false;
+        this.offen = true;
+        if (this.formular) this.$nextTick(() => this.$refs.notiz && this.$refs.notiz.focus());
+      },
+      zumachen() {
+        if (this.speichert) return;
+        this.offen = false;
+      },
+      kannFreigeben() {
+        return !!(this.bp.darf && this.bp.url && !this.bp.freigegeben);
+      },
+      formularZeigen() {
+        this.formular = true;
+        this.fehler = '';
+        this.$nextTick(() => this.$refs.notiz && this.$refs.notiz.focus());
+      },
+      csrf() {
+        const feld = document.querySelector('[name=csrfmiddlewaretoken]');
+        if (feld) return feld.value;
+        const keks = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+        return keks ? decodeURIComponent(keks[1]) : '';
+      },
+      async freigeben() {
+        if (!this.notiz.trim()) {
+          this.fehler = 'Bitte begründe die Freigabe.';
+          if (this.$refs.notiz) this.$refs.notiz.focus();
+          return;
+        }
+        this.speichert = true;
+        this.fehler = '';
+        try {
+          const antwort = await fetch(this.bp.url, {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': this.csrf(),
+              'X-Requested-With': 'XMLHttpRequest',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({ notiz: this.notiz.trim() }),
+          });
+          const daten = await antwort.json().catch(() => ({}));
+          if (!antwort.ok) {
+            this.fehler = daten.fehler || ('Die Freigabe hat nicht geklappt (Fehler ' + antwort.status + ').');
+            return;
+          }
+          this.ersetzen(daten);
+          this.bp = daten.bildpruefung || this.bp;
+          this.formular = false;
+          this.notiz = '';
+        } catch (e) {
+          this.fehler = 'Keine Verbindung zum Server. Bitte versuche es noch einmal.';
+        } finally {
+          this.speichert = false;
+        }
+      },
+      ersetzen(daten) {
+        const id = this.bp.id;
+        document.querySelectorAll('[data-bp-abzeichen="' + id + '"]').forEach((el) => {
+          const html = (daten.abzeichen || {})[el.dataset.bpForm];
+          if (html) el.outerHTML = html;
+        });
+        document.querySelectorAll('[data-bp-block="' + id + '"]').forEach((el) => {
+          if (daten.block) el.outerHTML = daten.block;
+        });
+      },
+      farbe() {
+        return {
+          bestanden: 'background: #DCFCE7; color: #166534;',
+          von_hand_freigegeben: 'background: #DBEAFE; color: #1E40AF;',
+          durchgefallen: 'background: #DC2626; color: #FFFFFF;',
+        }[this.bp.status] || 'background: #FEF3C7; color: #92400E;';
+      },
+    };
+  };
+</script>
+<div x-data="bildpruefungDialog()" style="display: contents;"
+     @bildpruefung-zeigen.window="zeigen($event.detail)">
+  <template x-teleport="body">
+    <div x-show="offen" class="fixed inset-0 z-[70] flex items-center justify-center p-4"
+         @keydown.escape.window="offen && zumachen()"
+         role="dialog" aria-modal="true" aria-labelledby="bp-dialog-titel"
+         data-bp-dialog
+         style="display: none;">
+      <div class="fixed inset-0 bg-black/30 backdrop-blur-sm" @click="zumachen()"
+           x-show="offen"
+           x-transition:enter="transition ease-out duration-150"
+           x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+           x-transition:leave="transition ease-in duration-100"
+           x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+      <div class="relative bg-white rounded-2xl shadow-xl border border-stone-200 w-full max-w-md max-h-[90vh] overflow-y-auto"
+           x-show="offen" @click.stop
+           x-transition:enter="transition ease-out duration-150"
+           x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+           x-transition:leave="transition ease-in duration-100"
+           x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95">
+        <div class="flex items-start justify-between gap-3 px-5 pt-5">
+          <div class="min-w-0">
+            <h3 id="bp-dialog-titel" class="text-base font-semibold text-stone-900">Bildprüfung</h3>
+            <p class="text-xs text-stone-500 truncate mt-0.5" x-text="bp.dateiname"></p>
+          </div>
+          <button type="button" @click="zumachen()" aria-label="Schließen"
+                  class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors btn-surface-2 cursor-pointer"
+                  style="color: var(--text-tertiary, #78716C);">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <div class="px-5 py-4 space-y-3">
+          <span class="inline-flex items-center gap-1 rounded-full font-semibold" style="font-size: 12px; padding: 3px 10px;"
+                :style="farbe()" x-text="bp.titel"></span>
+          <p x-show="bp.grund" class="text-sm text-stone-600" x-text="bp.grund"></p>
+          <p x-show="bp.status === 'durchgefallen'" class="text-sm font-medium" style="color: #B91C1C;">
+            Dieses Medium wird nicht veröffentlicht. Beiträge damit scheitern, bis es ersetzt oder von Hand freigegeben ist.
+          </p>
+          <template x-if="bp.befunde && bp.befunde.length">
+            <div>
+              <p class="text-xs font-bold uppercase tracking-wider text-stone-500 mb-1.5">Befunde</p>
+              <ul class="space-y-1">
+                <template x-for="befund in bp.befunde">
+                  <li class="text-sm text-stone-800 flex gap-1.5"><span aria-hidden="true" style="color: #DC2626;">•</span><span class="min-w-0 break-words" x-text="befund"></span></li>
+                </template>
+              </ul>
+            </div>
+          </template>
+          <dl x-show="bp.pruefer || bp.geprueft_am || bp.notiz" class="space-y-1.5 text-sm">
+            <div x-show="bp.pruefer" class="flex justify-between gap-4">
+              <dt class="text-stone-500 flex-shrink-0">Geprüft von</dt>
+              <dd class="text-stone-900 font-medium text-right min-w-0 break-words" x-text="bp.pruefer"></dd>
+            </div>
+            <div x-show="bp.geprueft_am" class="flex justify-between gap-4">
+              <dt class="text-stone-500 flex-shrink-0">Geprüft am</dt>
+              <dd class="text-stone-900 font-medium text-right" x-text="bp.geprueft_am"></dd>
+            </div>
+            <div x-show="bp.modelle && bp.modelle.length" class="flex justify-between gap-4">
+              <dt class="text-stone-500 flex-shrink-0">Modelle</dt>
+              <dd class="text-stone-900 font-medium text-right min-w-0 break-words" x-text="(bp.modelle || []).join(', ')"></dd>
+            </div>
+            <div x-show="bp.notiz" class="flex justify-between gap-4">
+              <dt class="text-stone-500 flex-shrink-0">Notiz</dt>
+              <dd class="text-stone-900 font-medium text-right min-w-0 break-words" x-text="bp.notiz"></dd>
+            </div>
+          </dl>
+
+          <div x-show="kannFreigeben() && formular" class="pt-1">
+            <label for="bp-notiz" class="block text-sm font-semibold text-stone-900 mb-1">Begründung <span class="font-normal text-stone-500">(Pflicht)</span></label>
+            <p class="text-xs text-stone-500 mb-2" x-show="bp.status === 'durchgefallen'">Du überstimmst damit die Befunde oben. Die Begründung wird mit deinem Namen gespeichert.</p>
+            <p class="text-xs text-stone-500 mb-2" x-show="bp.status !== 'durchgefallen'">Du gibst das Medium ohne Prüfung frei. Die Begründung wird mit deinem Namen gespeichert.</p>
+            <textarea id="bp-notiz" x-ref="notiz" x-model="notiz" rows="3" maxlength="2000"
+                      @keydown.ctrl.enter="freigeben()" @keydown.meta.enter="freigeben()"
+                      class="w-full rounded-xl border border-stone-300 px-3 py-2 text-sm text-stone-900 focus:outline-none focus:ring-2 focus:ring-orange-300"
+                      placeholder="Warum darf dieses Medium trotzdem raus?"></textarea>
+            <p x-show="fehler" class="text-sm mt-1.5" style="color: #B91C1C;" x-text="fehler" role="alert"></p>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2 px-5 pb-5">
+          <button type="button" x-show="kannFreigeben() && !formular" @click="formularZeigen()"
+                  class="flex-1 px-4 py-2 text-sm font-semibold text-white rounded-full transition-colors cursor-pointer"
+                  style="background: var(--primary, #F97316);">
+            Von Hand freigeben
+          </button>
+          <button type="button" x-show="kannFreigeben() && formular" @click="formular = false; fehler = ''" :disabled="speichert"
+                  class="flex-1 px-4 py-2 text-sm font-semibold text-stone-700 bg-stone-100 rounded-full hover:bg-stone-200 transition-colors cursor-pointer">
+            Abbrechen
+          </button>
+          <button type="button" x-show="kannFreigeben() && formular" @click="freigeben()" :disabled="speichert || !notiz.trim()"
+                  :class="(speichert || !notiz.trim()) && 'opacity-50 cursor-not-allowed'"
+                  class="flex-1 px-4 py-2 text-sm font-semibold text-white rounded-full transition-colors cursor-pointer"
+                  style="background: var(--primary, #F97316);">
+            <span x-text="speichert ? 'Wird gespeichert …' : 'Freigeben'"></span>
+          </button>
+          <button type="button" x-show="!formular" @click="zumachen()"
+                  class="flex-1 px-4 py-2 text-sm font-semibold text-stone-700 bg-stone-100 rounded-full hover:bg-stone-200 transition-colors cursor-pointer">
+            Schließen
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+</div>
