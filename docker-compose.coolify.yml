@@ -13,7 +13,9 @@ services:
 
   app:
     build: .
-    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --threads 2
+    # 2026-10-28 – Server ist RAM-knapp: 2 statt 4 Worker reichen für die paar Nutzer;
+    # --max-requests ersetzt Worker regelmäßig, damit kein Prozess dauerhaft wächst.
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --threads 4 --max-requests 1000 --max-requests-jitter 100
     expose:
       - "8000"
     volumes:
@@ -40,7 +42,10 @@ services:
     # eine beim Deploy abgebrochene Aufgabe ihre Sperre eine Stunde lang: Der
     # neue Worker ist ebenfalls PID 1 und hält den toten Vorgänger für lebendig.
     # ``exec``, damit process_tasks PID 1 bleibt und das Stoppsignal bekommt.
-    command: sh -c "python manage.py release_task_locks && exec python manage.py process_tasks"
+    # 2026-10-28 – ``--duration 3600``: process_tasks beendet sich nach einer Stunde
+    # (nach der laufenden Aufgabe), restart startet ihn frisch. Er wuchs sonst über
+    # Tage auf rund 660 MB.
+    command: sh -c "python manage.py release_task_locks && exec python manage.py process_tasks --duration 3600"
     # 2026-08-05 — Laufenden Task beim Deploy zu Ende bringen.
     #
     # Ohne diesen Wert gilt Dockers Standard von 10 Sekunden, dann SIGKILL —
