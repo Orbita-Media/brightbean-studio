@@ -118,6 +118,17 @@ OUTCOME_LOOKUP_DELAY = getattr(settings, "PUBLISHER_OUTCOME_LOOKUP_DELAY", 15)
 # of this server and the platform are not exactly in step.
 OUTCOME_LOOKUP_SLACK = timedelta(minutes=2)
 
+# Bildprüfung (docs/BILDPRUEFUNG.md): ein ungeprüftes Medium hält den Beitrag
+# zurück, ohne einen Versuch zu verbrauchen. Nach dieser Wartezeit wird erneut
+# nachgesehen; liegt der Termin länger als BILDPRUEFUNG_FRIST zurück, scheitert
+# der Beitrag endgültig, damit nichts unbemerkt liegen bleibt.
+BILDPRUEFUNG_WARTEZEIT = timedelta(minutes=10)
+BILDPRUEFUNG_FRIST = timedelta(hours=6)
+
+
+class BildpruefungAusstehend(Exception):  # noqa: N818 – Steuersignal, kein Fehler
+    """Ein Medium des Beitrags ist noch nicht (gültig) geprüft: zurückhalten."""
+
 
 def _platform_label(platform_post) -> str:
     account = platform_post.social_account
@@ -197,7 +208,14 @@ class PublishEngine:
         next_retry_at). Retries belong to _process_retries.
         """
         now = timezone.now()
-        return list(self._due_queryset(now).filter(retry_count=0).order_by("effective_at")[:MAX_CONCURRENT_PUBLISHES])
+        return list(
+            self._due_queryset(now)
+            .filter(retry_count=0)
+            # A first attempt held back for its image check (retry_count stays
+            # 0, see _hold_for_image_check) waits for its next_retry_at.
+            .filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=now))
+            .order_by("effective_at")[:MAX_CONCURRENT_PUBLISHES]
+        )
 
     def _publish_post_group(self, post, due_pps):
         """Publish a group of due PlatformPosts belonging to the same Post.
@@ -307,6 +325,16 @@ class PublishEngine:
                 duration_ms=int((time.monotonic() - start_time) * 1000),
             )
             self._settle_outcome_unknown(platform_post, e)
+            return {"success": False, "error": platform_post.publish_error}
+        except BildpruefungAusstehend as e:
+            # Nothing went to the platform: the check runs before any download.
+            PublishLog.objects.create(
+                platform_post=platform_post,
+                attempt_number=platform_post.retry_count + 1,
+                error_message=str(e),
+                duration_ms=int((time.monotonic() - start_time) * 1000),
+            )
+            self._hold_for_image_check(platform_post, str(e))
             return {"success": False, "error": platform_post.publish_error}
         except Exception as e:
             duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -456,6 +484,10 @@ class PublishEngine:
         video_only = set(provider.supported_post_types) <= {PostType.VIDEO, PostType.SHORT}
         if video_only:
             attachments = [pm for pm in attachments if pm.media_asset.media_type == "video"]
+
+        # Before anything is downloaded or sent: every image and video of
+        # this post must have passed the image check.
+        self._block_on_image_check(platform_post, attachments)
 
         first_media_type = None
         primary_video_duration = None
@@ -831,6 +863,60 @@ class PublishEngine:
         )
 
     @staticmethod
+    def _block_on_image_check(platform_post, attachments) -> None:
+        """Sperre vor dem Veröffentlichen: Bildprüfung (docs/BILDPRUEFUNG.md).
+
+        Ein KI-Buchbild mit dem Buch auf dem Schüsselrand und einem Strahl quer
+        durchs Bild ging am 29.10.2026 auf Instagram und Facebook raus. Seitdem
+        braucht jedes Bild und Video, auch das Titelbild eines Videos, eine
+        gültige Prüfung (sha256 passt zur aktuellen Datei):
+
+        * gültig ``durchgefallen``: endgültig nicht veröffentlichen, immer,
+          auch bei ausgeschaltetem Schalter; die Befunde stehen im Fehlertext.
+        * ungeprüft oder Prüfung zu einer älteren Datei: nur bei Schalter
+          ``bildpruefung_pflicht`` an zurückhalten (BildpruefungAusstehend).
+        * ``bestanden`` / ``von_hand_freigegeben``: weiter.
+        """
+        from apps.media_library import bildpruefung as bp
+        from apps.media_library.models import MediaAsset
+
+        pflicht = bp.pflicht_an()
+        mit_datei = [pm.media_asset for pm in attachments if pm.media_asset.file]
+        medien = [(f"Anhang {nummer}", asset) for nummer, asset in enumerate(mit_datei, start=1)]
+        cover_ids = bp.uuids(bp.cover_asset_ids(platform_post.platform_extra))
+        if cover_ids:
+            medien += [("Titelbild", a) for a in MediaAsset.all_objects.filter(id__in=cover_ids) if a.file]
+
+        durchgefallen = []
+        offen = []
+        for label, asset in medien:
+            daten = asset.bildpruefung if isinstance(asset.bildpruefung, dict) else None
+            if not pflicht and not (daten and daten.get("status") == bp.DURCHGEFALLEN):
+                # Schalter aus: nur ein durchgefallenes Medium kann sperren.
+                continue
+            stand = bp.pruefstand(asset)
+            if stand.durchgefallen:
+                befunde = "; ".join(stand.befunde) or "ohne Befund"
+                durchgefallen.append(f"{label} ({asset.filename}): {befunde}")
+            elif stand.offen:
+                offen.append(f"{label} ({asset.filename}): {stand.grund_text}")
+
+        if durchgefallen:
+            raise PublishError(
+                "Bildprüfung durchgefallen, der Beitrag wird nicht veröffentlicht. Bild neu machen "
+                "oder ersetzen und den Beitrag neu einplanen. Befunde: " + " | ".join(durchgefallen),
+                retryable=False,
+            )
+        if offen and pflicht:
+            minuten = int(BILDPRUEFUNG_WARTEZEIT.total_seconds() // 60)
+            stunden = int(BILDPRUEFUNG_FRIST.total_seconds() // 3600)
+            raise BildpruefungAusstehend(
+                f"Bildprüfung fehlt, der Beitrag wird zurückgehalten und in {minuten} Minuten erneut "
+                f"versucht; ohne gültige Prüfung scheitert er {stunden} Stunden nach dem Termin "
+                "endgültig. Offen: " + " | ".join(offen)
+            )
+
+    @staticmethod
     def _block_on_dropped_media(provider, platform_post, media_count: int) -> None:
         """Refuse the post when the channel cannot show every attachment.
 
@@ -946,6 +1032,31 @@ class PublishEngine:
             reason,
             error_msg,
         )
+
+    def _hold_for_image_check(self, platform_post, error_msg):
+        """Hold a post whose media wait for the image check, without using up an attempt.
+
+        ``retry_count`` stays as it is (a first attempt stays a first attempt),
+        only ``next_retry_at`` moves BILDPRUEFUNG_WARTEZEIT ahead; both due
+        paths respect it. More than BILDPRUEFUNG_FRIST after the post's time
+        it fails for good instead.
+        """
+        now = timezone.now()
+        termin = platform_post.scheduled_at or platform_post.post.scheduled_at
+        if termin is not None and now - termin >= BILDPRUEFUNG_FRIST:
+            stunden = int(BILDPRUEFUNG_FRIST.total_seconds() // 3600)
+            self._fail_permanently(
+                platform_post,
+                f"Bildprüfung fehlt auch {stunden} Stunden nach dem Termin, der Beitrag wird nicht mehr "
+                f"automatisch veröffentlicht. Nach der Prüfung neu einplanen. {error_msg}",
+                reason="image check missing",
+            )
+            return
+        platform_post.status = PlatformPost.Status.SCHEDULED
+        platform_post.next_retry_at = now + BILDPRUEFUNG_WARTEZEIT
+        platform_post.publish_error = error_msg
+        platform_post.save()
+        logger.info("PlatformPost %s held back until its media pass the image check", platform_post.id)
 
     def _schedule_retry(self, platform_post, error_msg):
         """Schedule a retry with exponential backoff."""

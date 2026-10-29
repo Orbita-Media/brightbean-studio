@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
+from datetime import timezone as dt_timezone
 
 from django.core.exceptions import ValidationError
 from django.http import HttpRequest
@@ -35,7 +36,13 @@ from apps.api.middleware import (
     log_audit_entry,
     release_idempotent_claim,
 )
-from apps.api.schemas import MediaAssetListResponse, MediaAssetResponse
+from apps.api.schemas import (
+    BildpruefungIn,
+    BildpruefungOffenItem,
+    BildpruefungOffenResponse,
+    MediaAssetListResponse,
+    MediaAssetResponse,
+)
 from apps.media_library.models import MediaAsset
 from apps.media_library.services import ProtectedAssetError, create_asset, purge_asset, restore_asset, trash_asset
 
@@ -203,6 +210,111 @@ def _flatten_validation_error(exc: ValidationError) -> str:
     if hasattr(exc, "messages"):
         return "; ".join(exc.messages)
     return str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Bildprüfung (docs/BILDPRUEFUNG.md). Vor ``/{media_id}`` registriert, damit
+# ``bildpruefung`` nie als Asset-ID gelesen wird.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/bildpruefung/offen/",
+    response=BildpruefungOffenResponse,
+    summary="Medien an künftigen Beiträgen ohne gültige Bildprüfung",
+)
+def bildpruefung_offen(
+    request,
+    bis: str | None = Query(None, description="ISO-Zeitpunkt: nur Beiträge mit Termin bis dahin."),
+    workspace: uuid.UUID | None = Query(None, description="Workspace-ID; muss der des API-Keys entsprechen."),
+    status: str = Query("offen", description="``offen`` (Standard) oder ``durchgefallen``."),
+    limit: int = Query(1000, ge=1, le=5000),
+):
+    """Bilder und Videos an Beiträgen, die noch veröffentlicht werden können, ohne gültige Prüfung.
+
+    Gültig ist eine Prüfung nur, wenn ihr ``sha256`` zur aktuellen Datei passt;
+    ``grund`` sagt, warum ein Medium offen ist (``fehlt``, ``veraltet``,
+    ``datei_fehlt``). Sortiert nach nächstem Termin, Entwürfe ohne Termin
+    zuletzt (mit ``bis`` fallen sie heraus). ``status=durchgefallen`` listet
+    stattdessen die gültig durchgefallenen Medien, die neu gemacht werden müssen.
+    """
+    from django.utils.dateparse import parse_datetime
+
+    from apps.media_library.bildpruefung import offene_medien, pflicht_an
+
+    enforce_http_rate_limits(request, is_write=False)
+    key_workspace = request.workspace  # type: ignore[attr-defined]
+    if workspace is not None and workspace != key_workspace.id:
+        raise HttpError(403, f"Der API-Key gehört zu Workspace {key_workspace.id}, nicht zu {workspace}.")
+    if status not in ("offen", "durchgefallen"):
+        raise HttpError(422, "status muss offen oder durchgefallen sein.")
+    bis_dt = None
+    if bis:
+        bis_dt = parse_datetime(bis)
+        if bis_dt is None:
+            raise HttpError(422, "bis muss ein ISO-Zeitpunkt sein, z. B. 2026-11-12T00:00:00Z.")
+        if bis_dt.tzinfo is None:
+            bis_dt = bis_dt.replace(tzinfo=dt_timezone.utc)
+
+    ergebnis = offene_medien(workspace_ids=[key_workspace.id], bis=bis_dt)
+    eintraege = ergebnis["eintraege"] if status == "offen" else ergebnis["durchgefallen"]
+    # ``sha256`` ist null, solange er nicht gerechnet ist (die Liste lädt keine
+    # Dateien); ``manage.py bildpruefung_offen --sha-rechnen`` füllt ihn nach.
+    body = BildpruefungOffenResponse(
+        anzahl=len(eintraege),
+        durchgefallen_anzahl=len(ergebnis["durchgefallen"]),
+        pflicht_an=pflicht_an(),
+        status=status,
+        bis=bis_dt,
+        workspace_id=key_workspace.id,
+        items=[BildpruefungOffenItem.from_eintrag(e) for e in eintraege[:limit]],
+    )
+    log_audit_entry(request, action="media.bildpruefung.offen.200", target_id=None, status_code=200)
+    return body
+
+
+@router.post(
+    "/{media_id}/bildpruefung/",
+    response={200: MediaAssetResponse, 409: dict},
+    summary="Ergebnis der Bildprüfung für ein Medium speichern",
+)
+def bildpruefung_speichern(request, media_id: uuid.UUID, payload: BildpruefungIn):
+    """Speichert das Prüfobjekt am Medium.
+
+    ``409``, wenn ``sha256`` nicht zur aktuellen Datei passt (die Antwort
+    nennt den aktuellen Wert in ``sha256_aktuell``). ``422`` bei verletztem
+    Vertrag (z. B. ``durchgefallen`` ohne Befund, ``von_hand_freigegeben``
+    ohne Notiz). Braucht die Berechtigung ``edit_media``; eine Freigabe von
+    Hand zusätzlich einen Key, dessen Aussteller Owner/Admin ist.
+    """
+    from apps.media_library.bildpruefung import (
+        VON_HAND_FREIGEGEBEN,
+        ShaAbweichung,
+        UngueltigePruefung,
+        darf_von_hand_freigeben,
+        pruefung_speichern,
+    )
+
+    enforce_http_rate_limits(request, is_write=True)
+    _require_perm(request, "edit_media")
+    asset = get_object_or_404(_visible_assets_qs(request), id=media_id)
+    if payload.status == VON_HAND_FREIGEGEBEN and not darf_von_hand_freigeben(request.user, request.workspace):
+        raise HttpError(403, "Von Hand freigeben dürfen nur Owner und Admins.")
+    try:
+        pruefung_speichern(asset, payload.model_dump())
+    except UngueltigePruefung as exc:
+        raise HttpError(422, str(exc)) from exc
+    except ShaAbweichung as exc:
+        log_audit_entry(request, action="media.bildpruefung.409", target_id=asset.id, status_code=409)
+        return 409, {
+            "error": "conflict",
+            "detail": str(exc),
+            "sha256_gemeldet": exc.gemeldet,
+            "sha256_aktuell": exc.aktuell,
+        }
+    log_audit_entry(request, action="media.bildpruefung.200", target_id=asset.id, status_code=200)
+    asset = MediaAsset.objects.with_last_used_at(_visible_assets_qs(request)).get(id=asset.id)
+    return 200, MediaAssetResponse.from_asset(asset, last_used_at=getattr(asset, "last_used_at", None))
 
 
 # ---------------------------------------------------------------------------

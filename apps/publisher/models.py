@@ -84,3 +84,33 @@ class RateLimitState(models.Model):
         if self.requests_remaining > 0:
             return True
         return not self.is_rate_limited
+
+
+class Schalter(models.Model):
+    """Betriebsschalter, die ohne Redeploy umgeschaltet werden.
+
+    Gesetzt per Management-Command (``bildpruefung_pflicht an|aus|status``).
+    Fehlt die Zeile, gilt der Schalter als AUS.
+    """
+
+    BILDPRUEFUNG_PFLICHT = "bildpruefung_pflicht"
+
+    name = models.CharField(max_length=100, primary_key=True)
+    an = models.BooleanField(default=False)
+    umgeschaltet_am = models.DateTimeField(auto_now=True)
+    umgeschaltet_von = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        db_table = "publisher_schalter"
+
+    def __str__(self):
+        return f"{self.name}: {'an' if self.an else 'aus'}"
+
+    @classmethod
+    def ist_an(cls, name: str) -> bool:
+        return cls.objects.filter(name=name, an=True).exists()
+
+    @classmethod
+    def setzen(cls, name: str, an: bool, *, von: str = "") -> "Schalter":
+        schalter, _ = cls.objects.update_or_create(name=name, defaults={"an": an, "umgeschaltet_von": von[:255]})
+        return schalter

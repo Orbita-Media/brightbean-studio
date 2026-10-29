@@ -42,6 +42,15 @@ def process_media_asset(asset_id):
         asset.processing_status = MediaAsset.ProcessingStatus.FAILED
         asset.save(update_fields=["processing_status"])
 
+    # sha256 für die Bildprüfung gleich merken (docs/BILDPRUEFUNG.md), damit
+    # die Liste der offenen Medien ihn ohne Nachladen mitliefern kann.
+    try:
+        from .bildpruefung import datei_sha256
+
+        datei_sha256(asset)
+    except Exception:
+        logger.exception("sha256 for media asset %s failed", asset_id)
+
 
 def _process_image(asset):
     """Extract metadata and generate thumbnail for an image."""

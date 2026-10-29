@@ -742,6 +742,14 @@ class MediaAssetResponse(Schema):
     created_at: dt.datetime
     updated_at: dt.datetime
     deleted_at: dt.datetime | None = None
+    # Bildprüfung (docs/BILDPRUEFUNG.md): das gespeicherte Prüfobjekt (null =
+    # ungeprüft), der ausgewertete Stand gegen die aktuelle Datei
+    # (bestanden | durchgefallen | von_hand_freigegeben | offen) und der
+    # zwischengespeicherte sha256 der Datei (null = noch nicht berechnet).
+    bildpruefung: dict | None = None
+    bildpruefung_status: str = "offen"
+    bildpruefung_gueltig: bool = False
+    sha256: str | None = None
 
     @field_serializer("last_used_at", "created_at", "updated_at", "deleted_at")
     def _serialize_dt(self, value: dt.datetime | None) -> str | None:
@@ -775,7 +783,20 @@ class MediaAssetResponse(Schema):
             created_at=asset.created_at,
             updated_at=asset.updated_at,
             deleted_at=getattr(asset, "deleted_at", None),
+            **_bildpruefung_felder(asset),
         )
+
+
+def _bildpruefung_felder(asset) -> dict:
+    from apps.media_library.bildpruefung import gemerkter_sha256, pruefstand
+
+    stand = pruefstand(asset)
+    return {
+        "bildpruefung": asset.bildpruefung if isinstance(asset.bildpruefung, dict) else None,
+        "bildpruefung_status": stand.status,
+        "bildpruefung_gueltig": not stand.offen,
+        "sha256": gemerkter_sha256(asset),
+    }
 
 
 def _safe_file_url(file_field) -> str:
@@ -797,6 +818,91 @@ class MediaAssetListResponse(Schema):
     items: list[MediaAssetResponse]
     next_cursor: str | None = None
     limit: int
+
+
+# ---------------------------------------------------------------------------
+# Bildprüfung (docs/BILDPRUEFUNG.md)
+# ---------------------------------------------------------------------------
+
+
+class BildpruefungIn(Schema):
+    """Prüfergebnis der Bildwache für ``POST /media/{id}/bildpruefung/``."""
+
+    status: Literal["bestanden", "durchgefallen", "von_hand_freigegeben"]
+    sha256: str
+    pruefer: str
+    modelle: list[str] = []
+    befunde: list[str] = []
+    geprueft_am: str | None = None
+    notiz: str = ""
+
+
+class BildpruefungBeitrag(Schema):
+    post_id: uuid.UUID
+    termin: dt.datetime | None = None
+    plattformen: list[str]
+
+    @field_serializer("termin")
+    def _serialize_dt(self, value: dt.datetime | None) -> str | None:
+        return _serialize_utc_z(value)
+
+
+class BildpruefungOffenItem(Schema):
+    id: uuid.UUID
+    media_type: str
+    filename: str
+    mime_type: str
+    url: str
+    sha256: str | None = None
+    termin: dt.datetime | None = None
+    plattformen: list[str]
+    workspace_id: uuid.UUID
+    beitragstext: str
+    bildpruefung_status: str
+    grund: str | None = None
+    bildpruefung: dict | None = None
+    beitraege: list[BildpruefungBeitrag]
+
+    @field_serializer("termin")
+    def _serialize_dt(self, value: dt.datetime | None) -> str | None:
+        return _serialize_utc_z(value)
+
+    @classmethod
+    def from_eintrag(cls, eintrag: dict) -> BildpruefungOffenItem:
+        from apps.media_library.bildpruefung import gemerkter_sha256
+
+        asset = eintrag["asset"]
+        stand = eintrag["stand"]
+        return cls(
+            id=asset.id,
+            media_type=asset.media_type,
+            filename=asset.filename,
+            mime_type=asset.mime_type or "",
+            url=_safe_file_url(asset.file),
+            sha256=gemerkter_sha256(asset),
+            termin=eintrag["termin"],
+            plattformen=eintrag["plattformen"],
+            workspace_id=eintrag["workspace_id"],
+            beitragstext=eintrag["beitragstext"],
+            bildpruefung_status=stand.status,
+            grund=stand.grund,
+            bildpruefung=asset.bildpruefung if isinstance(asset.bildpruefung, dict) else None,
+            beitraege=[BildpruefungBeitrag(**b) for b in eintrag["beitraege"]],
+        )
+
+
+class BildpruefungOffenResponse(Schema):
+    anzahl: int
+    durchgefallen_anzahl: int
+    pflicht_an: bool
+    status: str
+    bis: dt.datetime | None = None
+    workspace_id: uuid.UUID
+    items: list[BildpruefungOffenItem]
+
+    @field_serializer("bis")
+    def _serialize_dt(self, value: dt.datetime | None) -> str | None:
+        return _serialize_utc_z(value)
 
 
 # ---------------------------------------------------------------------------

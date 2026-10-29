@@ -172,6 +172,18 @@ class MediaAsset(models.Model):
         related_name="+",
     )
 
+    # Bildprüfung (docs/BILDPRUEFUNG.md): Ergebnis der Prüfung vor dem
+    # Veröffentlichen, null = ungeprüft. Gültig nur, solange ``sha256`` darin
+    # zur aktuellen Datei passt; eine neue Datei/Version macht sie ungültig.
+    bildpruefung = models.JSONField(null=True, blank=True)
+    # Zwischenspeicher für den sha256 der Datei. Er gehört zu genau dem
+    # Dateinamen in ``sha256_datei``; zeigt ``file`` auf eine andere Datei,
+    # wird neu gerechnet (apps/media_library/bildpruefung.py).
+    # Nullable, damit die Migration rückwärtskompatibel ist (der laufende
+    # alte Code legt während des Deploys noch Assets ohne diese Spalten an).
+    sha256 = models.CharField(max_length=64, null=True, blank=True)
+    sha256_datei = models.CharField(max_length=1024, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     # Trash: set when the asset is deleted, the file stays until it is
@@ -248,6 +260,13 @@ class MediaAsset(models.Model):
     @property
     def duration_seconds(self):
         return self.duration if self.duration else None
+
+    @property
+    def bildpruefung_stand(self):
+        """Stand der Bildprüfung für Abzeichen und API (siehe ``bildpruefung.pruefstand``)."""
+        from .bildpruefung import pruefstand
+
+        return pruefstand(self)
 
 
 class MediaAssetVersion(models.Model):

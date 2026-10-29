@@ -139,6 +139,9 @@ def _build_dispatch_mocks(
     Returns (engine, platform_post, mock_provider).
     """
     engine = PublishEngine()
+    # The image check reads the database (switch, assets); these mocks have
+    # neither. It has its own tests in test_bildpruefung.py.
+    engine._block_on_image_check = lambda *args, **kwargs: None
 
     account = MagicMock()
     account.platform = platform
