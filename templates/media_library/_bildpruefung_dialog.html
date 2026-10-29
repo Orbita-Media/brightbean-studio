@@ -86,11 +86,12 @@ alle Abzeichen und Blöcke des Mediums durch die frische Fassung ersetzt.
         });
       },
       farbe() {
-        return {
+        // Ganzer Stil in einem String: Alpines :style ersetzt einen statischen style.
+        return 'font-size: 12px; padding: 3px 10px; ' + ({
           bestanden: 'background: #DCFCE7; color: #166534;',
           von_hand_freigegeben: 'background: #DBEAFE; color: #1E40AF;',
           durchgefallen: 'background: #DC2626; color: #FFFFFF;',
-        }[this.bp.status] || 'background: #FEF3C7; color: #92400E;';
+        }[this.bp.status] || 'background: #FEF3C7; color: #92400E;');
       },
     };
   };
@@ -128,8 +129,7 @@ alle Abzeichen und Blöcke des Mediums durch die frische Fassung ersetzt.
         </div>
 
         <div class="px-5 py-4 space-y-3">
-          <span class="inline-flex items-center gap-1 rounded-full font-semibold" style="font-size: 12px; padding: 3px 10px;"
-                :style="farbe()" x-text="bp.titel"></span>
+          <span class="inline-flex items-center gap-1 rounded-full font-semibold" :style="farbe()" x-text="bp.titel"></span>
           <p x-show="bp.grund" class="text-sm text-stone-600" x-text="bp.grund"></p>
           <p x-show="bp.status === 'durchgefallen'" class="text-sm font-medium" style="color: #B91C1C;">
             Dieses Medium wird nicht veröffentlicht. Beiträge damit scheitern, bis es ersetzt oder von Hand freigegeben ist.
