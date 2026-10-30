@@ -80,3 +80,9 @@ if _os.environ.get("AWS_ACCESS_KEY_ID"):
     # scheitern. Die SES-Schlüssel kommen weiterhin aus der Umgebung.
     AWS_SES_ACCESS_KEY_ID = _os.environ["AWS_ACCESS_KEY_ID"]
     AWS_SES_SECRET_ACCESS_KEY = _os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    # SES-Tenant je Absenderdomain (ein Tenant je Marke/Domain, 30.10.2026): nur die v2-API reicht
+    # den Tenant als TenantName durch, die Funktion bekommt jede Nachricht und wählt nach From-Domain.
+    USE_SES_V2 = True
+    from config.ses_tenant import ses_tenant as _ses_tenant
+
+    AWS_SES_TENANT = _ses_tenant
