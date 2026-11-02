@@ -199,6 +199,36 @@ class InstagramAudioIn(Schema):
     video_volume: int = Field(100, ge=0, le=100, description="The uploaded file's own audio. 0 mutes it.")
 
 
+class UserTagIn(Schema):
+    """One person tag (Instagram ``user_tags``) on one image of the post.
+
+    Stored in ``PlatformPost.platform_extra["user_tags"]`` and sent on the
+    image container of that slide (on a carousel: the child container).
+    """
+
+    slide: int = Field(
+        ...,
+        ge=1,
+        le=10,
+        description="Which image, counted from 1 in the order of media_asset_ids. Must be an image, not a video.",
+    )
+    username: str = Field(
+        ...,
+        min_length=1,
+        max_length=31,
+        description="Instagram username of a PUBLIC account; a leading @ is stripped.",
+    )
+    x: float = Field(..., ge=0, le=1, description="Horizontal position, 0 = left edge, 1 = right edge.")
+    y: float = Field(..., ge=0, le=1, description="Vertical position, 0 = top edge, 1 = bottom edge.")
+
+
+class UserTagOut(Schema):
+    slide: int
+    username: str
+    x: float
+    y: float
+
+
 class PlatformOverride(Schema):
     """Per-account override of the post's title/caption/first_comment.
 
@@ -235,6 +265,20 @@ class PlatformOverride(Schema):
             "Usernames, not numeric IDs; a leading @ is stripped. Not supported "
             "on stories. The invitation arrives as a DM without a notification, "
             "so tell the partner through another channel that it is waiting."
+        ),
+    )
+    user_tags: list[UserTagIn] | None = Field(
+        None,
+        max_length=200,
+        description=(
+            "Instagram only (both connection types): person tags on the images, each with "
+            "the slide it sits on (1-based) and x/y from 0 to 1. Up to 20 per image. Valid on a "
+            "single image and on the IMAGE slides of a carousel; a video slide, a reel or a "
+            "story answers 422. The tagged account gets notified and the post shows up under "
+            "its 'Tagged' tab, but unlike collaborators it is NOT shown to its followers. A tag "
+            "Instagram refuses (private or unknown account) is dropped at publish time instead "
+            "of failing the post. On PATCH an empty list removes all tags, omitting the field "
+            "keeps them."
         ),
     )
     trial: bool | None = Field(
@@ -293,7 +337,7 @@ class PlatformOverride(Schema):
             "recommended). No media, a carousel or a longer video answer 422. A story has no "
             "caption, alt text, first comment, cover, collaborators, platform sound or trial: "
             "the caption and first comment are simply not sent, while cover_asset_id / "
-            "cover_offset_ms, collaborators, instagram_audio and trial on the same channel "
+            "cover_offset_ms, collaborators, user_tags, instagram_audio and trial on the same channel "
             "answer 422 (send them as null / [] / false to clear stored values in the same "
             "request). Stickers, links and music cannot be added to a story through the API. "
             "On PATCH, ``null`` switches the story off again; omitting the field keeps it."
@@ -555,6 +599,8 @@ class PlatformOverrideOut(Schema):
     caption: str | None = None
     first_comment: str | None = None
     collaborators: list[str] | None = None
+    #: Personenmarkierungen je Bild, null = keine gesetzt.
+    user_tags: list[UserTagOut] | None = None
     #: true = Test-Reel, null = normales Reel (kein Schalter gesetzt).
     trial: bool | None = None
     #: Nur zusammen mit trial=true gesetzt: SS_PERFORMANCE oder MANUAL.
@@ -575,6 +621,7 @@ class PlatformOverrideOut(Schema):
     @classmethod
     def from_platform_post(cls, pp: PlatformPost) -> PlatformOverrideOut:
         from providers.instagram_trial import EXTRA_GRADUATION, is_trial, normalize_graduation
+        from providers.instagram_user_tags import EXTRA_USER_TAGS, normalize_user_tags
         from providers.story import is_story
         from providers.video_cover import EXTRA_COVER_ASSET, cover_offset_from_extra
 
@@ -597,6 +644,7 @@ class PlatformOverrideOut(Schema):
             caption=pp.platform_specific_caption,
             first_comment=pp.platform_specific_first_comment,
             collaborators=list(roh) if isinstance(roh, list) else None,
+            user_tags=[UserTagOut(**t) for t in normalize_user_tags(extra.get(EXTRA_USER_TAGS))] or None,
             trial=True if test_reel else None,
             trial_graduation=normalize_graduation(extra.get(EXTRA_GRADUATION)) if test_reel else None,
             cover_asset_id=cover_asset_id,

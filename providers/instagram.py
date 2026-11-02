@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError, PublishLookupUnavailableError
 from .instagram_trial import build_trial_params, trial_params_field
+from .instagram_user_tags import user_tags_field, user_tags_for_slide, warn_unsupported
 from .meta_business import pages_when_me_accounts_is_empty
 from .meta_diagnostics import collect_diagnostics
 from .meta_insights import fetch_insights_safe
@@ -696,6 +697,7 @@ class InstagramProvider(SocialProvider):
             if trial_params:
                 # Trial reel: non-followers only until it graduates.
                 payload["trial_params"] = trial_params_field(trial_params)
+            warn_unsupported(content.extra, "ein Reel")
         else:
             # Default IMAGE
             payload["image_url"] = content.media_urls[0]
@@ -704,6 +706,11 @@ class InstagramProvider(SocialProvider):
             alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
             if alt_text:
                 payload["alt_text"] = alt_text
+            # Personenmarkierungen sitzen am Bild-Container, JSON-String wie
+            # collaborators (providers/instagram_user_tags.py).
+            user_tags = user_tags_for_slide(content.extra, 0)
+            if user_tags:
+                payload["user_tags"] = user_tags_field(user_tags)
 
         if audio_configuration and "audio_configuration" not in payload:
             # A platform sound only attaches to a reel, at creation time. Rather
@@ -752,6 +759,8 @@ class InstagramProvider(SocialProvider):
             result_extra["cover_dropped"] = True
         if "collaborators" in dropped:
             result_extra["collaborators_dropped"] = True
+        if "user_tags" in dropped:
+            result_extra["user_tags_dropped"] = True
         return self._publish_container(access_token, ig_user_id, container_id, result_extra=result_extra)
 
     def _publish_story(self, access_token: str, ig_user_id: str, content: PublishContent) -> PublishResult:
@@ -783,6 +792,7 @@ class InstagramProvider(SocialProvider):
                 "Instagram: ignoring audio_id %s on a story, the Audio API attaches sound to reels only",
                 audio_configuration.get("audio_id"),
             )
+        warn_unsupported(content.extra, "eine Story")
         if content.text:
             logger.info("Instagram: story published without its caption, a story container has none")
 
@@ -829,6 +839,7 @@ class InstagramProvider(SocialProvider):
         build_trial_params(content.extra, content.post_type, platform=self.platform_name)
 
         child_ids: list[str] = []
+        dropped: set[str] = set()
 
         for index, url in enumerate(content.media_urls):
             is_video = url.lower().endswith((".mp4", ".mov"))
@@ -838,6 +849,7 @@ class InstagramProvider(SocialProvider):
             if is_video:
                 child_payload["media_type"] = "VIDEO"
                 child_payload["video_url"] = url
+                warn_unsupported(content.extra, "eine Video-Folie", index)
             else:
                 child_payload["image_url"] = url
                 # One description per slide — the index keeps it on the image
@@ -845,8 +857,13 @@ class InstagramProvider(SocialProvider):
                 alt_text = content.alt_text_for(index, MAX_ALT_TEXT_LENGTH)
                 if alt_text:
                     child_payload["alt_text"] = alt_text
+                # Personenmarkierungen gehören wie alt_text ans Kind: jede
+                # Folie trägt ihre eigenen, der Eltern-Container keine.
+                user_tags = user_tags_for_slide(content.extra, index)
+                if user_tags:
+                    child_payload["user_tags"] = user_tags_field(user_tags)
 
-            child_id = self._create_container(access_token, ig_user_id, child_payload)
+            child_id = self._create_container_or_drop_user_tags(access_token, ig_user_id, child_payload, dropped)
             self._wait_for_container(access_token, child_id)
             child_ids.append(child_id)
 
@@ -865,15 +882,15 @@ class InstagramProvider(SocialProvider):
             # the child and the caption on the parent.
             carousel_payload["collaborators"] = json.dumps(collaborators)
 
-        dropped: set[str] = set()
         carousel_id = self._create_container_or_drop_collaborators(access_token, ig_user_id, carousel_payload, dropped)
         self._wait_for_container(access_token, carousel_id)
 
+        result_extra = {f"{feld}_dropped": True for feld in ("collaborators", "user_tags") if feld in dropped}
         return self._publish_container(
             access_token,
             ig_user_id,
             carousel_id,
-            result_extra={"collaborators_dropped": True} if "collaborators" in dropped else None,
+            result_extra=result_extra or None,
         )
 
     def _create_container_with_audio(
@@ -895,7 +912,7 @@ class InstagramProvider(SocialProvider):
         """
         dropped = dropped if dropped is not None else set()
         try:
-            return self._create_container_or_drop_collaborators(access_token, ig_user_id, payload, dropped), False
+            return self._create_container_or_drop_user_tags(access_token, ig_user_id, payload, dropped), False
         except (APIError, PublishError) as exc:
             if "audio_configuration" not in payload:
                 raise
@@ -905,7 +922,39 @@ class InstagramProvider(SocialProvider):
                 exc,
             )
             retry_payload = {k: v for k, v in payload.items() if k != "audio_configuration"}
-            return self._create_container_or_drop_collaborators(access_token, ig_user_id, retry_payload, dropped), True
+            return self._create_container_or_drop_user_tags(access_token, ig_user_id, retry_payload, dropped), True
+
+    def _create_container_or_drop_user_tags(
+        self, access_token: str, ig_user_id: str, payload: dict, dropped: set[str]
+    ) -> str:
+        """Create the container, retrying once without the person tags.
+
+        A tag on an account that is private, renamed or deleted makes Graph
+        refuse the whole container. Losing a finished post over a tag would be
+        the worse outcome, so the post goes out without its tags on that image
+        and ``user_tags_dropped`` lands in the publish log. Only a SUCCESSFUL
+        retry marks the drop; if the retry fails too, the tags were not the
+        problem and the original error is raised.
+        """
+        try:
+            return self._create_container_or_drop_collaborators(access_token, ig_user_id, payload, dropped)
+        except (APIError, PublishError) as exc:
+            if "user_tags" not in payload:
+                raise
+            logger.warning(
+                "Instagram: container rejected with user_tags=%s, retrying without them (%s)",
+                payload["user_tags"],
+                exc,
+            )
+            retry_payload = {k: v for k, v in payload.items() if k != "user_tags"}
+            try:
+                container_id = self._create_container_or_drop_collaborators(
+                    access_token, ig_user_id, retry_payload, dropped
+                )
+            except (APIError, PublishError):
+                raise exc from None
+            dropped.add("user_tags")
+            return container_id
 
     def _create_container_or_drop_collaborators(
         self, access_token: str, ig_user_id: str, payload: dict, dropped: set[str]

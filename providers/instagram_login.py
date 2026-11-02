@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from .base import SocialProvider
 from .exceptions import APIError, OAuthError, PublishError, PublishLookupUnavailableError
 from .instagram_trial import build_trial_params, trial_params_field
+from .instagram_user_tags import user_tags_field, user_tags_for_slide, warn_unsupported
 from .meta_insights import fetch_insights_safe
 from .published_lookup import is_meta_ambiguous_error, lookup_instagram_media
 from .story import instagram_story_fields
@@ -333,29 +334,39 @@ class InstagramLoginProvider(SocialProvider):
             payload["video_url"] = content.media_urls[0]
             if trial_params:
                 payload["trial_params"] = trial_params_field(trial_params)
+            warn_unsupported(content.extra, "ein Reel")
         else:
             # Default IMAGE
             payload["image_url"] = content.media_urls[0]
             alt_text = content.alt_text_for(0, MAX_ALT_TEXT_LENGTH)
             if alt_text:
                 payload["alt_text"] = alt_text
+            # Personenmarkierungen: gleiche Regeln wie der Facebook-Login-Weg
+            # (providers/instagram_user_tags.py).
+            user_tags = user_tags_for_slide(content.extra, 0)
+            if user_tags:
+                payload["user_tags"] = user_tags_field(user_tags)
 
         # Titelbild: same rules as the Facebook-Login path (providers/video_cover.py).
         payload.update(instagram_cover_fields(content.extra, content.post_type))
+        dropped: set[str] = set()
         container_id, cover_dropped = create_with_cover_fallback(
-            lambda p: self._create_container(access_token, p),
+            lambda p: self._create_container_or_drop_user_tags(access_token, p, dropped),
             payload,
             fallback_offset=parse_offset_ms(content.extra.get("thumb_offset_ms")),
             platform=self.platform_name,
         )
         self._wait_for_container(access_token, container_id)
         result = self._publish_container(access_token, container_id)
-        if cover_dropped:
+        markers = {"cover_dropped": True} if cover_dropped else {}
+        if "user_tags" in dropped:
+            markers["user_tags_dropped"] = True
+        if markers:
             # PublishResult is frozen: hand back a copy that says so.
             result = PublishResult(
                 platform_post_id=result.platform_post_id,
                 url=result.url,
-                extra={**(result.extra or {}), "cover_dropped": True},
+                extra={**(result.extra or {}), **markers},
             )
         return result
 
@@ -367,6 +378,7 @@ class InstagramLoginProvider(SocialProvider):
         payload = instagram_story_fields(content, "instagram_login", self.platform_name)
         # Logs "reels only" and returns nothing for a story.
         instagram_cover_fields(content.extra, content.post_type)
+        warn_unsupported(content.extra, "eine Story")
         if content.text:
             logger.info("Instagram (Direct): story published without caption, a story container has none")
         container_id = self._create_container(access_token, payload)
@@ -406,6 +418,7 @@ class InstagramLoginProvider(SocialProvider):
             )
 
         child_ids: list[str] = []
+        dropped: set[str] = set()
 
         for index, url in enumerate(content.media_urls):
             is_video = url.lower().endswith((".mp4", ".mov"))
@@ -413,14 +426,19 @@ class InstagramLoginProvider(SocialProvider):
             if is_video:
                 child_payload["media_type"] = "VIDEO"
                 child_payload["video_url"] = url
+                warn_unsupported(content.extra, "eine Video-Folie", index)
             else:
                 child_payload["image_url"] = url
                 # One description per slide, kept on its own image by index.
                 alt_text = content.alt_text_for(index, MAX_ALT_TEXT_LENGTH)
                 if alt_text:
                     child_payload["alt_text"] = alt_text
+                # Personenmarkierungen am Kind der Folie, nicht am Eltern-Container.
+                user_tags = user_tags_for_slide(content.extra, index)
+                if user_tags:
+                    child_payload["user_tags"] = user_tags_field(user_tags)
 
-            child_id = self._create_container(access_token, child_payload)
+            child_id = self._create_container_or_drop_user_tags(access_token, child_payload, dropped)
             self._wait_for_container(access_token, child_id)
             child_ids.append(child_id)
 
@@ -433,7 +451,38 @@ class InstagramLoginProvider(SocialProvider):
 
         carousel_id = self._create_container(access_token, carousel_payload)
         self._wait_for_container(access_token, carousel_id)
-        return self._publish_container(access_token, carousel_id)
+        result = self._publish_container(access_token, carousel_id)
+        if "user_tags" in dropped:
+            result = PublishResult(
+                platform_post_id=result.platform_post_id,
+                url=result.url,
+                extra={**(result.extra or {}), "user_tags_dropped": True},
+            )
+        return result
+
+    def _create_container_or_drop_user_tags(self, access_token: str, payload: dict, dropped: set[str]) -> str:
+        """Create the container, retrying once without the person tags.
+
+        Same rule as ``InstagramProvider._create_container_or_drop_user_tags``:
+        a tag on a private, renamed or deleted account must not cost the post.
+        """
+        try:
+            return self._create_container(access_token, payload)
+        except (APIError, PublishError) as exc:
+            if "user_tags" not in payload:
+                raise
+            logger.warning(
+                "Instagram (Direct): container rejected with user_tags=%s, retrying without them (%s)",
+                payload["user_tags"],
+                exc,
+            )
+            retry_payload = {k: v for k, v in payload.items() if k != "user_tags"}
+            try:
+                container_id = self._create_container(access_token, retry_payload)
+            except (APIError, PublishError):
+                raise exc from None
+            dropped.add("user_tags")
+            return container_id
 
     def _create_container(self, access_token: str, payload: dict) -> str:
         resp = self._request(

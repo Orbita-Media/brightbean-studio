@@ -198,6 +198,52 @@ def _check_trial_media(assets: list) -> None:
         )
 
 
+def _check_user_tags(platform: str, tags: list, assets: list) -> list[dict]:
+    """Validate the person tags of one override and return them normalised.
+
+    422 instead of a silent drop at publish time, which is hours later and
+    without anyone watching: wrong channel, a name Instagram cannot have, a
+    slide the post does not have, a video slide (Graph takes ``user_tags`` on
+    image containers only) or more than 20 tags on one image.
+    """
+    from providers.instagram_user_tags import MAX_USER_TAGS_PER_IMAGE, USERNAME_RE, normalize_username
+
+    if platform not in TRIAL_PLATFORMS:
+        raise HttpError(
+            422,
+            f"user_tags is only valid for Instagram accounts; this account is on {platform}.",
+        )
+    normalised: list[dict] = []
+    seen: set[tuple[int, str]] = set()
+    per_slide: dict[int, int] = {}
+    for tag in tags:
+        username = normalize_username(tag.username)
+        if not USERNAME_RE.match(username):
+            raise HttpError(422, f"user_tags: '{tag.username}' ist kein gültiger Instagram-Nutzername.")
+        if tag.slide > len(assets):
+            raise HttpError(
+                422,
+                f"user_tags: Folie {tag.slide} gibt es nicht, der Beitrag hat {len(assets)} Medien.",
+            )
+        if getattr(assets[tag.slide - 1], "is_video", False):
+            raise HttpError(
+                422,
+                f"user_tags: Folie {tag.slide} ist ein Video; Instagram markiert Personen nur auf Bildern.",
+            )
+        key = (tag.slide, username.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        per_slide[tag.slide] = per_slide.get(tag.slide, 0) + 1
+        if per_slide[tag.slide] > MAX_USER_TAGS_PER_IMAGE:
+            raise HttpError(
+                422,
+                f"user_tags: mehr als {MAX_USER_TAGS_PER_IMAGE} Markierungen auf Folie {tag.slide}.",
+            )
+        normalised.append({"slide": tag.slide, "username": username, "x": round(tag.x, 4), "y": round(tag.y, 4)})
+    return normalised
+
+
 def _trial_extra(extra: dict, ov) -> dict:
     """Write ``trial`` / ``trial_graduation`` of one override into *extra*."""
     from providers.instagram_trial import DEFAULT_GRADUATION, EXTRA_GRADUATION, EXTRA_TRIAL
@@ -304,6 +350,8 @@ def _story_conflicts(extra: dict) -> list[str]:
         konflikte.append("Titelbild (cover_asset_id / cover_offset_ms)")
     if extra.get("collaborators"):
         konflikte.append("Mitwirkende (collaborators)")
+    if extra.get("user_tags"):
+        konflikte.append("Personenmarkierungen (user_tags)")
     if extra.get("audio_id"):
         konflikte.append("Instagram-Sound (instagram_audio)")
     if is_trial(extra):
@@ -354,6 +402,8 @@ def _story_request_extra(ov) -> dict:
         extra["thumb_offset_ms"] = ov.cover_offset_ms
     if ov.collaborators:
         extra["collaborators"] = list(ov.collaborators)
+    if ov.user_tags:
+        extra["user_tags"] = [t.dict() for t in ov.user_tags]
     if ov.instagram_audio is not None:
         extra["audio_id"] = ov.instagram_audio.audio_id
     if ov.trial:
@@ -535,6 +585,18 @@ def create(request, payload: CreatePostRequest):
                 if name and name.lower() not in {n.lower() for n in names}:
                     names.append(name)
             override.setdefault("platform_extra", {})["collaborators"] = names
+        if ov.user_tags:
+            # Person tags are Instagram-only and sit on image containers; checked
+            # against the media of this request so a tag on a missing slide or a
+            # video fails now and not at publish time.
+            from apps.media_library.models import MediaAsset
+
+            wanted = list(payload.media_asset_ids)
+            found = {a.id: a for a in MediaAsset.objects.filter(id__in=wanted, workspace=request.api_key.workspace)}
+            tags = _check_user_tags(social_account.platform, ov.user_tags, [found[i] for i in wanted if i in found])
+            override.setdefault("platform_extra", {})["user_tags"] = tags
+        elif ov.user_tags is not None:
+            _check_user_tags(social_account.platform, [], [])
         if ov.trial is not None:
             _check_trial_platform(social_account.platform)
             if ov.trial:
@@ -835,7 +897,16 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
             if payload.media_asset_ids is not None:
                 medien = [resolved_assets[i] for i in wanted_media]
             else:
-                medien = [pm.media_asset for pm in post.media_attachments.select_related("media_asset")]
+                medien = [
+                    pm.media_asset
+                    for pm in post.media_attachments.select_related("media_asset").order_by("position")
+                ]
+            # Person tags: None = field absent (stored value stays), [] = remove,
+            # list = replace. Validated against the media the post has after
+            # this request.
+            tags_neu: list[dict] | None = None
+            if "user_tags" in gesetzt:
+                tags_neu = _check_user_tags(kind.social_account.platform, ov.user_tags or [], medien)
             story_gesendet = "post_type" in gesetzt
             # The state this channel will have after the request, to judge a
             # story against it: a cover stored earlier conflicts just like
@@ -848,6 +919,11 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                     simuliert["collaborators"] = namen
                 else:
                     simuliert.pop("collaborators", None)
+            if tags_neu is not None:
+                if tags_neu:
+                    simuliert["user_tags"] = tags_neu
+                else:
+                    simuliert.pop("user_tags", None)
             if "trial" in gesetzt and ov.trial is not None:
                 simuliert = _trial_extra(simuliert, ov)
             if cover is not None:
@@ -855,7 +931,7 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
             if story_gesendet:
                 simuliert = apply_story_to_extra(simuliert, ov.post_type == "story")
             beruehrt = story_gesendet or payload.media_asset_ids is not None or cover is not None
-            beruehrt = beruehrt or ("trial" in gesetzt and bool(ov.trial)) or bool(namen)
+            beruehrt = beruehrt or ("trial" in gesetzt and bool(ov.trial)) or bool(namen) or bool(tags_neu)
             if is_story(simuliert) and beruehrt:
                 # Before the cover check: on a story the helpful answer is
                 # "a story has no cover", not "a cover needs a video".
@@ -874,7 +950,7 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                 if cover is not None:
                     pin_extra = _apply_cover_extra(pin_extra, "pinterest", cover)
                 _require_pin_ready(pin_extra, kind.social_account, medien)
-            zu_setzen.append((kind, gesetzt, ov, namen, cover))
+            zu_setzen.append((kind, gesetzt, ov, namen, cover, tags_neu))
 
     # New media on a post whose channel is a story (and not named in the
     # overrides above): a second image turns the story into something neither
@@ -938,7 +1014,7 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                     position=position,
                 )
 
-        for kind, gesetzt, ov, namen, cover in zu_setzen:
+        for kind, gesetzt, ov, namen, cover, tags_neu in zu_setzen:
             kind_fields: list[str] = []
             for feld, spalte in (
                 ("title", "platform_specific_title"),
@@ -962,6 +1038,15 @@ def update(request, post_id: uuid.UUID, payload: UpdatePostRequest):
                     extra.pop("collaborators", None)
                 kind.platform_extra = extra
                 kind_fields.append("platform_extra")
+            if tags_neu is not None:
+                extra = dict(kind.platform_extra or {})
+                if tags_neu:
+                    extra["user_tags"] = tags_neu
+                else:
+                    extra.pop("user_tags", None)
+                kind.platform_extra = extra
+                if "platform_extra" not in kind_fields:
+                    kind_fields.append("platform_extra")
             if "trial" in gesetzt and ov.trial is not None:
                 kind.platform_extra = _trial_extra(kind.platform_extra or {}, ov)
                 if "platform_extra" not in kind_fields:
