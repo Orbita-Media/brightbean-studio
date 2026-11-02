@@ -62,6 +62,22 @@ Beiträge ohne Markierung senden das Feld gar nicht und laufen wie vorher.
 Gesamtlauf 02.11.2026 (Wegwerf-Postgres auf dem Hetzner, Image des Verteilers):
 1991 Tests grün.
 
-## Nachweis am lebenden Konto
+## Nachweis am lebenden Konto (02.11.2026, nichts veröffentlicht)
 
-Siehe Abschnitt unten (Container ohne Veröffentlichung).
+Nach dem Deploy (Commit 257d25c) in der Django-Shell des Verteilers: deployter
+`InstagramProvider._publish_carousel` mit Konto @inyourcorner_book (Facebook-Weg),
+zwei vorhandenen Bildern der IYC-Mediathek und `_publish_container` durch eine
+Attrappe ersetzt – Container werden erzeugt, aber nie veröffentlicht (Container
+verfallen nach 24 h).
+
+- Kind 1 mit `user_tags` `[stefanschott_ (0.76/0.38), tobinstar (0.76/0.69)]` →
+  Container `18154325320519771`, Status FINISHED.
+- Kind 2 mit `[stefanschott_ (0.62/0.26)]` → `18154325356519771`, FINISHED.
+- Eltern-Container CAROUSEL ohne `user_tags` → `18154325395519771`, FINISHED;
+  kein `user_tags_dropped`.
+- Gegenprobe: Kind mit unbekanntem Namen → HTTP 400, Code 110, Subcode 2207018
+  („Nutzer mit privatem Profil oder ungültigem Benutzernamen kann nicht geladen
+  werden“). Graph wertet das Feld also aus und verwirft es nicht still.
+- Privates Konto (`jantraupe`) → dieselbe Ablehnung 2207018: private Konten lassen
+  sich per API nicht markieren. Beim Veröffentlichen griffe der Rückfall (Bild ohne
+  Markierung, `user_tags_dropped`).
