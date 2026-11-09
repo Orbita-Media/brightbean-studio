@@ -1101,10 +1101,6 @@ html body [style*="border: 1px solid #e7e5e4" i] { border-color: var(--border) !
 html body [class*="rgba(249,115,22"] { box-shadow: var(--shadow-primary); }
 html body [class*="rgba(249,115,22"]:hover { box-shadow: 0 6px 20px rgba(99,91,255,0.35); }
 
-/* Analytics: die Linie wird in base.html mit festem Orange gezeichnet (Canvas).
-   Farbdreh auf die Primärfarbe (#F97316 -> ca. #6460FF), Gitter und Achsen bleiben neutral. */
-html body #analytics-area-chart { filter: hue-rotate(220deg) saturate(3.9); }
-
 /* Intelligence (nur sichtbar, wenn aktiviert) */
 html body .intel-input:hover { border-color: var(--border-hover); background: var(--surface-2); }
 html body .intel-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,91,255,0.15); }

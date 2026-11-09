@@ -1037,7 +1037,8 @@
                 data = JSON.parse(canvas.dataset.series || '[]');
                 labels = JSON.parse(canvas.dataset.labels || '[]');
             } catch (e) { return; }
-            var color = '#F97316';
+            var color = (getComputedStyle(document.documentElement).getPropertyValue('--primary') || '').trim();
+            if (!/^#[0-9a-f]{6}$/i.test(color)) { color = '#635BFF'; }
             if (window._bbHeroChart) { window._bbHeroChart.destroy(); }
             var ctx = canvas.getContext('2d');
             var gradient = ctx.createLinearGradient(0, 0, 0, 260);
