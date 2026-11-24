@@ -24,15 +24,18 @@ Stand 25.11.2026. Anlass: Meldungen 12858/12962 (Threads 401, Token abgelaufen) 
 
 ## 2. Meta-Drossel
 
-Befund 24.11.: Die stündliche Auswertung fragte alle ~250 Instagram-Storys der
-letzten 90 Tage jede Stunde neu ab – Storys verschwinden nach 24 h, jeder Abruf
+Befund 24.11.: Die #4-Fehler häuften sich alle 6 h (01, 07, 13, 19/20 UTC). Welcher
+Aufrufer das App-Budget dann erschöpft, ist nicht abschließend gemessen
+(`x-app-usage` lag nachts bei 8–14 %). Sicher vergeudet wurde: Die stündliche
+Auswertung fragte alle ~250 Instagram-Storys der letzten 90 Tage jede Stunde neu ab – Storys verschwinden nach 24 h, jeder Abruf
 scheiterte, ohne Schnappschuss galt der Beitrag in der nächsten Stunde wieder als
 fällig (~6000 vergebliche Graph-Aufrufe am Tag). Dazu ein Aufruf je Metrik (7 je
 Instagram-Beitrag). Lief eine Veröffentlichung in das erschöpfte Stundenfenster,
 verbrauchte sie ihre drei Versuche in 36 Minuten (1 + 5 + 30) und scheiterte.
-Meta-Code 4 galt außerdem als Anmeldefehler: Zustandsprüfung und Social-Agent
-meldeten „Konto getrennt“ bzw. „Meta-Zugang ungültig“, und am 18.–20.11. wurden
-deshalb Token neu eingespielt, obwohl sie gültig waren.
+Meta-Code 4 galt außerdem als Anmeldefehler: Die Zustandsprüfung machte aus jedem
+403 „Account connection expired“ (18.11., am selben Tag gab es #4-Fehler beim
+Veröffentlichen), der Social-Agent meldete vom 20. bis 24.11. täglich „Meta-Zugang
+ungültig … Fehler 4“ und riet zum Neu-Einspielen der Token.
 
 Behebung:
 

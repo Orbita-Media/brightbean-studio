@@ -572,7 +572,8 @@ def _sync_post_metrics(post, on_date: dt_date) -> None:
         if _is_insufficient_scope(exc):
             _mark_needs_reconnect(account)
         logger.warning("get_post_metrics failed for post %s (%s): %s", post.id, account.platform, exc)
-        _mark_analytics_failure(post)
+        if _post_specific_failure(exc):
+            _mark_analytics_failure(post)
         return
     if post.analytics_fehler_zahl:
         type(post).objects.filter(pk=post.pk).update(analytics_fehler_am=None, analytics_fehler_zahl=0)
@@ -589,6 +590,26 @@ def _sync_post_metrics(post, on_date: dt_date) -> None:
         },
         errors=extra.get("insight_errors", {}),
     )
+
+
+def _post_specific_failure(exc) -> bool:
+    """Whether the error is about this one post (gone, never readable), not the account or our code.
+
+    Only these back off: a systemic error (expired token, a bad request
+    parameter for every post) must not park all posts of an account for up to
+    30 days once it is fixed.
+    """
+    from providers.exceptions import APIError
+
+    if not isinstance(exc, APIError):
+        return False
+    if exc.status_code == 404:
+        return True
+    error = (exc.raw_response or {}).get("error") if isinstance(exc.raw_response, dict) else None
+    if isinstance(error, dict) and error.get("code") == 100:
+        text = str(error.get("message") or "").lower()
+        return "does not exist" in text or "unsupported get request" in text or "nonexisting" in text
+    return False
 
 
 def _mark_analytics_failure(post) -> None:

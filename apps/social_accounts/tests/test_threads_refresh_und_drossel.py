@@ -183,3 +183,22 @@ def test_fehlschlag_wartet_mit_backoff():
         )
         is False
     )
+
+
+def test_nur_beitragsbezogene_fehler_setzen_die_fehlermarke():
+    from apps.analytics.tasks import _post_specific_failure
+    from providers.exceptions import APIError
+
+    weg = APIError(
+        "x",
+        status_code=400,
+        raw_response={"error": {"code": 100, "message": "Unsupported get request. Object with ID '1' does not exist"}},
+    )
+    pin_weg = APIError("x", status_code=404, raw_response={"code": 50, "message": "Pin not found."})
+    systemisch = APIError(
+        "x", status_code=400, raw_response={"code": 1, "message": "'end_date' must be before 2038-01-19"}
+    )
+    assert _post_specific_failure(weg)
+    assert _post_specific_failure(pin_weg)
+    assert not _post_specific_failure(systemisch)
+    assert not _post_specific_failure(RuntimeError("x"))
