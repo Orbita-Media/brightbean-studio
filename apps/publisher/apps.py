@@ -15,6 +15,12 @@ class PublisherConfig(AppConfig):
 
         post_migrate.connect(self._register_publish_task, sender=self)
 
+        # Meta-Drosselung aus den Providern in die Plattform-Drossel melden.
+        import providers.base
+        from apps.publisher.drossel import hook
+
+        providers.base.DROSSEL_HOOK = hook
+
     @staticmethod
     def _register_publish_task(sender, **kwargs):
         """Register the recurring publish-cycle task after migrations are applied."""

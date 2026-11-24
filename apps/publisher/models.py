@@ -114,3 +114,28 @@ class Schalter(models.Model):
     def setzen(cls, name: str, an: bool, *, von: str = "") -> "Schalter":
         schalter, _ = cls.objects.update_or_create(name=name, defaults={"an": an, "umgeschaltet_von": von[:255]})
         return schalter
+
+
+class Drossel(models.Model):
+    """Plattform-Drossel je API-Host, gilt für alle Konten (Meta drosselt je App).
+
+    Gesetzt von providers.base, sobald Meta mit einem Drossel-Code (4, 17, 32,
+    613, 80001 ff.) antwortet (hart) oder die Auslastungs-Header 90 % melden
+    (weich). Solange sie gilt, pausieren Auswertung, Postfach und
+    Zustandsprüfung; das Veröffentlichen läuft bei weicher Drossel weiter und
+    wartet bei harter, ohne einen Versuch zu verbrauchen.
+    Anlass 24.11.2026: (#4) Application request limit reached, zwei Beiträge
+    scheiterten nach drei Versuchen in 36 Minuten.
+    """
+
+    host = models.CharField(max_length=100, primary_key=True)
+    bis = models.DateTimeField()
+    hart = models.BooleanField(default=False)
+    grund = models.CharField(max_length=500, blank=True, default="")
+    gesetzt_am = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "publisher_drossel"
+
+    def __str__(self):
+        return f"Drossel({self.host} bis {self.bis:%H:%M}, {'hart' if self.hart else 'weich'})"

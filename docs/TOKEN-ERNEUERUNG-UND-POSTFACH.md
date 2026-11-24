@@ -60,7 +60,7 @@ Bis dahin schreibt der Worker stündlich eine Warnung; Veröffentlichen
 Bluesky (2 h, kein Postfach, keine Auswertung) und TikTok (24 h, wird von der
 Zustandsprüfung alle 6 h erneuert). Pinterest, Threads und LinkedIn laufen
 30 bis 60 Tage und werden von der Zustandsprüfung im Sieben-Tage-Fenster
-erneuert. Facebook und Instagram nutzen Seiten-Token ohne Ablaufdatum.
+erneuert (Threads erst seit 25.11.2026, vorher nie – siehe docs/META-DROSSEL.md). Facebook und Instagram nutzen Seiten-Token ohne Ablaufdatum.
 
 ## 2. Instagram: `(#3) Application does not have the capability`
 

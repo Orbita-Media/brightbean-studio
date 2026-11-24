@@ -77,10 +77,34 @@ def fetch_insights_safe(
     base_params: dict[str, Any] | None = None,
     metric_params: dict[str, dict[str, Any]] | None = None,
     endpoint_type: str = "insights",
+    gemeinsam_zuerst: bool = False,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """Fetch Meta insights one metric at a time so one invalid metric cannot fail all metrics."""
+    """Fetch Meta insights, all metrics in one request when possible.
+
+    One request per metric (seven per Instagram post) made the hourly
+    analytics run the biggest consumer of the shared Meta app budget. With
+    gemeinsam_zuerst (Instagram media insights, the per-post path) metrics
+    without per-metric parameters go out together first; only if Meta rejects
+    that request (one metric unsupported for this media type) does the
+    one-at-a-time fallback run, so one invalid metric still cannot fail all.
+    Permission and throttle errors propagate as before.
+    """
     values: dict[str, Any] = {}
     errors: dict[str, str] = {}
+    gemeinsam = [m for m in metrics if not (metric_params or {}).get(m)] if gemeinsam_zuerst else []
+    if len(gemeinsam) > 1:
+        params = {**(base_params or {}), "metric": ",".join(gemeinsam)}
+        try:
+            resp = request("GET", endpoint, access_token=access_token, params=params)
+        except APIError as exc:
+            if is_meta_permission_error(exc):
+                raise
+            logger.info(
+                "Combined %s %s request at %s failed, fetching one by one: %s", platform, endpoint_type, endpoint, exc
+            )
+        else:
+            values.update(parse_insights_response(resp.json()))
+            metrics = [m for m in metrics if m not in gemeinsam]
     for metric in metrics:
         params = {**(base_params or {}), **(metric_params or {}).get(metric, {}), "metric": metric}
         try:

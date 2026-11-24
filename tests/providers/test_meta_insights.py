@@ -92,3 +92,35 @@ def test_parse_insights_response_prefers_lifetime_when_metric_name_repeats():
         "post_media_view": 32741,
         "post_total_media_view_unique": 21105,
     }
+
+
+def test_fetch_insights_safe_gemeinsam_faellt_auf_einzeln_zurueck():
+    """Lehnt Meta den gebündelten Abruf ab (eine Metrik passt nicht zum Medientyp), läuft es einzeln weiter."""
+    from unittest.mock import MagicMock
+
+    from providers.exceptions import APIError
+
+    def _r(data):
+        resp = MagicMock()
+        resp.json.return_value = data
+        return resp
+
+    request = MagicMock(
+        side_effect=[
+            APIError("(#100) metric views unsupported", status_code=400, raw_response={"error": {"code": 100}}),
+            _r({"data": [{"name": "reach", "values": [{"value": 7}]}]}),
+            APIError("(#100) metric views unsupported", status_code=400, raw_response={"error": {"code": 100}}),
+        ]
+    )
+    values, errors = fetch_insights_safe(
+        request,
+        platform="instagram",
+        endpoint="https://graph.facebook.com/v25.0/1/insights",
+        access_token="t",
+        metrics=["reach", "views"],
+        endpoint_type="media",
+        gemeinsam_zuerst=True,
+    )
+    assert values == {"reach": 7}
+    assert set(errors) == {"views"}
+    assert request.call_count == 3

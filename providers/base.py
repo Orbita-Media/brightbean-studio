@@ -32,6 +32,59 @@ logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 30.0
 
 
+# Meta drosselt nicht mit 429, sondern mit HTTP 400/403 und diesen Fehlercodes:
+# 4 App-Limit ("Application request limit reached"), 17 Nutzer-Limit,
+# 32 Seiten-Limit, 613 Aufrufrate, 80001 ff. Business-Use-Case-Limits.
+META_THROTTLE_CODES = frozenset({4, 17, 32, 613, *range(80001, 80015)})
+META_API_HOSTS = ("graph.facebook.com", "graph.instagram.com", "graph.threads.net")
+# Ab dieser Auslastung (Prozent in x-app-usage / x-business-use-case-usage)
+# pausieren Hintergrundabrufe, damit das Budget für Veröffentlichungen bleibt.
+META_USAGE_SOFT_LIMIT = 85
+# Rückruf (host, sekunden, hart, grund), eingehängt von apps.publisher.apps.
+DROSSEL_HOOK = None
+
+
+def _meta_host(url: str) -> str | None:
+    for host in META_API_HOSTS:
+        if host in url:
+            return host
+    return None
+
+
+def _meta_usage(response) -> tuple[int, int]:
+    """Höchste Auslastung in Prozent und Wartezeit in Sekunden aus Metas Nutzungs-Headern."""
+    import json as _json
+
+    hoechst, warte_min = 0, 0
+    for name in ("x-app-usage", "x-business-use-case-usage"):
+        roh = response.headers.get(name)
+        if not roh:
+            continue
+        try:
+            daten = _json.loads(roh)
+        except ValueError:
+            continue
+        eintraege = [daten] if name == "x-app-usage" else [e for liste in daten.values() for e in liste]
+        for e in eintraege:
+            if not isinstance(e, dict):
+                continue
+            for k in ("call_count", "total_cputime", "total_time"):
+                with contextlib.suppress(TypeError, ValueError):
+                    hoechst = max(hoechst, int(e.get(k) or 0))
+            with contextlib.suppress(TypeError, ValueError):
+                warte_min = max(warte_min, int(e.get("estimated_time_to_regain_access") or 0))
+    return hoechst, warte_min * 60
+
+
+def _drossel_melden(host: str, sekunden: int, hart: bool, grund: str) -> None:
+    if DROSSEL_HOOK is None:
+        return
+    try:
+        DROSSEL_HOOK(host, sekunden, hart, grund)
+    except Exception:  # noqa: BLE001 - Vorsorge darf keinen Aufruf brechen
+        logger.exception("Drossel-Rückruf scheiterte")
+
+
 class SocialProvider(ABC):
     """Abstract base class that all social platform providers must implement.
 
@@ -381,6 +434,27 @@ class SocialProvider(ABC):
                 platform=self.platform_name,
                 raw_response=self._safe_json(response),
             )
+
+        host = _meta_host(url)
+        if host:
+            if response.status_code >= 400:
+                body = self._safe_json(response)
+                error = body.get("error") if isinstance(body, dict) else None
+                if isinstance(error, dict) and error.get("code") in META_THROTTLE_CODES:
+                    _, warte_s = _meta_usage(response)
+                    text = f"{self.platform_name} API error {response.status_code}: {response.text[:500]}"
+                    _drossel_melden(host, warte_s or 3600, True, text[:300])
+                    logger.warning("%s gedrosselt (Code %s): %s", self.platform_name, error.get("code"), text[:300])
+                    raise RateLimitError(
+                        text,
+                        retry_after=warte_s or 3600,
+                        platform=self.platform_name,
+                        raw_response=body,
+                    )
+            else:
+                auslastung, warte_s = _meta_usage(response)
+                if auslastung >= META_USAGE_SOFT_LIMIT:
+                    _drossel_melden(host, warte_s or 900, False, f"{self.platform_name}: Auslastung {auslastung} %")
 
         if response.status_code >= 400:
             raise APIError(

@@ -475,6 +475,12 @@ class PlatformPost(models.Model):
     # may already be live. While set, every further attempt first looks the
     # post up on the platform and adopts it instead of posting it again.
     outcome_unknown_since = models.DateTimeField(blank=True, null=True)
+    # Last failed analytics fetch and how many failed in a row. A post whose
+    # metrics cannot be read (deleted, story past 24 h, no permission) used to
+    # be "due" again every hour forever: 24.11.2026 about 250 dead Instagram
+    # stories cost ~6000 Graph calls a day. The cadence now backs off on these.
+    analytics_fehler_am = models.DateTimeField(blank=True, null=True)
+    analytics_fehler_zahl = models.PositiveSmallIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

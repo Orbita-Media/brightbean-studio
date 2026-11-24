@@ -97,7 +97,7 @@ def fetch_boards(account) -> list[dict]:
 
     provider = get_provider("pinterest", resolve_platform_credentials("pinterest", account.workspace.organization_id))
     access_token = account.oauth_access_token
-    if account.token_expires_at and account.is_token_expiring_soon and account.oauth_refresh_token:
+    if account.token_expires_at and account.is_token_expiring_soon and account.refresh_credential:
         access_token = account.refresh_oauth_token(provider)
     boards = provider.get_boards(access_token)
     return [

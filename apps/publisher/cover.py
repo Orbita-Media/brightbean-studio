@@ -274,7 +274,7 @@ def _set_live_thumbnail(account, video_id: str, asset) -> None:
 
     provider = get_provider(account.platform, _resolve_publish_credentials(account))
     access_token = account.oauth_access_token
-    if account.token_expires_at and account.is_token_expiring_soon and account.oauth_refresh_token:
+    if account.token_expires_at and account.is_token_expiring_soon and account.refresh_credential:
         try:
             access_token = account.refresh_oauth_token(provider)
         except Exception:

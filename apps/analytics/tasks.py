@@ -28,7 +28,9 @@ from background_task import background
 from django.db import transaction
 from django.utils import timezone
 
+from apps.publisher import drossel
 from apps.social_accounts.tokens import call_with_fresh_token
+from providers.exceptions import RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,10 @@ _POST_SYNC_CADENCE: tuple[tuple[timedelta | None, timedelta | None], ...] = (
     (timedelta(days=90), timedelta(days=7)),
     (None, None),  # > 90 days — background sync has stopped.
 )
+
+
+STORY_INSIGHTS_WINDOW = timedelta(days=1)
+ANALYTICS_FAILURE_MAX_PAUSE = timedelta(days=30)
 
 
 def post_sync_interval(age: timedelta) -> timedelta | None:
@@ -558,11 +564,18 @@ def _sync_post_metrics(post, on_date: dt_date) -> None:
         )
     except NotImplementedError:
         return
+    except RateLimitError as exc:
+        # Throttled, not broken: no failure mark; the Drossel stops the loop.
+        logger.info("get_post_metrics throttled for post %s (%s): %s", post.id, account.platform, exc)
+        return
     except Exception as exc:
         if _is_insufficient_scope(exc):
             _mark_needs_reconnect(account)
         logger.warning("get_post_metrics failed for post %s (%s): %s", post.id, account.platform, exc)
+        _mark_analytics_failure(post)
         return
+    if post.analytics_fehler_zahl:
+        type(post).objects.filter(pk=post.pk).update(analytics_fehler_am=None, analytics_fehler_zahl=0)
     extra = getattr(metrics, "extra", {}) or {}
     _write_post_snapshot(
         post,
@@ -575,6 +588,17 @@ def _sync_post_metrics(post, on_date: dt_date) -> None:
             "attempted_insight_post_ids": extra.get("attempted_insight_post_ids", []),
         },
         errors=extra.get("insight_errors", {}),
+    )
+
+
+def _mark_analytics_failure(post) -> None:
+    from django.db.models import F
+
+    from apps.composer.models import PlatformPost
+
+    PlatformPost.objects.filter(pk=post.pk).update(
+        analytics_fehler_am=timezone.now(),
+        analytics_fehler_zahl=F("analytics_fehler_zahl") + 1,
     )
 
 
@@ -624,9 +648,22 @@ def _post_cadence_due(post, now=None, *, platform: str | None = None) -> bool:
     now = now or timezone.now()
     if not post.published_at:
         return False
-    cadence = post_sync_interval(now - post.published_at)
+    age = now - post.published_at
+    cadence = post_sync_interval(age)
     if cadence is None:
         return False  # past the 90-day horizon.
+    if age >= STORY_INSIGHTS_WINDOW:
+        from providers.story import is_story
+
+        if is_story(post.platform_extra):
+            # Meta keeps story insights for 24 h only; afterwards every call
+            # fails ("Unsupported get request").
+            return False
+    if post.analytics_fehler_am and post.analytics_fehler_zahl:
+        # Failed reads back off: cadence, doubled per failure in a row, at most 30 days.
+        pause = min(cadence * (2 ** min(post.analytics_fehler_zahl - 1, 6)), ANALYTICS_FAILURE_MAX_PAUSE)
+        if now - post.analytics_fehler_am < pause:
+            return False
     qs = PostInsightsSnapshot.objects.filter(platform_post=post)
     platform = platform or post.social_account.platform
     excluded = _POST_NON_CADENCE_METRICS_BY_PLATFORM.get(platform)
@@ -679,6 +716,8 @@ def backfill_account_analytics(account_id: str, days: int | None = None) -> None
         published_at__gte=cutoff,
     ).exclude(platform_post_id="")
     for post in posts:
+        if drossel.aktiv(account.platform):
+            break
         with transaction.atomic():
             _sync_post_metrics(post, today)
 
@@ -701,6 +740,11 @@ def sync_all_account_analytics() -> None:
     from .models import AccountInsightsSnapshot
 
     for account in accounts:
+        if drossel.aktiv(account.platform):
+            # The platform throttles the app (or is close to it): the budget
+            # belongs to publishing. The next hourly run catches up.
+            logger.info("Analytics for %s skipped, platform throttled", account)
+            continue
         # Account-level: at most once per day per account. Skip if today's
         # row already exists so an hourly cron doesn't turn into 24 API calls.
         # Also skip accounts already flagged for analytics reconnect — their
@@ -727,4 +771,6 @@ def sync_all_account_analytics() -> None:
         ).exclude(platform_post_id="")
         for post in posts:
             if _post_cadence_due(post, platform=account.platform):
+                if drossel.aktiv(account.platform):
+                    break
                 _sync_post_metrics(post, today)

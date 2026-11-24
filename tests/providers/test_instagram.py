@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, call
 
 from providers.exceptions import APIError
-from providers.instagram import InstagramProvider
+from providers.instagram import INSTAGRAM_MEDIA_INSIGHTS, InstagramProvider
 from providers.instagram_login import InstagramLoginProvider
 
 
@@ -66,8 +66,7 @@ def test_manage_messages_is_absent_by_default():
     provider = InstagramProvider({"client_id": "id", "client_secret": "secret"})
 
     assert "instagram_manage_messages" not in provider.required_scopes
-    assert "instagram_manage_messages" not in provider.get_auth_url(
-        "https://example.com/cb", "state")
+    assert "instagram_manage_messages" not in provider.get_auth_url("https://example.com/cb", "state")
 
 
 def test_manage_messages_is_added_only_when_it_is_switched_on():
@@ -75,8 +74,7 @@ def test_manage_messages_is_added_only_when_it_is_switched_on():
     provider.include_messages_scope = True
 
     assert "instagram_manage_messages" in provider.required_scopes
-    assert "instagram_manage_messages" in provider.get_auth_url(
-        "https://example.com/cb", "state")
+    assert "instagram_manage_messages" in provider.get_auth_url("https://example.com/cb", "state")
 
 
 def test_both_optional_scopes_can_be_switched_on_together():
@@ -267,17 +265,28 @@ def test_instagram_media_metrics_use_current_metrics_and_field_fallbacks():
     provider._request = MagicMock(
         side_effect=[
             _resp({"id": "ig-media-1", "like_count": 12, "comments_count": 3}),
-            _resp({"data": [{"name": "reach", "values": [{"value": 250}]}]}),
-            _resp({"data": [{"name": "views", "values": [{"value": 400}]}]}),
-            _resp({"data": [{"name": "likes", "values": [{"value": 12}]}]}),
-            _resp({"data": [{"name": "comments", "values": [{"value": 3}]}]}),
-            _resp({"data": [{"name": "saved", "values": [{"value": 5}]}]}),
-            _resp({"data": [{"name": "shares", "values": [{"value": 2}]}]}),
-            _resp({"data": [{"name": "total_interactions", "values": [{"value": 22}]}]}),
+            # One combined request for all metrics (24.11.2026: one per metric
+            # made analytics the biggest consumer of the Meta app budget).
+            _resp(
+                {
+                    "data": [
+                        {"name": "reach", "values": [{"value": 250}]},
+                        {"name": "views", "values": [{"value": 400}]},
+                        {"name": "likes", "values": [{"value": 12}]},
+                        {"name": "comments", "values": [{"value": 3}]},
+                        {"name": "saved", "values": [{"value": 5}]},
+                        {"name": "shares", "values": [{"value": 2}]},
+                        {"name": "total_interactions", "values": [{"value": 22}]},
+                    ]
+                }
+            ),
         ]
     )
 
     metrics = provider.get_post_metrics("page-token", "ig-media-1")
+
+    assert provider._request.call_count == 2
+    assert provider._request.call_args.kwargs["params"]["metric"] == ",".join(INSTAGRAM_MEDIA_INSIGHTS)
 
     assert metrics.video_views == 400
     assert metrics.reach == 250

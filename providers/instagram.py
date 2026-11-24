@@ -1221,6 +1221,7 @@ class InstagramProvider(SocialProvider):
             access_token=access_token,
             metrics=INSTAGRAM_MEDIA_INSIGHTS,
             endpoint_type="media",
+            gemeinsam_zuerst=True,
         )
         likes = values.get("likes", fields.get("like_count", 0))
         comments = values.get("comments", fields.get("comments_count", 0))

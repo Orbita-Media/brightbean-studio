@@ -33,10 +33,16 @@ from apps.common.homoglyphs import beanstandungen
 from apps.composer.models import PlatformPost
 from apps.credentials.models import resolve_platform_credentials
 from providers import get_provider
-from providers.exceptions import PublishError, PublishLookupUnavailableError, PublishOutcomeUnknownError
+from providers.exceptions import (
+    PublishError,
+    PublishLookupUnavailableError,
+    PublishOutcomeUnknownError,
+    RateLimitError,
+)
 from providers.story import is_story
 from providers.types import PostType, PublishContent
 
+from . import drossel
 from .models import PublishLog, RateLimitState
 
 logger = logging.getLogger(__name__)
@@ -124,6 +130,11 @@ OUTCOME_LOOKUP_SLACK = timedelta(minutes=2)
 # der Beitrag endgültig, damit nichts unbemerkt liegen bleibt.
 BILDPRUEFUNG_WARTEZEIT = timedelta(minutes=10)
 BILDPRUEFUNG_FRIST = timedelta(hours=6)
+
+# Plattform-Drossel (Meta #4 u. a.): warten statt Versuche verbrauchen.
+RATE_LIMIT_MIN_WAIT = timedelta(minutes=10)
+RATE_LIMIT_MAX_WAIT = timedelta(minutes=60)
+RATE_LIMIT_FRIST = timedelta(hours=6)
 
 
 class BildpruefungAusstehend(Exception):  # noqa: N818 – Steuersignal, kein Fehler
@@ -304,8 +315,17 @@ class PublishEngine:
 
         if rate_state and rate_state.is_rate_limited:
             error_msg = f"Rate limited until {rate_state.window_resets_at}"
-            self._schedule_retry(platform_post, error_msg)
-            return {"success": False, "error": error_msg}
+            wait_s = (rate_state.window_resets_at - timezone.now()).total_seconds()
+            self._hold_for_rate_limit(platform_post, error_msg, wait_s)
+            return {"success": False, "error": platform_post.publish_error}
+
+        # Meta lehnt gerade alles ab (harte Drossel): gar nicht erst anfragen,
+        # sonst verlängert jeder Versuch das Stundenfenster.
+        drossel_bis = drossel.hart_bis(account.platform)
+        if drossel_bis is not None:
+            error_msg = f"Plattform-Limit der App erreicht, gedrosselt bis {timezone.localtime(drossel_bis):%H:%M}"
+            self._hold_for_rate_limit(platform_post, error_msg, (drossel_bis - timezone.now()).total_seconds())
+            return {"success": False, "error": platform_post.publish_error}
 
         try:
             # Get the provider for this platform
@@ -335,6 +355,19 @@ class PublishEngine:
                 duration_ms=int((time.monotonic() - start_time) * 1000),
             )
             self._hold_for_image_check(platform_post, str(e))
+            return {"success": False, "error": platform_post.publish_error}
+        except RateLimitError as e:
+            # Rejected before anything was created (Meta answers #4/#17/#32/#613
+            # with nothing done). Wait out the window instead of burning the
+            # three retries inside it (24.11.2026: 1 + 5 + 30 min < 60 min).
+            PublishLog.objects.create(
+                platform_post=platform_post,
+                attempt_number=platform_post.retry_count + 1,
+                response_body=str(e.raw_response or "")[:1000],
+                error_message=str(e),
+                duration_ms=int((time.monotonic() - start_time) * 1000),
+            )
+            self._hold_for_rate_limit(platform_post, str(e), e.retry_after)
             return {"success": False, "error": platform_post.publish_error}
         except Exception as e:
             duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -463,7 +496,7 @@ class PublishEngine:
         # Best-effort: on refresh failure we keep the old token and let the
         # publish attempt surface the real error.
         access_token = account.oauth_access_token
-        if account.token_expires_at and account.is_token_expiring_soon and account.oauth_refresh_token:
+        if account.token_expires_at and account.is_token_expiring_soon and account.refresh_credential:
             try:
                 access_token = account.refresh_oauth_token(provider)
                 logger.info("Refreshed token for %s", account)
@@ -1059,6 +1092,40 @@ class PublishEngine:
         platform_post.publish_error = error_msg
         platform_post.save()
         logger.info("PlatformPost %s held back until its media pass the image check", platform_post.id)
+
+    def _hold_for_rate_limit(self, platform_post, error_msg, wait_seconds=None):
+        """Hold a post the platform throttled, without using up an attempt.
+
+        Like _hold_for_image_check: retry_count stays, next_retry_at moves to
+        the end of the throttle window (at least RATE_LIMIT_MIN_WAIT, at most
+        RATE_LIMIT_MAX_WAIT per step). More than RATE_LIMIT_FRIST after the
+        post's time it fails for good, so nothing goes out a day late unseen.
+        """
+        now = timezone.now()
+        termin = platform_post.scheduled_at or platform_post.post.scheduled_at
+        if termin is not None and now - termin >= RATE_LIMIT_FRIST:
+            stunden = int(RATE_LIMIT_FRIST.total_seconds() // 3600)
+            self._fail_permanently(
+                platform_post,
+                f"Plattform-Limit hielt auch {stunden} Stunden nach dem Termin an, der Beitrag wird nicht mehr "
+                f"automatisch veröffentlicht. Neu einplanen. {error_msg}",
+                reason="rate limit outlasted the window",
+            )
+            return
+        try:
+            wait = float(wait_seconds or 0)
+        except (TypeError, ValueError):
+            wait = 0
+        wait = min(max(wait, RATE_LIMIT_MIN_WAIT.total_seconds()), RATE_LIMIT_MAX_WAIT.total_seconds())
+        next_at = now + timedelta(seconds=wait)
+        platform_post.status = PlatformPost.Status.SCHEDULED
+        platform_post.next_retry_at = next_at
+        platform_post.publish_error = (
+            f"Plattform-Limit erreicht, neuer Versuch um {timezone.localtime(next_at):%H:%M} "
+            f"(zählt nicht als Fehlversuch): {error_msg}"
+        )[:2000]
+        platform_post.save()
+        logger.info("PlatformPost %s held back by a platform rate limit until %s", platform_post.id, next_at)
 
     def _schedule_retry(self, platform_post, error_msg):
         """Schedule a retry with exponential backoff."""

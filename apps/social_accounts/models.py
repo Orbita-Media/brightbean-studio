@@ -91,6 +91,22 @@ class SocialAccount(models.Model):
 
         return self.token_expires_at < timezone.now() + timedelta(days=7)
 
+    # Platforms whose long-lived token is renewed with the access token itself
+    # (Threads: grant_type=th_refresh_token, Instagram Login: ig_refresh_token).
+    # They hand out no separate refresh token, so oauth_refresh_token stays
+    # empty for them. Every refresh guard used to test that empty field and
+    # never renewed such a token: the Threads token of the Verlag account,
+    # connected 25.09.2026, ran out on 24.11.2026 after 60 days untouched.
+    ACCESS_TOKEN_REFRESH_PLATFORMS = frozenset({"threads", "instagram_login"})
+
+    @property
+    def refresh_credential(self) -> str:
+        """What the provider's refresh_token() needs: the refresh token, or for
+        Threads/Instagram Login the current long-lived access token."""
+        if self.platform in self.ACCESS_TOKEN_REFRESH_PLATFORMS:
+            return self.oauth_access_token or self.oauth_refresh_token or ""
+        return self.oauth_refresh_token or ""
+
     @property
     def needs_reconnect(self) -> bool:
         return self.connection_status in (
@@ -135,7 +151,7 @@ class SocialAccount(models.Model):
                     self.connection_status = locked.connection_status
                     return self.oauth_access_token
 
-            new_tokens = provider.refresh_token(locked.oauth_refresh_token)
+            new_tokens = provider.refresh_token(locked.refresh_credential)
             self.oauth_access_token = new_tokens.access_token
             if new_tokens.refresh_token:
                 self.oauth_refresh_token = new_tokens.refresh_token

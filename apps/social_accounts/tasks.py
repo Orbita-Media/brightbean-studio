@@ -17,6 +17,7 @@ def check_social_account_health(account_id: str):
     is expiring soon, attempts to refresh it first.
     """
     from providers import get_provider
+    from providers.exceptions import RateLimitError
 
     from .error_messages import friendly_health_check_error
     from .models import SocialAccount
@@ -41,13 +42,22 @@ def check_social_account_health(account_id: str):
         logger.error("Health check: no provider for platform %s", account.platform)
         return
 
+    # While the platform throttles the app, a check only spends budget the
+    # publisher needs and turns a rate limit into a false "reconnect" (18.11.2026:
+    # eight Meta accounts flagged "connection expired" by a (#4) limit).
+    from apps.publisher import drossel
+
+    if drossel.aktiv(account.platform):
+        logger.info("Health check: %s skipped, platform throttled", account)
+        return
+
     # Bluesky accounts connected before we recorded token_expires_at need a
     # one-shot refresh to populate it; without this, is_token_expiring_soon
     # stays False forever and the short-lived accessJwt is never rotated.
     needs_bluesky_bootstrap = account.platform == "bluesky" and account.token_expires_at is None
-    if (account.is_token_expiring_soon or needs_bluesky_bootstrap) and account.oauth_refresh_token:
+    if (account.is_token_expiring_soon or needs_bluesky_bootstrap) and account.refresh_credential:
         try:
-            new_tokens = provider.refresh_token(account.oauth_refresh_token)
+            new_tokens = provider.refresh_token(account.refresh_credential)
             account.oauth_access_token = new_tokens.access_token
             if new_tokens.refresh_token:
                 account.oauth_refresh_token = new_tokens.refresh_token
@@ -56,6 +66,9 @@ def check_social_account_health(account_id: str):
             account.connection_status = SocialAccount.ConnectionStatus.CONNECTED
             account.last_error = ""
             logger.info("Health check: refreshed token for %s", account)
+        except RateLimitError as e:
+            logger.warning("Health check: token refresh for %s throttled, next check retries: %s", account, e)
+            return
         except Exception as e:
             logger.warning("Health check: token refresh failed for %s: %s", account, e)
             account.connection_status = SocialAccount.ConnectionStatus.TOKEN_EXPIRING
@@ -78,6 +91,10 @@ def check_social_account_health(account_id: str):
         if account.connection_status != SocialAccount.ConnectionStatus.TOKEN_EXPIRING:
             account.connection_status = SocialAccount.ConnectionStatus.CONNECTED
         account.last_error = ""
+    except RateLimitError as e:
+        # Throttled is not disconnected: keep the status, try again next round.
+        logger.warning("Health check: profile fetch for %s throttled: %s", account, e)
+        account.last_error = friendly_health_check_error(e)
     except Exception as e:
         logger.warning("Health check: profile fetch failed for %s: %s", account, e)
         account.connection_status = SocialAccount.ConnectionStatus.ERROR
@@ -110,6 +127,10 @@ def schedule_all_health_checks():
         connection_status__in=[
             SocialAccount.ConnectionStatus.CONNECTED,
             SocialAccount.ConnectionStatus.TOKEN_EXPIRING,
+            # ERROR too: one failed check (a throttled call, a Meta hiccup) used
+            # to end all further checks, so the account never recovered on its
+            # own (instagram_login ShelfPublisher stuck since 18.11.2026).
+            SocialAccount.ConnectionStatus.ERROR,
         ]
     ).values_list("id", flat=True)
 

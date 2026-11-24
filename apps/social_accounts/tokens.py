@@ -37,7 +37,7 @@ _META_INVALID_TOKEN_CODE = 190
 
 def token_needs_refresh(account, margin: timedelta = ACCESS_TOKEN_REFRESH_MARGIN) -> bool:
     """True when the stored access token is expired or expires within *margin*."""
-    if not account.oauth_refresh_token or not account.token_expires_at:
+    if not account.refresh_credential or not account.token_expires_at:
         return False
     return account.token_expires_at <= timezone.now() + margin
 
@@ -92,7 +92,7 @@ def call_with_fresh_token[T](account, provider, call: Callable[[str], T]) -> T:
     try:
         return call(token)
     except Exception as exc:
-        if not is_auth_error(exc) or not account.oauth_refresh_token:
+        if not is_auth_error(exc) or not account.refresh_credential:
             raise
         logger.info(
             "Account %s (%s) got an auth error, refreshing token once and retrying",

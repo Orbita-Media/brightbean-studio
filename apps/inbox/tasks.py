@@ -110,7 +110,12 @@ class InboxSyncEngine:
             connection_status=SocialAccount.ConnectionStatus.CONNECTED,
         ).select_related("workspace")
 
+        from apps.publisher import drossel
+
         for account in accounts:
+            if drossel.aktiv(account.platform):
+                # Platform throttles the app: the budget belongs to publishing.
+                continue
             try:
                 self._sync_account(account)
             except Exception:
