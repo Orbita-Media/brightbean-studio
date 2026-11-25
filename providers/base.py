@@ -39,7 +39,9 @@ META_THROTTLE_CODES = frozenset({4, 17, 32, 613, *range(80001, 80015)})
 META_API_HOSTS = ("graph.facebook.com", "graph.instagram.com", "graph.threads.net")
 # Ab dieser Auslastung (Prozent in x-app-usage / x-business-use-case-usage)
 # pausieren Hintergrundabrufe, damit das Budget für Veröffentlichungen bleibt.
-META_USAGE_SOFT_LIMIT = 85
+# 60 statt 85 (25.11.2026): Das App-Budget liegt bei rund 500 Aufrufen je Stunde,
+# eine Welle stieg in sechs Minuten von 11 auf 100 %; bei 85 % blieb kein Puffer.
+META_USAGE_SOFT_LIMIT = 60
 # Rückruf (host, sekunden, hart, grund), eingehängt von apps.publisher.apps.
 DROSSEL_HOOK = None
 
@@ -437,11 +439,11 @@ class SocialProvider(ABC):
 
         host = _meta_host(url)
         if host:
+            auslastung, warte_s = _meta_usage(response)
             if response.status_code >= 400:
                 body = self._safe_json(response)
                 error = body.get("error") if isinstance(body, dict) else None
                 if isinstance(error, dict) and error.get("code") in META_THROTTLE_CODES:
-                    _, warte_s = _meta_usage(response)
                     text = f"{self.platform_name} API error {response.status_code}: {response.text[:500]}"
                     _drossel_melden(host, warte_s or 3600, True, text[:300])
                     logger.warning("%s gedrosselt (Code %s): %s", self.platform_name, error.get("code"), text[:300])
@@ -451,10 +453,10 @@ class SocialProvider(ABC):
                         platform=self.platform_name,
                         raw_response=body,
                     )
-            else:
-                auslastung, warte_s = _meta_usage(response)
-                if auslastung >= META_USAGE_SOFT_LIMIT:
-                    _drossel_melden(host, warte_s or 900, False, f"{self.platform_name}: Auslastung {auslastung} %")
+            # Also on 4xx answers (25.11.2026): the wave that hit #4 consisted
+            # of 400s ("Object … does not exist"), so the soft limit never fired.
+            if auslastung >= META_USAGE_SOFT_LIMIT:
+                _drossel_melden(host, warte_s or 900, False, f"{self.platform_name}: Auslastung {auslastung} %")
 
         if response.status_code >= 400:
             raise APIError(

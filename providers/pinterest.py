@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import logging
 import os
 import time
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 AUTH_URL = "https://www.pinterest.com/oauth/"
 API_BASE = os.environ.get("PINTEREST_API_BASE", "https://api.pinterest.com/v5")
+# Pin analytics reach back 90 days at most (start_date) and end today.
+ANALYTICS_WINDOW_DAYS = 90
 TOKEN_URL = f"{API_BASE}/oauth/token"
 
 # ``alt_text`` on POST /v5/pins is capped at 500 characters by the OpenAPI spec.
@@ -464,19 +467,24 @@ class PinterestProvider(SocialProvider):
     # ------------------------------------------------------------------
 
     def get_post_metrics(self, access_token: str, post_id: str) -> PostMetrics:
+        # Pinterest answers only for the last 90 days and never past today
+        # (25.11.2026: "end_date must be before 2038-01-19" / "You can only get
+        # data from the last 90 days" – every pin failed every hour).
+        heute = _dt.datetime.now(_dt.UTC).date()
         resp = self._request(
             "GET",
             f"{API_BASE}/pins/{post_id}/analytics",
             access_token=access_token,
             params={
                 "metric_types": "IMPRESSION,PIN_CLICK,SAVE,OUTBOUND_CLICK",
-                "start_date": "2020-01-01",
-                "end_date": "2099-12-31",
+                "start_date": (heute - _dt.timedelta(days=ANALYTICS_WINDOW_DAYS - 1)).isoformat(),
+                "end_date": heute.isoformat(),
             },
         )
         body = resp.json()
-        # Pinterest returns metrics as aggregated daily data
-        all_data = body.get("all", {})
+        # {"all": {"summary_metrics": {...}, "daily_metrics": [...], "lifetime_metrics": {...}}}
+        all_data = body.get("all", {}) or {}
+        all_data = all_data.get("summary_metrics") or all_data
         return PostMetrics(
             impressions=all_data.get("IMPRESSION", 0),
             clicks=all_data.get("PIN_CLICK", 0),

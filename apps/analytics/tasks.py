@@ -729,7 +729,13 @@ def backfill_account_analytics(account_id: str, days: int | None = None) -> None
     today = timezone.now().date()
     cutoff = timezone.now() - timedelta(days=days)
 
-    _sync_account_metrics(account, today)
+    from .models import AccountInsightsSnapshot
+
+    if drossel.aktiv(account.platform):
+        logger.info("Analytics backfill for %s skipped, platform throttled", account)
+        return
+    if not AccountInsightsSnapshot.objects.filter(social_account=account, date=today).exists():
+        _sync_account_metrics(account, today)
 
     posts = PlatformPost.objects.filter(
         social_account=account,
@@ -737,6 +743,11 @@ def backfill_account_analytics(account_id: str, days: int | None = None) -> None
         published_at__gte=cutoff,
     ).exclude(platform_post_id="")
     for post in posts:
+        # Same gate as the hourly sync (25.11.2026): without it every backfill
+        # re-read all posts of 90 days, expired stories and posts in failure
+        # backoff included – some 500 Meta calls per health-check wave.
+        if not _post_cadence_due(post, platform=account.platform):
+            continue
         if drossel.aktiv(account.platform):
             break
         with transaction.atomic():

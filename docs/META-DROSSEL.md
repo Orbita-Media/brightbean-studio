@@ -59,3 +59,38 @@ Behebung:
 
 Tests: `apps/social_accounts/tests/test_threads_refresh_und_drossel.py`,
 `tests/providers/test_meta_insights.py`, `tests/providers/test_instagram.py`.
+
+## 3. Restverbrauch nach der Reparatur (25.11.2026)
+
+Gegenprobe 25.11. 02:30 UTC: seit Deploy 23:47 ein `#4` um 01:48, 273
+Instagram-Auswertungsfehler, 354 Pinterest-Fehler. `x-app-usage` lag bis 01:42
+bei 8–16 %, stieg bis 01:47 auf 72 % und um 01:48 auf 100 %; das App-Budget
+entspricht damit rund 500 Aufrufen je Stunde.
+
+Ursache: Die Zustandsprüfung (alle 6 h, 23 Konten) speichert jedes Konto mit
+`oauth_access_token` in `update_fields`, `refresh_oauth_token` ebenso (YouTube,
+Google Business stündlich). `apps/analytics/signals.py` hielt jede solche
+Speicherung für einen Reconnect und startete `backfill_account_analytics`, das
+alle Beiträge der letzten 90 Tage ohne Takt, Story-Fenster und Fehler-Backoff
+abfragte: 23 Backfills um 01:3x, 253 Instagram-Aufrufe auf tote Storys und 226
+Facebook-Insights-Aufrufe in zehn Minuten. Das ist das 6-h-Muster aus Abschnitt 2
+(01, 07, 13, 19 UTC). Die weiche Drossel griff nicht, weil die Header nur bei
+erfolgreichen Antworten gelesen wurden; die Welle bestand aus 400ern.
+
+Behebung:
+
+- Backfill nur bei neuem Konto, OAuth-Reconnect (`_create_or_update_account`
+  schreibt `analytics_needs_reconnect` mit) oder neuem Token für ein nicht
+  verbundenes Konto, nie bei bloßer Token-Erneuerung.
+- `backfill_account_analytics` nutzt `_post_cadence_due` wie der Stundenlauf und
+  pausiert bei jeder Drossel; Kontowerte nur, wenn für heute noch keine Zeile da ist.
+- `providers/base.py`: Auslastung aus jeder Meta-Antwort (auch 4xx), weiche Drossel
+  ab 60 % statt 85 %.
+- Pinterest: `start_date` heute minus 89 Tage, `end_date` heute (vorher
+  2020-01-01 bis 2099-12-31, jeder Pin scheiterte stündlich); Summen aus
+  `summary_metrics`.
+
+Andere Nutzer derselben Meta-App (Tokens aus dem Verteiler): `iyc-highlight-takt`
+(4× täglich), `iyc-kommentar-agent lauf` (6× täglich), `claudy-agenten
+meta_token.py`; zusammen wenige Prozent. Tests:
+`apps/analytics/tests/test_meta_restverbrauch.py`.
