@@ -92,5 +92,7 @@ Behebung:
 
 Andere Nutzer derselben Meta-App (Tokens aus dem Verteiler): `iyc-highlight-takt`
 (4× täglich), `iyc-kommentar-agent lauf` (6× täglich), `claudy-agenten
-meta_token.py`; zusammen wenige Prozent. Tests:
-`apps/analytics/tests/test_meta_restverbrauch.py`.
+meta_token.py`. Gemessen ist nur die Obergrenze: außerhalb der Wellen lag `x-app-usage`
+mit allen diesen Diensten (und dem 5-min-Messskript) bei 8–16 %, nach der Behebung
+02:49–04:51 UTC bei 8–15 %, ohne #4. Tests:
+`apps/analytics/tests/test_meta_restverbrauch.py`, `apps/publisher/test_drossel_halten.py`.
