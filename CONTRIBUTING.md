@@ -25,7 +25,11 @@ From then on, the hooks run automatically. To run them against every file in the
 pre-commit run --all-files
 ```
 
-The hooks enforce the same rules as CI, so passing them locally means your PR will pass the automated checks.
+The hooks enforce the same rules as the full check below.
+
+### Pre-deploy check (Orbita Media)
+
+GitHub Actions is switched off for this fork (since 26.11.2026). Before pushing to `main` (Coolify deploys from there), run the full check that the former `ci.yml` did: `make pruefen` (= `scripts/pruefen.sh`: ruff, mypy, pytest against Postgres 16 in Docker, gitleaks, Docker build; `--ohne-docker-bau` skips the image build).
 
 ## Development Workflow
 

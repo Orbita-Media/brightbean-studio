@@ -1,4 +1,4 @@
-.PHONY: help setup dev server worker tailwind test lint format typecheck migrate migrations docker-up docker-down docker-build
+.PHONY: help setup dev server worker tailwind test lint format typecheck pruefen migrate migrations docker-up docker-down docker-build
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -54,6 +54,9 @@ lint: ## Run linter and format check
 format: ## Auto-fix lint and formatting issues
 	ruff check --fix .
 	ruff format .
+
+pruefen: ## Full pre-deploy check (lint, mypy, pytest on Postgres, gitleaks, docker build) – replaces GitHub CI
+	bash scripts/pruefen.sh
 
 typecheck: ## Run mypy type checker
 	mypy apps/ config/ providers/ tests/ --ignore-missing-imports
