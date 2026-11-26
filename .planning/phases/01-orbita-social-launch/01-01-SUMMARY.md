@@ -38,7 +38,7 @@ key_files:
     - (Dashboard) nextjs-frontend/app/(dashboard)/tools/page.tsx
     - (Dashboard) app/routes/tools_discovery.py
 decisions:
-  - "django-ses statt SMTP-Credentials: nutzt existierenden Dashboard-IAM-Key (AKIA2ADFOQAHLIYPXJNC), kein neuer IAM-User nötig"
+  - "django-ses statt SMTP-Credentials: nutzt existierenden Dashboard-IAM-Key (AKIA… (Vault „Dashboard Orbita Media Tool Klartext-Secrets“)), kein neuer IAM-User nötig"
   - "App-seitige Redirect-Middleware statt CF Page Rule (Free Plan 3-Page-Rules-Limit erreicht)"
   - "Conditional EMAIL_BACKEND (abhängig von AWS_ACCESS_KEY_ID) als Dev-Fallback-Schutz"
   - "Beide Domains (social.* + brightbean.*) gleichzeitig in ALLOWED_HOSTS und docker_compose_domains für sanften Übergang"
@@ -89,7 +89,7 @@ metrics:
 - `config/settings/production.py`: `EMAIL_BACKEND="django_ses.SESBackend"` aktiv wenn `AWS_ACCESS_KEY_ID` gesetzt, sonst Fallback auf Base-SMTP-Backend (Dev-Schutz)
 - `AWS_SES_REGION_NAME="eu-north-1"`, `AWS_SES_REGION_ENDPOINT="email.eu-north-1.amazonaws.com"`
 - Coolify-ENVs gesetzt:
-  - `AWS_ACCESS_KEY_ID=AKIA2ADFOQAHLIYPXJNC` (PATCH — existierte schon für S3-Storage)
+  - `AWS_ACCESS_KEY_ID=AKIA… (Vault „Dashboard Orbita Media Tool Klartext-Secrets“)` (PATCH — existierte schon für S3-Storage)
   - `AWS_SECRET_ACCESS_KEY=<40 chars>` (POST neu)
   - `AWS_DEFAULT_REGION=eu-north-1` (POST neu)
 - **Test-Mail 1** via `send_mail()`: `result=1` (von SES akzeptiert)
@@ -178,7 +178,7 @@ REBRAND-01 ✅ · DOMAIN-01 ✅ · DOMAIN-02 ✅ · DOMAIN-03 ✅ · DOMAIN-04 �
 
 ### Plan-Änderungen durch User-Checkpoint
 
-- **Task 5 Umstellung von SMTP auf django-ses**: User lieferte AWS IAM-Key (AKIA2ADFOQAHLIYPXJNC) statt SES-SMTP-Credentials. Code-Änderung (requirements.txt + production.py) + 3 ENVs statt nur 2 SMTP-ENVs. Deployment-Runs: statt 1x redeploy → 2x Redeploy (vor und nach django-ses).
+- **Task 5 Umstellung von SMTP auf django-ses**: User lieferte AWS IAM-Key (AKIA… (Vault „Dashboard Orbita Media Tool Klartext-Secrets“)) statt SES-SMTP-Credentials. Code-Änderung (requirements.txt + production.py) + 3 ENVs statt nur 2 SMTP-ENVs. Deployment-Runs: statt 1x redeploy → 2x Redeploy (vor und nach django-ses).
 
 ## Known Stubs / Out-of-Scope Bleibsel
 

@@ -40,7 +40,7 @@ Recent decisions affecting current work:
 - Name "Orbita Social", Domain `social.orbita-media.de`
 - Keine CF Access-Wall — BrightBean-Invite reicht für Team
 - Subdomain-Deployment (wie DittoFeed), nicht Dashboard-Iframe
-- **django-ses statt SMTP**: Existierender Dashboard-AWS-IAM-Key (AKIA2ADFOQAHLIYPXJNC) wird wiederverwendet, kein neuer SES-SMTP-User nötig
+- **django-ses statt SMTP**: Existierender Dashboard-AWS-IAM-Key (AKIA… (Vault „Dashboard Orbita Media Tool Klartext-Secrets“)) wird wiederverwendet, kein neuer SES-SMTP-User nötig
 - **App-Level Redirect-Middleware**: Statt CF Page Rule (Free-Plan 3-Rules-Limit), robuster + dauerhaft
 - **Beide Domains parallel**: social.* + brightbean.* in ALLOWED_HOSTS + docker_compose_domains für sanften Übergang (301-Redirect auf brightbean.* aktiv)
 - **Brand-Tokens auf Orbita-Purple**: #635BFF Purple statt #F97316 Orange — vollständiger Rebrand-Scope (nicht nur Templates)
